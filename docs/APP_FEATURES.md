@@ -199,7 +199,7 @@
 #### Manual Attendance Entry
 - **For Managers & Super Admins**
   - Create attendance records manually
-  - Select employee
+  - Select employee from list (super admins see all active employees including other super admins; managers see department only)
   - Set date and time
   - Add location information
   - Mark as manual entry
@@ -875,5 +875,5 @@ The app provides everything needed for modern workforce management in a single, 
 - `docs/STRUCTURE_SUMMARY.md` - Quick reference for code organization
 - `docs/TECHNICAL_DOCUMENTATION.md` - Comprehensive technical documentation
 
-*Last Updated: 2025-01-27*
+*Last Updated: 2026-01-23*
 

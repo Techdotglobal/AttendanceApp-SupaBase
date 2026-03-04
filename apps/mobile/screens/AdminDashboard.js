@@ -9,6 +9,7 @@ import {
   Image,
   TextInput,
   ScrollView,
+  StyleSheet,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,6 +27,7 @@ import Logo from '../components/Logo';
 import Trademark from '../components/Trademark';
 import HamburgerButton from '../shared/components/HamburgerButton';
 import { useNavigation } from '@react-navigation/native';
+import { supabase } from '../core/config/supabase';
 
 export default function AdminDashboard({ route }) {
   const navigation = useNavigation();
@@ -63,6 +65,9 @@ export default function AdminDashboard({ route }) {
   const [isExporting, setIsExporting] = useState(false);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [pendingSignupCount, setPendingSignupCount] = useState(0);
+  const [company, setCompany] = useState(null);
+  const [companyLoading, setCompanyLoading] = useState(false);
+  const [companyLogoFailed, setCompanyLogoFailed] = useState(false);
 
   useEffect(() => {
     loadRecords();
@@ -91,6 +96,48 @@ export default function AdminDashboard({ route }) {
   useEffect(() => {
     filterRecords();
   }, [records, searchQuery, filter]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchCompany = async () => {
+      setCompanyLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from('companies')
+          .select('id, name, logo_url')
+          .limit(1)
+          .maybeSingle();
+
+        if (!isMounted) return;
+
+        if (error) {
+          console.error('[AdminDashboard] fetchCompany error:', error.message);
+          setCompany(null);
+        } else {
+          setCompany(data || null);
+          setCompanyLogoFailed(false);
+          if (data?.logo_url) {
+            console.log('[AdminDashboard] company.logo_url:', data.logo_url);
+          }
+        }
+      } catch (e) {
+        if (!isMounted) return;
+        console.error('[AdminDashboard] fetchCompany error:', e?.message || e);
+        setCompany(null);
+      } finally {
+        if (isMounted) {
+          setCompanyLoading(false);
+        }
+      }
+    };
+
+    fetchCompany();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const loadRecords = async () => {
     try {
@@ -393,64 +440,63 @@ export default function AdminDashboard({ route }) {
 
   return (
     <SafeAreaView className="flex-1" style={{ backgroundColor: colors.background }} edges={['top']}>
-      {/* Main Container - Welcome, Action Buttons, and Manual/Export/Clear */}
-      <View 
-        className="rounded-2xl shadow-sm"
-        style={{ 
-          backgroundColor: colors.surface,
+      {/* Main content - flex: 1 so footer stays at bottom */}
+      <View style={{ flex: 1 }}>
+      {/* Main card: Welcome header, action buttons, etc. */}
+      <View
+        style={{
           margin: responsivePadding(24),
           marginBottom: spacing.lg,
+          backgroundColor: colors.surface,
+          borderRadius: 16,
         }}
       >
-        {/* Welcome Header */}
-        <View className="flex-row items-center justify-between" style={{ padding: responsivePadding(24), paddingBottom: spacing.md }}>
+        {/* Header row: Hamburger → Logo → Text. No flex/flexShrink to avoid squeezing the logo. */}
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            padding: responsivePadding(24),
+            paddingBottom: spacing.md,
+          }}
+        >
           <HamburgerButton color={colors.text} size={28} style={{ marginRight: spacing.sm }} />
-          <View className="flex-row items-center flex-1" style={{ flexShrink: 1 }}>
-            <Logo size="small" style={{ marginRight: spacing.md }} />
-            <View className="flex-1" style={{ flexShrink: 1 }}>
-              <Text 
-                className="font-bold"
-                style={{ 
-                  color: colors.text,
-                  fontSize: responsiveFont(20),
-                }}
+          {company?.logo_url && !companyLogoFailed && (
+            <Image
+              source={{ uri: company.logo_url }}
+              style={styles.companyLogo}
+              resizeMode="contain"
+              onLoad={() => console.log('[AdminDashboard] Logo loaded successfully')}
+              onError={(e) => {
+                console.log('[AdminDashboard] Logo failed to load:', e.nativeEvent);
+                setCompanyLogoFailed(true);
+              }}
+            />
+          )}
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text
+              style={{ color: colors.text, fontSize: responsiveFont(20), fontWeight: 'bold' }}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
+              Welcome, {user.username}!
+            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+              <Text
+                style={{ color: colors.textSecondary, fontSize: responsiveFont(12) }}
                 numberOfLines={1}
+                ellipsizeMode="tail"
               >
-                Welcome, {user.username}!
+                {user.role === 'super_admin' ? 'Super Admin Dashboard' :
+                  user.role === 'manager' ? `${user.department || 'Department'} Manager Dashboard` :
+                  'Admin Dashboard'}
               </Text>
-              <View className="flex-row items-center flex-wrap">
-                <Text 
-                  style={{ 
-                    color: colors.textSecondary,
-                    fontSize: responsiveFont(12),
-                  }}
-                >
-                  {user.role === 'super_admin' ? 'Super Admin Dashboard' : 
-                   user.role === 'manager' ? `${user.department || 'Department'} Manager Dashboard` : 
-                   'Admin Dashboard'}
-                </Text>
-                {user.role === 'manager' && user.department && (
-                  <>
-                    <Text 
-                      style={{ 
-                        color: colors.textTertiary, 
-                        marginHorizontal: spacing.xs,
-                        fontSize: responsiveFont(12),
-                      }}
-                    >
-                      •
-                    </Text>
-                    <Text 
-                      style={{ 
-                        color: colors.textSecondary,
-                        fontSize: responsiveFont(12),
-                      }}
-                    >
-                      {user.department}
-                    </Text>
-                  </>
-                )}
-              </View>
+              {user.role === 'manager' && user.department && (
+                <>
+                  <Text style={{ color: colors.textTertiary, marginHorizontal: spacing.xs, fontSize: responsiveFont(12) }}>•</Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: responsiveFont(12) }}>{user.department}</Text>
+                </>
+              )}
             </View>
           </View>
         </View>
@@ -914,12 +960,32 @@ export default function AdminDashboard({ route }) {
             </View>
           )}
 
-          {/* Trademark */}
-          <Trademark position="bottom" />
         </>
       ) : (
         <EmployeeManagement route={{ params: { user, openLeaveRequests } }} />
       )}
+
+      </View>
+      {/* Footer - Logo centered above Trademark, stays at bottom via flex layout */}
+      <View 
+        style={{ 
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingVertical: spacing.lg,
+          paddingBottom: spacing.xl,
+        }}
+      >
+        <Logo size="small" style={{ marginBottom: spacing.sm }} />
+        <Trademark position="bottom" />
+      </View>
     </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  companyLogo: {
+    height: 28,
+    width: 30,
+    marginLeft: 8,
+  },
+});

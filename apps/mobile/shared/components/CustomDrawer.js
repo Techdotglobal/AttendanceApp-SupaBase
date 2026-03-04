@@ -261,6 +261,12 @@ export default function CustomDrawer({ navigation, state }) {
         screen: ROUTES.ATTENDANCE_SETTINGS,
         roles: ['super_admin'],
       },
+      {
+        name: 'Company Logo',
+        icon: 'image-outline',
+        screen: ROUTES.COMPANY_SETTINGS,
+        roles: ['super_admin'],
+      },
     ];
 
     // Manager only items

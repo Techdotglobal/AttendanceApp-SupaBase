@@ -28,6 +28,7 @@ export const ROUTES = {
   EMPLOYEE_MANAGEMENT: 'EmployeeManagement',
   GEO_FENCING: 'GeoFencingScreen',
   ATTENDANCE_SETTINGS: 'AttendanceSettingsScreen',
+  COMPANY_SETTINGS: 'CompanySettings',
 };
 
 // Route groups by role
@@ -58,5 +59,6 @@ export const ADMIN_ROUTES = [
 export const SUPER_ADMIN_ROUTES = [
   ...ADMIN_ROUTES,
   ROUTES.CREATE_USER,
+  ROUTES.COMPANY_SETTINGS,
 ];
 

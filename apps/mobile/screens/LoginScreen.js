@@ -9,6 +9,7 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { authenticateUser } from '../utils/auth';
@@ -182,25 +183,26 @@ export default function LoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView 
-      className="flex-1"
-      style={{ backgroundColor: colors.background }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView 
-        contentContainerStyle={{ flexGrow: 1 }}
-        keyboardShouldPersistTaps="handled"
+    <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }} edges={['top', 'bottom']}>
+      <KeyboardAvoidingView 
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
-        <View 
-          className="flex-1 justify-center"
-          style={{ paddingHorizontal: responsivePadding(32) }}
+        <ScrollView 
+          style={{ flex: 1 }}
+          contentContainerStyle={{ flexGrow: 1, paddingBottom: spacing['3xl'] }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
+          <View 
+            style={{ paddingHorizontal: responsivePadding(32), paddingTop: spacing.lg, paddingBottom: spacing.xl }}
+          >
           {/* Header */}
           <View 
             className="items-center"
             style={{ marginBottom: spacing['3xl'] }}
           >
-            <Logo size="medium" style={{ marginBottom: spacing.lg }} />
             <Text 
               className="font-bold"
               style={{ 
@@ -481,11 +483,21 @@ export default function LoginScreen() {
             </Text>
           </TouchableOpacity>
 
-          {/* Trademark */}
-          <Trademark position="bottom" style={{ marginTop: spacing['2xl'] }} />
+          {/* Footer: Logo and Trademark - inside ScrollView so never cut off */}
+          <View 
+            style={{ 
+              alignItems: 'center',
+              marginTop: spacing['3xl'],
+              paddingBottom: spacing.xl,
+            }}
+          >
+            <Logo size="medium" />
+            <Trademark position="bottom" style={{ marginTop: spacing.md }} />
+          </View>
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 

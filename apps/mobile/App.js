@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 // Core providers
 import { AuthProvider } from './core/contexts/AuthContext';
 import { ThemeProvider } from './core/contexts/ThemeContext';
+import { CompanyProvider } from './core/contexts/CompanyContext';
 
 // Navigation
 import AppNavigator from './core/navigation/AppNavigator';
@@ -40,7 +41,9 @@ export default function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider>
         <AuthProvider>
-          <AppNavigator />
+          <CompanyProvider>
+            <AppNavigator />
+          </CompanyProvider>
         </AuthProvider>
       </ThemeProvider>
     </GestureHandlerRootView>

@@ -29,6 +29,7 @@ import LoginScreen from '../../screens/LoginScreen';
 import AttendanceSettingsScreen from '../../screens/AttendanceSettingsScreen';
 import HelpSupportScreen from '../../screens/HelpSupportScreen';
 import { GeoFencingScreen } from '../../features/geofencing';
+import { CompanySettingsScreen } from '../../features/company';
 
 const Stack = createStackNavigator();
 
@@ -209,6 +210,12 @@ export default function MainNavigator({ user }) {
               name={ROUTES.ATTENDANCE_SETTINGS} 
               component={AttendanceSettingsScreen}
               options={{ title: 'Attendance Settings' }}
+              initialParams={{ user }}
+            />
+            <Stack.Screen 
+              name={ROUTES.COMPANY_SETTINGS} 
+              component={CompanySettingsScreen}
+              options={{ title: 'Company Logo' }}
               initialParams={{ user }}
             />
           </>

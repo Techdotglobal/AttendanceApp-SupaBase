@@ -97,7 +97,8 @@ AttendanceApp/
 │   ├── ManualAttendanceScreen.js  # Attendance screen (legacy)
 │   ├── EmployeeManagement.js      # Employees screen (legacy)
 │   ├── CreateUserScreen.js        # Employees screen (legacy)
-│   └── SignupApprovalScreen.js    # Employees screen (legacy)
+│   ├── SignupApprovalScreen.js    # Employees screen (legacy)
+│   └── HelpSupportScreen.js      # Help & Support (production-safe email, fallback modal)
 │
 ├── utils/                          # ⚠️ Legacy utils (CURRENTLY IN USE - to be migrated)
 │   ├── auth.js                    # Auth utils (legacy - use features/auth instead)
@@ -296,9 +297,10 @@ The project includes a GitHub Actions workflow (`.github/workflows/deploy.yml`) 
   - Deep linking configured in `AppNavigator.js` for password reset flow
 - **App.js**: Still imports from `utils/employees` (legacy)
 - **Most screens**: Still located in `screens/` directory (20 screens total, including new password screens)
-- **Most utils**: Still located in `utils/` directory (18 utility files, including `passwordChange.js`)
-- **Calendar Events**: Stored in Supabase `calendar_events` table (not AsyncStorage)
+- **Most utils**: Still located in `utils/` directory (18+ utility files, including `passwordChange.js`)
+- **Calendar Events**: Stored in Supabase `calendar_events` table with visibility (`all`, `none`, `selected`); migration `019_add_calendar_event_visibility.sql`; refresh on screen focus.
 - **Password Management**: Uses Supabase Auth only (no local storage)
+- **Super Admin Manual Attendance**: Super admins see all active employees (no role filter); see `utils/employees.js` `getManageableEmployees`.
 - **Migration is gradual**: New code should use feature modules, legacy code will be migrated over time
 - **CI/CD**: GitHub Actions workflow configured for automated builds and deployments
 

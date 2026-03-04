@@ -1,5 +1,13 @@
 # Code Structure Summary
 
+## Recent updates (2026-01-23)
+
+- **Help & Support**: New `HelpSupportScreen.js` with production-safe email and fallback modal (copy-to-clipboard).
+- **Calendar events**: Visibility control (`all` / `none` / `selected`), migration 019, refresh on focus.
+- **Super admin**: Manual attendance and employee lists show all active employees (no role filter).
+- **Password management**: Forgot/Reset password with deep linking (`hadirai://reset-password`); change password in Theme Settings.
+- **Auth service**: Email change endpoint added for future use.
+
 ## What Changed
 
 The codebase has been restructured from a flat organization to a **modular, feature-based architecture**. This ensures:
@@ -91,7 +99,9 @@ AttendanceApp/
   - ✅ Password change utility (`utils/passwordChange.js`)
   - ✅ Forgot password screen (`screens/ForgotPasswordScreen.js`)
   - ✅ Reset password screen (`screens/ResetPasswordScreen.js`)
-  - ✅ Calendar events Supabase integration
+  - ✅ Help & Support screen (`screens/HelpSupportScreen.js`) with production-safe email
+  - ✅ Calendar events Supabase integration (visibility: all/none/selected)
+  - ✅ Super admin manual attendance: all active employees visible (see `utils/employees.js`)
 
 ### 🔄 In Progress
 - **Feature Modules**: Most features still need migration
@@ -184,4 +194,4 @@ import { createCalendarEvent, getCalendarEvents } from '../utils/calendar';
 - `docs/STRUCTURE_SUMMARY.md` - Quick reference for code organization
 - `docs/TECHNICAL_DOCUMENTATION.md` - Comprehensive technical documentation
 
-*Last Updated: 2025-01-27*
+*Last Updated: 2026-01-23*

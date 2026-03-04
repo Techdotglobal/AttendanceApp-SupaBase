@@ -322,6 +322,7 @@ The system has **3 authentication roles** (not position-based):
 - ✅ Assign tickets manually
 - ✅ System administration
 - ✅ Can manage managers and super admins
+- ✅ Manual attendance: sees all active employees (including other super admins; no role filter)
 
 **Example Users:**
 - `testadmin` (System Administrator)
@@ -1452,6 +1453,7 @@ Example: testuser,password:testuser123,role:employee
   - `ForgotPasswordScreen.js` (password reset request)
   - `ResetPasswordScreen.js` (password reset completion)
   - `ThemeSettingsScreen.js` (includes password change UI)
+  - `HelpSupportScreen.js` (Help & Support with production-safe email and fallback modal)
   - Other screens to be migrated to respective feature modules
 
 ### Scripts
@@ -1694,5 +1696,5 @@ For detailed EAS build setup, see `apps/mobile/EAS_BUILD_SETUP.md`.
 
 ---
 
-*Last Updated: 2025-01-27*
+*Last Updated: 2026-01-23*
 

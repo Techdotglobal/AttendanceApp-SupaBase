@@ -15,7 +15,7 @@ export default function Trademark({ position = 'bottom', style }) {
       style
     ]}>
       <Text style={[styles.text, { color: colors.textSecondary, fontSize: responsiveFont(10) }]}>
-        This a product of TechDotGlobalⒸ
+        Powered by TechDotGlobal ©
       </Text>
     </View>
   );

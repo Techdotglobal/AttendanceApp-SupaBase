@@ -218,6 +218,7 @@ GET  /api/auth/check-username/:username - Username availability
 POST /api/auth/users            - Create user
 PATCH /api/auth/users/:username/role - Update user role
 PATCH /api/auth/users/:username - Update user info
+PATCH /api/auth/users/:username/email - Update user email (future use)
 ```
 
 **Authentication Flow:**
@@ -296,10 +297,11 @@ apps/mobile/
 │   └── hooks/                  # Shared hooks
 │
 ├── screens/                    # Screen components (legacy)
-│   ├── NotificationsScreen.js # Notification center with state management
-│   ├── ForgotPasswordScreen.js # Password reset request
+│   ├── NotificationsScreen.js  # Notification center with state management
+│   ├── ForgotPasswordScreen.js  # Password reset request
 │   ├── ResetPasswordScreen.js  # Password reset completion
 │   ├── ThemeSettingsScreen.js  # Theme settings + password change UI
+│   ├── HelpSupportScreen.js    # Help & Support (production-safe email, fallback modal)
 │   └── ...
 └── utils/                      # Utility functions (legacy)
     ├── notifications.js        # Notification state management
@@ -1176,5 +1178,5 @@ npm test
 
 ---
 
-*Last Updated: 2025-01-27*
+*Last Updated: 2026-01-23*
 

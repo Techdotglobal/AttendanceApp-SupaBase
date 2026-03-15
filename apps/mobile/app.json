@@ -16,9 +16,14 @@
       "**/*"
     ],
     "ios": {
+      "bundleIdentifier": "com.techdotglobal.hadirai",
       "supportsTablet": true,
       "infoPlist": {
-        "NSFaceIDUsageDescription": "This app uses Face ID to authenticate your identity when checking in or out for attendance."
+        "NSLocationWhenInUseUsageDescription": "Location is used to verify attendance check-in and check-out.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Location is used to verify attendance check-in and check-out.",
+        "NSFaceIDUsageDescription": "Face ID is used for secure authentication.",
+        "NSPhotoLibraryUsageDescription": "Photo library access is used to select a company logo image.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -29,7 +34,11 @@
       },
       "permissions": [
         "USE_BIOMETRIC",
-        "USE_FINGERPRINT"
+        "USE_FINGERPRINT",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
       ],
       "intentFilters": [
         {

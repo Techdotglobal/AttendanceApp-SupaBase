@@ -17,10 +17,11 @@
     ],
     "ios": {
       "bundleIdentifier": "com.techdotglobal.hadirai",
+      "buildNumber": "2",
       "supportsTablet": true,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Location is used to verify attendance check-in and check-out.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Location is used to verify attendance check-in and check-out.",
+        "NSLocationWhenInUseUsageDescription": "We use your location to verify your attendance when you check in or check out.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "We use your location to verify your attendance even when the app is running in the background.",
         "NSFaceIDUsageDescription": "Face ID is used for secure authentication.",
         "NSPhotoLibraryUsageDescription": "Photo library access is used to select a company logo image.",
         "ITSAppUsesNonExemptEncryption": false

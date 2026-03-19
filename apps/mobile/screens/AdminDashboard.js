@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  FlatList,
   TouchableOpacity,
   Alert,
   RefreshControl,
@@ -34,6 +33,8 @@ export default function AdminDashboard({ route }) {
   const { user: routeUser, initialTab, openLeaveRequests } = route.params || {};
   const { user: authUser, handleLogout } = useAuth();
   const { colors } = useTheme();
+  const [employeesIsRefreshing, setEmployeesIsRefreshing] = useState(false);
+  const [employeesRefreshTick, setEmployeesRefreshTick] = useState(0);
   
   // CRITICAL FIX: Role guard - prevent rendering if user is not manager/super_admin
   // Use authUser from context (most up-to-date) with fallback to route params
@@ -192,6 +193,11 @@ export default function AdminDashboard({ route }) {
     setIsRefreshing(true);
     await loadRecords();
     setIsRefreshing(false);
+  };
+
+  const onEmployeesRefresh = async () => {
+    setEmployeesIsRefreshing(true);
+    setEmployeesRefreshTick((t) => t + 1);
   };
 
   const handleExport = async () => {
@@ -410,26 +416,30 @@ export default function AdminDashboard({ route }) {
 
   const TabButton = ({ title, value, isActive, icon }) => (
     <TouchableOpacity
-      className="flex-1 flex-row items-center justify-center"
       style={{ 
+        flex: 1,
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
         borderBottomWidth: isActive ? 2 : 0,
         borderBottomColor: isActive ? colors.primary : 'transparent',
-        paddingVertical: spacing.md,
+        paddingVertical: spacing.sm,
         minHeight: componentSize.tabBarHeight,
       }}
       onPress={() => setActiveTab(value)}
     >
       <Ionicons 
         name={icon} 
-        size={isSmallScreen() ? iconSize.sm : iconSize.md} 
+        size={iconSize.sm}
         color={isActive ? colors.primary : colors.textSecondary} 
       />
       <Text 
         className="font-medium"
         style={{ 
           color: isActive ? colors.primary : colors.textTertiary,
-          fontSize: isSmallScreen() ? responsiveFont(12) : responsiveFont(14),
-          marginLeft: spacing.xs,
+          fontSize: isSmallScreen() ? responsiveFont(11) : responsiveFont(12),
+          marginTop: spacing.xs / 2,
+          textAlign: 'center',
         }}
         numberOfLines={1}
       >
@@ -438,10 +448,39 @@ export default function AdminDashboard({ route }) {
     </TouchableOpacity>
   );
 
+  const isAttendanceTab = activeTab === 'attendance';
+  const isEmployeesTab = activeTab === 'employees';
+  const isScrollableTab = isAttendanceTab || isEmployeesTab;
+  const ContentWrapper = isScrollableTab ? ScrollView : View;
+
   return (
     <SafeAreaView className="flex-1" style={{ backgroundColor: colors.background }} edges={['top']}>
       {/* Main content - flex: 1 so footer stays at bottom */}
-      <View style={{ flex: 1 }}>
+      <ContentWrapper
+        style={{ flex: 1 }}
+        {...(isScrollableTab
+          ? {
+              showsVerticalScrollIndicator: false,
+              contentContainerStyle: { paddingBottom: spacing.lg },
+              ...(isAttendanceTab
+                ? {
+                    refreshControl: (
+                      <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
+                    ),
+                  }
+                : isEmployeesTab
+                  ? {
+                      refreshControl: (
+                        <RefreshControl
+                          refreshing={employeesIsRefreshing}
+                          onRefresh={onEmployeesRefresh}
+                        />
+                      ),
+                    }
+                  : {}),
+            }
+          : {})}
+      >
       {/* Main card: Welcome header, action buttons, etc. */}
       <View
         style={{
@@ -609,8 +648,8 @@ export default function AdminDashboard({ route }) {
         {activeTab === 'attendance' && (
           <View 
             style={{ 
-              paddingHorizontal: responsivePadding(24),
-              paddingBottom: responsivePadding(12),
+              paddingHorizontal: responsivePadding(12),
+              paddingVertical: responsivePadding(12),
             }}
           >
             <ScrollView 
@@ -703,7 +742,16 @@ export default function AdminDashboard({ route }) {
       </View>
 
       {/* Tab Navigation */}
-        <View className="flex-row border-b" style={{ borderColor: colors.border }}>
+        <View
+          style={{
+            flexDirection: 'row',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            borderBottomWidth: 1,
+            borderBottomColor: colors.border,
+            width: '100%',
+          }}
+        >
           <TabButton 
             title="Attendance" 
             value="attendance" 
@@ -876,19 +924,16 @@ export default function AdminDashboard({ route }) {
 
           {/* Records List */}
           {filteredRecords.length > 0 ? (
-            <FlatList
-              data={filteredRecords}
-              renderItem={renderRecord}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={{ padding: responsivePadding(16), paddingBottom: spacing['2xl'] }}
-              refreshControl={
-                <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
-              }
-              showsVerticalScrollIndicator={false}
-            />
+            <View style={{ padding: responsivePadding(16), paddingBottom: spacing['2xl'] }}>
+              {filteredRecords.map((item) => (
+                <React.Fragment key={item.id}>
+                  {renderRecord({ item })}
+                </React.Fragment>
+              ))}
+            </View>
           ) : (
             <View 
-              className="flex-1 justify-center items-center"
+              className="justify-center items-center"
               style={{ paddingHorizontal: responsivePadding(24) }}
             >
               <Ionicons name="people-outline" size={iconSize['4xl']} color={colors.textTertiary} />
@@ -962,20 +1007,23 @@ export default function AdminDashboard({ route }) {
 
         </>
       ) : (
-        <EmployeeManagement route={{ params: { user, openLeaveRequests } }} />
+        <EmployeeManagement
+          route={{ params: { user, openLeaveRequests } }}
+          refreshTick={employeesRefreshTick}
+          onReloadComplete={() => setEmployeesIsRefreshing(false)}
+        />
       )}
 
-      </View>
+      </ContentWrapper>
       {/* Footer - Logo centered above Trademark, stays at bottom via flex layout */}
       <View 
         style={{ 
           alignItems: 'center',
           justifyContent: 'center',
-          paddingVertical: spacing.lg,
-          paddingBottom: spacing.xl,
+          paddingVertical: spacing.md,
         }}
       >
-        <Logo size="small" style={{ marginBottom: spacing.sm }} />
+        <Logo size="small" style={{ marginBottom: spacing.xs }} />
         <Trademark position="bottom" />
       </View>
     </SafeAreaView>

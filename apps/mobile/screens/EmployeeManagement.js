@@ -5,7 +5,6 @@ import {
   FlatList,
   TouchableOpacity,
   Alert,
-  RefreshControl,
   Modal,
   TextInput,
   ScrollView,
@@ -53,12 +52,11 @@ import {
 import { spacing, responsivePadding } from '../shared/utils/responsive';
 import { useTheme } from '../contexts/ThemeContext';
 
-export default function EmployeeManagement({ route }) {
+export default function EmployeeManagement({ route, refreshTick = 0, onReloadComplete }) {
   const { user, openLeaveRequests } = route.params || {};
   const { colors } = useTheme();
   const [employees, setEmployees] = useState([]);
   const [filteredEmployees, setFilteredEmployees] = useState([]);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showWorkModeModal, setShowWorkModeModal] = useState(false);
   const [pendingRequests, setPendingRequests] = useState([]);
@@ -90,6 +88,24 @@ export default function EmployeeManagement({ route }) {
   useEffect(() => {
     loadData();
   }, []);
+
+  // Trigger full reload from parent (used by AdminDashboard pull-to-refresh).
+  useEffect(() => {
+    // If refreshTick is 0/undefined, skip; initial load is handled above.
+    if (!refreshTick || refreshTick <= 0) return;
+
+    (async () => {
+      try {
+        await loadData();
+      } catch (error) {
+        console.error('Error refreshing employees:', error);
+      } finally {
+        if (typeof onReloadComplete === 'function') {
+          onReloadComplete();
+        }
+      }
+    })();
+  }, [refreshTick, onReloadComplete]);
 
   // Reload leave requests and statistics when employees change
   useEffect(() => {
@@ -216,12 +232,6 @@ export default function EmployeeManagement({ route }) {
     } catch (error) {
       console.error('Error loading statistics:', error);
     }
-  };
-
-  const onRefresh = async () => {
-    setIsRefreshing(true);
-    await loadData();
-    setIsRefreshing(false);
   };
 
   const handleWorkModeChange = (employee) => {
@@ -908,7 +918,7 @@ export default function EmployeeManagement({ route }) {
   );
 
   return (
-    <View className="flex-1" style={{ backgroundColor: colors.background }}>
+    <View style={{ backgroundColor: colors.background }}>
       {/* Header */}
       <View className="px-6 py-4 shadow-sm" style={{ backgroundColor: colors.surface }}>
         <View className="flex-row items-center justify-between mb-4" style={{ flexWrap: 'wrap' }}>
@@ -985,18 +995,15 @@ export default function EmployeeManagement({ route }) {
 
       {/* Employees List */}
       {filteredEmployees.length > 0 ? (
-        <FlatList
-          data={filteredEmployees}
-          renderItem={renderEmployee}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: responsivePadding(16), paddingBottom: spacing['2xl'] }}
-          refreshControl={
-            <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
-          }
-          showsVerticalScrollIndicator={false}
-        />
+        <View style={{ padding: responsivePadding(16), paddingBottom: spacing['2xl'] }}>
+          {filteredEmployees.map((item) => (
+            <React.Fragment key={item.id}>
+              {renderEmployee({ item })}
+            </React.Fragment>
+          ))}
+        </View>
       ) : (
-        <View className="flex-1 justify-center items-center px-6">
+        <View className="justify-center items-center px-6" style={{ paddingVertical: spacing['2xl'] }}>
           <Ionicons name="people-outline" size={64} color={colors.textTertiary} />
           <Text className="text-xl font-semibold mt-4 text-center" style={{ color: colors.textSecondary }}>
             No employees found

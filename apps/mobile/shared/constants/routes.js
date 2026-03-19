@@ -25,6 +25,7 @@ export const ROUTES = {
   MANUAL_ATTENDANCE: 'ManualAttendance',
   SIGNUP_APPROVAL: 'SignupApproval',
   CREATE_USER: 'CreateUser',
+  DELETE_USER: 'DeleteUserScreen',
   EMPLOYEE_MANAGEMENT: 'EmployeeManagement',
   GEO_FENCING: 'GeoFencingScreen',
   ATTENDANCE_SETTINGS: 'AttendanceSettingsScreen',
@@ -54,11 +55,13 @@ export const ADMIN_ROUTES = [
   ROUTES.MANUAL_ATTENDANCE,
   ROUTES.SIGNUP_APPROVAL,
   ROUTES.EMPLOYEE_MANAGEMENT,
+  ROUTES.DELETE_USER,
 ];
 
 export const SUPER_ADMIN_ROUTES = [
   ...ADMIN_ROUTES,
   ROUTES.CREATE_USER,
+  ROUTES.DELETE_USER,
   ROUTES.COMPANY_SETTINGS,
 ];
 

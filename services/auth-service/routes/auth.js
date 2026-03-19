@@ -322,6 +322,121 @@ router.post('/users', async (req, res) => {
 });
 
 /**
+ * DELETE /api/auth/users/:uid
+ * Delete user from Supabase Auth and PostgreSQL users table
+ * Body: { requester: { uid, role, department } }
+ */
+router.delete('/users/:uid', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  const { uid } = req.params;
+  const { requester } = req.body || {};
+  console.log(`[${timestamp}] Auth Service: Delete user request for uid: ${uid}`);
+
+  try {
+    if (!uid) {
+      return res.status(400).json({
+        success: false,
+        error: 'User uid is required',
+      });
+    }
+
+    if (!requester || !requester.uid || !requester.role) {
+      return res.status(400).json({
+        success: false,
+        error: 'Requester context is required',
+      });
+    }
+
+    // Fetch target user for permission checks
+    const { data: targetUser, error: targetUserError } = await supabase
+      .from('users')
+      .select('uid, role, department, username')
+      .eq('uid', uid)
+      .single();
+
+    if (targetUserError || !targetUser) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+      });
+    }
+
+    // Authorization rules:
+    // - super_admin cannot delete any super_admin accounts (never allowed)
+    // - HR manager can delete employees + managers, but not super_admin
+    const isSuperAdmin = requester.role === 'super_admin';
+    const isHrManager = requester.role === 'manager' && requester.department === 'HR';
+
+    if (!isSuperAdmin && !isHrManager) {
+      return res.status(403).json({
+        success: false,
+        error: 'Permission denied',
+      });
+    }
+
+    // Safety: super_admin accounts cannot be deleted by anyone.
+    if (targetUser.role === 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Super Admin accounts cannot be deleted',
+      });
+    }
+
+    // Prevent deleting your own account for safety (applies to non-super-admin users)
+    if (requester.uid === uid) {
+      return res.status(403).json({
+        success: false,
+        error: 'You cannot delete your own account',
+      });
+    }
+
+    // HR managers can delete employees and managers (any department),
+    // as long as the target is NOT a super_admin (handled above).
+    if (isHrManager) {
+      if (!['employee', 'manager'].includes(targetUser.role)) {
+        return res.status(403).json({
+          success: false,
+          error: 'HR managers can only delete employee/manager accounts',
+        });
+      }
+    }
+
+    // 1) Delete from Supabase Auth
+    const { error: authDeleteError } = await supabase.auth.admin.deleteUser(uid);
+    if (authDeleteError) {
+      console.error('Delete auth user error:', authDeleteError);
+      return res.status(500).json({
+        success: false,
+        error: authDeleteError.message || 'Failed to delete user from authentication',
+      });
+    }
+
+    // 2) Delete from PostgreSQL users table
+    const { error: dbDeleteError } = await supabase
+      .from('users')
+      .delete()
+      .eq('uid', uid);
+
+    if (dbDeleteError) {
+      console.error('Delete user profile error:', dbDeleteError);
+      return res.status(500).json({
+        success: false,
+        error: dbDeleteError.message || 'Failed to delete user profile',
+      });
+    }
+
+    console.log(`[${timestamp}] Auth Service: ✓ User deleted: ${targetUser.username || uid}`);
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Internal server error',
+    });
+  }
+});
+
+/**
  * PATCH /api/auth/users/:username/role
  * Update user role
  * Body: { role: string }

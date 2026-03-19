@@ -544,6 +544,57 @@ export const updateUserInfo = async (username, updates) => {
 };
 
 /**
+ * Delete user account via API Gateway (Auth + users table)
+ * @param {string} uid - Target user uid
+ * @param {Object} requester - Current user context { uid, role, department }
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+export const deleteUserAccount = async (uid, requester) => {
+  try {
+    if (!uid) {
+      return { success: false, error: 'User uid is required' };
+    }
+    if (!requester || !requester.uid || !requester.role) {
+      return { success: false, error: 'Requester context is required' };
+    }
+
+    const gatewayUrl = typeof API_GATEWAY_URL === 'string'
+      ? API_GATEWAY_URL
+      : String(API_GATEWAY_URL || 'http://localhost:3000');
+
+    const response = await fetch(`${gatewayUrl}/api/auth/users/${uid}`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        requester: {
+          uid: requester.uid,
+          role: requester.role,
+          department: requester.department || '',
+        },
+      }),
+    });
+
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (parseError) {
+      data = {};
+    }
+
+    if (response.ok && data.success) {
+      return { success: true };
+    }
+
+    return { success: false, error: data.error || 'Failed to delete user' };
+  } catch (error) {
+    console.error('Error deleting user account:', error);
+    return { success: false, error: error.message || 'Failed to delete user' };
+  }
+};
+
+/**
  * Initialize users (compatibility function)
  * Supabase handles user initialization automatically
  */

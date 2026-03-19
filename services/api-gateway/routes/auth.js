@@ -128,6 +128,48 @@ router.post('/users', async (req, res) => {
 });
 
 /**
+ * Forward user deletion request to auth-service
+ * DELETE /api/auth/users/:uid
+ */
+router.delete('/users/:uid', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  const { uid } = req.params;
+  console.log(`[${timestamp}] API Gateway: Received delete user request for uid: ${uid}`);
+
+  try {
+    console.log(`[${timestamp}] API Gateway: Forwarding to Auth Service at ${AUTH_SERVICE_URL}/api/auth/users/${uid}`);
+    const response = await axios.delete(`${AUTH_SERVICE_URL}/api/auth/users/${uid}`, {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      data: req.body || {},
+      timeout: 10000,
+    });
+
+    console.log(`[${timestamp}] API Gateway: Auth Service responded with status ${response.status}`);
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    console.error(`[${timestamp}] API Gateway - Delete user forwarding error:`, error.message);
+
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else if (error.request) {
+      res.status(503).json({
+        success: false,
+        error: 'Auth service unavailable',
+        message: 'Unable to connect to authentication service',
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error.message,
+      });
+    }
+  }
+});
+
+/**
  * Forward user role update request to auth-service
  * PATCH /api/auth/users/:username/role
  */

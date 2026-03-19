@@ -23,6 +23,7 @@ import TicketManagementScreen from '../../screens/TicketManagementScreen';
 import ManualAttendanceScreen from '../../screens/ManualAttendanceScreen';
 import SignupApprovalScreen from '../../screens/SignupApprovalScreen';
 import CreateUserScreen from '../../screens/CreateUserScreen';
+import DeleteUserScreen from '../../screens/DeleteUserScreen';
 import EmployeeManagement from '../../screens/EmployeeManagement';
 import ReportsScreen from '../../screens/ReportsScreen';
 import LoginScreen from '../../screens/LoginScreen';
@@ -194,6 +195,12 @@ export default function MainNavigator({ user }) {
               name={ROUTES.CREATE_USER} 
               component={CreateUserScreen}
               options={{ title: 'Create User' }}
+              initialParams={{ user }}
+            />
+            <Stack.Screen
+              name={ROUTES.DELETE_USER}
+              component={DeleteUserScreen}
+              options={{ title: 'Delete User' }}
               initialParams={{ user }}
             />
           </>

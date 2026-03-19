@@ -243,6 +243,12 @@ export default function CustomDrawer({ navigation, state }) {
         // Also allow HR admins (checked in render logic)
       },
       {
+        name: 'Delete User',
+        icon: 'trash-outline',
+        screen: ROUTES.DELETE_USER,
+        roles: ['super_admin'],
+      },
+      {
         name: 'Signup Approvals',
         icon: 'checkmark-circle-outline',
         screen: ROUTES.SIGNUP_APPROVAL,
@@ -272,10 +278,10 @@ export default function CustomDrawer({ navigation, state }) {
     // Manager only items
     const managerItems = [];
 
-    // Filter superAdminItems: HR admins can access Create User, but not Reports
+    // Filter superAdminItems: HR admins can access Create/Delete User, but not Reports
     const filteredSuperAdminItems = superAdminItems.filter(item => {
-      if (item.screen === ROUTES.CREATE_USER) {
-        // Allow HR admins to see Create User
+      if (item.screen === ROUTES.CREATE_USER || item.screen === ROUTES.DELETE_USER) {
+        // Allow HR admins to see Create User and Delete User
         return user.role === 'super_admin' || isHRAdmin(user);
       }
       // Other super admin items (like Reports) are super_admin only

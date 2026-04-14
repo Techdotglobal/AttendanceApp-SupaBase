@@ -25,10 +25,12 @@ import {
 } from '../utils/ticketManagement';
 import { getAdminUsers } from '../utils/employees';
 import { useTheme } from '../contexts/ThemeContext';
+import { isTablet } from '../shared/utils/responsive';
 
 export default function TicketManagementScreen({ navigation, route }) {
   const { user, ticket: initialTicket } = route.params;
   const { colors } = useTheme();
+  const tablet = isTablet();
   const [ticket, setTicket] = useState(initialTicket);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [employees, setEmployees] = useState([]);
@@ -453,8 +455,8 @@ export default function TicketManagementScreen({ navigation, route }) {
         animationType="slide"
         onRequestClose={() => setShowAssignModal(false)}
       >
-        <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
-          <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, maxHeight: '60%' }}>
+        <View style={{ flex: 1, justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
+          <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderBottomLeftRadius: tablet ? 24 : 0, borderBottomRightRadius: tablet ? 24 : 0, padding: 24, maxHeight: tablet ? '80%' : '60%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center' }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
               <Text style={{ fontSize: 20, fontWeight: 'bold', color: colors.text }}>
                 Assign Ticket
@@ -505,8 +507,8 @@ export default function TicketManagementScreen({ navigation, route }) {
                           ? colors.primary 
                           : colors.textSecondary}
                       />
-                      <View style={{ flex: 1, marginLeft: 12 }}>
-                        <Text style={{ fontSize: 16, color: colors.text, fontWeight: '500' }}>
+                      <View style={{ flex: 1, marginLeft: 12, minWidth: 0 }}>
+                        <Text numberOfLines={2} ellipsizeMode="tail" style={{ fontSize: 16, color: colors.text, fontWeight: '500' }}>
                           {displayText}
                         </Text>
                         {item.department && (
@@ -548,8 +550,8 @@ export default function TicketManagementScreen({ navigation, route }) {
         animationType="slide"
         onRequestClose={() => setShowResponseModal(false)}
       >
-        <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
-          <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24 }}>
+        <View style={{ flex: 1, justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
+          <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderBottomLeftRadius: tablet ? 24 : 0, borderBottomRightRadius: tablet ? 24 : 0, padding: 24, width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center' }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
               <Text style={{ fontSize: 20, fontWeight: 'bold', color: colors.text }}>Add Response</Text>
               <TouchableOpacity onPress={() => setShowResponseModal(false)}>
@@ -602,8 +604,8 @@ export default function TicketManagementScreen({ navigation, route }) {
         animationType="slide"
         onRequestClose={() => setShowStatusModal(false)}
       >
-        <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
-          <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24 }}>
+        <View style={{ flex: 1, justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
+          <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderBottomLeftRadius: tablet ? 24 : 0, borderBottomRightRadius: tablet ? 24 : 0, padding: 24, width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center' }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
               <Text style={{ fontSize: 20, fontWeight: 'bold', color: colors.text }}>Update Status</Text>
               <TouchableOpacity onPress={() => setShowStatusModal(false)}>

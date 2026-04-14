@@ -28,10 +28,12 @@ import { getEmployeesForCalendar, getEmployeeByUsername, getEmployeeById } from 
 import { useTheme } from '../contexts/ThemeContext';
 import { getApprovedLeaveDates, getAllLeaveDatesWithEmployees } from '../utils/leaveManagement';
 import DatePickerCalendar from '../components/DatePickerCalendar';
+import { isTablet } from '../utils/responsive';
 
 export default function CalendarScreen({ navigation, route }) {
   const { user } = route.params;
   const { colors } = useTheme();
+  const tablet = isTablet();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [events, setEvents] = useState([]);
@@ -808,7 +810,7 @@ export default function CalendarScreen({ navigation, route }) {
           <View
             style={{
               flex: 1,
-              justifyContent: 'flex-end',
+              justifyContent: tablet ? 'center' : 'flex-end',
               backgroundColor: 'rgba(0, 0, 0, 0.5)',
             }}
           >
@@ -817,8 +819,13 @@ export default function CalendarScreen({ navigation, route }) {
                 backgroundColor: colors.surface,
                 borderTopLeftRadius: 24,
                 borderTopRightRadius: 24,
+                borderBottomLeftRadius: tablet ? 24 : 0,
+                borderBottomRightRadius: tablet ? 24 : 0,
                 padding: 24,
-                maxHeight: '80%',
+                maxHeight: tablet ? '85%' : '80%',
+                width: '100%',
+                maxWidth: tablet ? 700 : undefined,
+                alignSelf: 'center',
               }}
             >
               <ScrollView 
@@ -1082,14 +1089,18 @@ export default function CalendarScreen({ navigation, route }) {
                               paddingVertical: 6,
                               marginRight: 8,
                               marginBottom: 8,
+                              maxWidth: '100%',
                             }}
                           >
                             <Text
+                              numberOfLines={1}
+                              ellipsizeMode="tail"
                               style={{
                                 color: colors.primary,
                                 fontSize: 12,
                                 fontWeight: '500',
                                 marginRight: 6,
+                                flexShrink: 1,
                               }}
                             >
                               {emp?.name || username}
@@ -1278,7 +1289,7 @@ export default function CalendarScreen({ navigation, route }) {
           <View
             style={{
               flex: 1,
-              justifyContent: 'flex-end',
+              justifyContent: tablet ? 'center' : 'flex-end',
               backgroundColor: 'rgba(0, 0, 0, 0.5)',
             }}
           >
@@ -1287,8 +1298,13 @@ export default function CalendarScreen({ navigation, route }) {
                 backgroundColor: colors.surface,
                 borderTopLeftRadius: 24,
                 borderTopRightRadius: 24,
+                borderBottomLeftRadius: tablet ? 24 : 0,
+                borderBottomRightRadius: tablet ? 24 : 0,
                 padding: 24,
-                maxHeight: '70%',
+                maxHeight: tablet ? '80%' : '70%',
+                width: '100%',
+                maxWidth: tablet ? 700 : undefined,
+                alignSelf: 'center',
               }}
             >
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -1432,7 +1448,7 @@ export default function CalendarScreen({ navigation, route }) {
         <View
           style={{
             flex: 1,
-            justifyContent: 'flex-end',
+            justifyContent: tablet ? 'center' : 'flex-end',
             backgroundColor: 'rgba(0, 0, 0, 0.5)',
           }}
         >
@@ -1441,8 +1457,13 @@ export default function CalendarScreen({ navigation, route }) {
               backgroundColor: colors.surface,
               borderTopLeftRadius: 24,
               borderTopRightRadius: 24,
+              borderBottomLeftRadius: tablet ? 24 : 0,
+              borderBottomRightRadius: tablet ? 24 : 0,
               padding: 24,
-              maxHeight: '60%',
+              maxHeight: tablet ? '80%' : '60%',
+              width: '100%',
+              maxWidth: tablet ? 700 : undefined,
+              alignSelf: 'center',
             }}
           >
             {selectedEvent && (
@@ -1450,6 +1471,7 @@ export default function CalendarScreen({ navigation, route }) {
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                   <View style={{ flex: 1 }}>
                     <Text
+                      numberOfLines={2}
                       style={{
                         fontSize: 20,
                         fontWeight: 'bold',
@@ -1578,7 +1600,7 @@ export default function CalendarScreen({ navigation, route }) {
         <View
           style={{
             flex: 1,
-            justifyContent: 'flex-end',
+            justifyContent: tablet ? 'center' : 'flex-end',
             backgroundColor: 'rgba(0, 0, 0, 0.5)',
           }}
         >
@@ -1587,8 +1609,13 @@ export default function CalendarScreen({ navigation, route }) {
               backgroundColor: colors.surface,
               borderTopLeftRadius: 24,
               borderTopRightRadius: 24,
+              borderBottomLeftRadius: tablet ? 24 : 0,
+              borderBottomRightRadius: tablet ? 24 : 0,
               padding: 24,
-              maxHeight: '80%',
+              maxHeight: tablet ? '85%' : '80%',
+              width: '100%',
+              maxWidth: tablet ? 700 : undefined,
+              alignSelf: 'center',
             }}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>

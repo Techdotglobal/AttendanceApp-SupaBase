@@ -26,11 +26,17 @@ import {
   TICKET_STATUS,
 } from '../utils/ticketManagement';
 import { useTheme } from '../contexts/ThemeContext';
-import { spacing, fontSize, responsivePadding, responsiveFont, iconSize } from '../shared/utils/responsive';
+import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTablet } from '../shared/utils/responsive';
 
 export default function TicketScreen({ navigation, route }) {
   const { user } = route.params;
   const { colors } = useTheme();
+  const tablet = isTablet();
+  const tabletContentStyle = {
+    width: '100%',
+    maxWidth: tablet ? 1000 : undefined,
+    alignSelf: 'center',
+  };
   const [tickets, setTickets] = useState([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -293,6 +299,7 @@ export default function TicketScreen({ navigation, route }) {
       {/* Header */}
       <View
         style={{
+          ...tabletContentStyle,
           backgroundColor: colors.surface,
           paddingHorizontal: responsivePadding(16),
           paddingVertical: spacing.md,
@@ -353,6 +360,7 @@ export default function TicketScreen({ navigation, route }) {
               }}
             >
               <Text
+                numberOfLines={1}
                 style={{
                   color: filter === filterType ? 'white' : colors.textSecondary,
                   fontWeight: filter === filterType ? '600' : '400',
@@ -373,7 +381,7 @@ export default function TicketScreen({ navigation, route }) {
           data={tickets}
           renderItem={renderTicket}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: responsivePadding(16), paddingBottom: spacing['2xl'] }}
+          contentContainerStyle={{ ...tabletContentStyle, padding: responsivePadding(16), paddingBottom: spacing['2xl'] }}
           refreshControl={
             <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
           }
@@ -426,7 +434,7 @@ export default function TicketScreen({ navigation, route }) {
           <View
             style={{
               flex: 1,
-              justifyContent: 'flex-end',
+              justifyContent: tablet ? 'center' : 'flex-end',
               backgroundColor: 'rgba(0, 0, 0, 0.5)',
             }}
           >
@@ -435,8 +443,13 @@ export default function TicketScreen({ navigation, route }) {
                 backgroundColor: colors.surface,
                 borderTopLeftRadius: 24,
                 borderTopRightRadius: 24,
+                borderBottomLeftRadius: tablet ? 24 : 0,
+                borderBottomRightRadius: tablet ? 24 : 0,
                 padding: responsivePadding(24),
-                maxHeight: '90%',
+                maxHeight: tablet ? '85%' : '90%',
+                width: '100%',
+                maxWidth: tablet ? 700 : undefined,
+                alignSelf: 'center',
               }}
             >
               <ScrollView 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
+  FlatList,
   TouchableOpacity,
   Alert,
   RefreshControl,
@@ -10,7 +11,7 @@ import {
   ScrollView,
   StyleSheet,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getAttendanceRecords, clearAllAttendanceRecords } from '../utils/storage';
 import { exportAttendanceToCSV } from '../utils/export';
@@ -21,7 +22,7 @@ import CalendarScreen from './CalendarScreen';
 import HRDashboard from './HRDashboard';
 import { getUnreadNotificationCount } from '../utils/notifications';
 import { getPendingSignupCount } from '../utils/signupRequests';
-import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp, isSmallScreen, normalize } from '../utils/responsive';
+import { spacing, iconSize, componentSize, responsivePadding, responsiveFont, dashboardTitleFont, isSmallScreen, isTablet, normalize, getTabletGridColumns, SCREEN_WIDTH } from '../utils/responsive';
 import Logo from '../components/Logo';
 import Trademark from '../components/Trademark';
 import HamburgerButton from '../shared/components/HamburgerButton';
@@ -33,6 +34,14 @@ export default function AdminDashboard({ route }) {
   const { user: routeUser, initialTab, openLeaveRequests } = route.params || {};
   const { user: authUser, handleLogout } = useAuth();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const tablet = isTablet();
+  const attendanceGridColumns = getTabletGridColumns();
+  const tabletContentStyle = {
+    width: '100%',
+    maxWidth: tablet ? Math.min(SCREEN_WIDTH - 32, 1360) : undefined,
+    alignSelf: 'center',
+  };
   const [employeesIsRefreshing, setEmployeesIsRefreshing] = useState(false);
   const [employeesRefreshTick, setEmployeesRefreshTick] = useState(0);
   
@@ -267,16 +276,19 @@ export default function AdminDashboard({ route }) {
     return type === 'checkin' ? 'log-in' : 'log-out';
   };
 
-  const renderRecord = ({ item }) => {
+  const renderRecord = ({ item, isGridCell = false }) => {
     const { date, time } = formatDate(item.timestamp);
     
     return (
       <View 
-        className="rounded-xl mb-3 shadow-sm"
+        className="rounded-xl shadow-sm"
         style={{ 
           backgroundColor: colors.surface,
           padding: responsivePadding(16),
-          marginHorizontal: spacing.sm,
+          marginHorizontal: isGridCell ? 0 : spacing.sm,
+          marginBottom: isGridCell ? 0 : spacing.md,
+          width: isGridCell ? '100%' : undefined,
+          alignSelf: isGridCell ? 'stretch' : undefined,
         }}
       >
         <View className="flex-row items-start">
@@ -300,15 +312,17 @@ export default function AdminDashboard({ route }) {
 
           {/* Record Details */}
           <View className="flex-1" style={{ flexShrink: 1 }}>
-            <View className="flex-row items-center justify-between" style={{ marginBottom: spacing.xs }}>
+            <View className="flex-row items-center" style={{ marginBottom: spacing.xs }}>
               <Text 
                 className="font-semibold"
                 style={{ 
                   color: colors.text,
                   fontSize: responsiveFont(18), 
-                  flexShrink: 1 
+                  flex: 1,
+                  minWidth: 0,
                 }}
                 numberOfLines={1}
+                ellipsizeMode="tail"
               >
                 {item.username}
               </Text>
@@ -316,7 +330,8 @@ export default function AdminDashboard({ route }) {
                 style={{ 
                   color: colors.textTertiary,
                   fontSize: responsiveFont(12), 
-                  marginLeft: spacing.xs 
+                  marginLeft: spacing.xs,
+                  flexShrink: 0,
                 }}
               >
                 {time}
@@ -362,9 +377,12 @@ export default function AdminDashboard({ route }) {
                   style={{ 
                     color: colors.textSecondary,
                     fontSize: responsiveFont(12), 
-                    flexShrink: 1 
+                    flexShrink: 1,
+                    flex: 1,
+                    minWidth: 0,
                   }}
                   numberOfLines={1}
+                  ellipsizeMode="tail"
                 >
                   {(item.location.latitude ?? 0).toFixed(4)}, {(item.location.longitude ?? 0).toFixed(4)}
                 </Text>
@@ -397,8 +415,9 @@ export default function AdminDashboard({ route }) {
         backgroundColor: isActive ? colors.primary : colors.borderLight,
         paddingHorizontal: responsivePadding(18),
         paddingVertical: responsivePadding(8),
-        marginRight: spacing.sm,
+        marginRight: tablet ? 0 : spacing.sm,
         borderRadius: 50,
+        flexShrink: 0,
       }}
       onPress={() => setFilter(value)}
     >
@@ -449,168 +468,105 @@ export default function AdminDashboard({ route }) {
   );
 
   const isAttendanceTab = activeTab === 'attendance';
-  const isEmployeesTab = activeTab === 'employees';
-  const isScrollableTab = isAttendanceTab || isEmployeesTab;
-  const ContentWrapper = isScrollableTab ? ScrollView : View;
 
-  return (
-    <SafeAreaView className="flex-1" style={{ backgroundColor: colors.background }} edges={['top']}>
-      {/* Main content - flex: 1 so footer stays at bottom */}
-      <ContentWrapper
-        style={{ flex: 1 }}
-        {...(isScrollableTab
-          ? {
-              showsVerticalScrollIndicator: false,
-              contentContainerStyle: { paddingBottom: spacing.lg },
-              ...(isAttendanceTab
-                ? {
-                    refreshControl: (
-                      <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
-                    ),
-                  }
-                : isEmployeesTab
-                  ? {
-                      refreshControl: (
-                        <RefreshControl
-                          refreshing={employeesIsRefreshing}
-                          onRefresh={onEmployeesRefresh}
-                        />
-                      ),
-                    }
-                  : {}),
-            }
-          : {})}
-      >
-      {/* Main card: Welcome header, action buttons, etc. */}
-      <View
-        style={{
-          margin: responsivePadding(24),
-          marginBottom: spacing.lg,
-          backgroundColor: colors.surface,
-          borderRadius: 16,
-        }}
-      >
-        {/* Header row: Hamburger → Logo → Text. No flex/flexShrink to avoid squeezing the logo. */}
+  const listBottomPadding =
+    spacing.lg + insets.bottom + (tablet ? spacing['2xl'] : spacing.sm);
+
+  const attendanceHorizontalPad = tablet ? responsivePadding(12) : 0;
+
+  const DashboardMainCard = () => (
+    <>
+        {/* Main card: Welcome header, action buttons, etc. */}
         <View
           style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            padding: responsivePadding(24),
-            paddingBottom: spacing.md,
+            ...tabletContentStyle,
+            marginTop: responsivePadding(24),
+            marginBottom: spacing.lg,
+            backgroundColor: colors.surface,
+            borderRadius: 16,
           }}
         >
-          <HamburgerButton color={colors.text} size={28} style={{ marginRight: spacing.sm }} />
-          {company?.logo_url && !companyLogoFailed && (
-            <Image
-              source={{ uri: company.logo_url }}
-              style={styles.companyLogo}
-              resizeMode="contain"
-              onLoad={() => console.log('[AdminDashboard] Logo loaded successfully')}
-              onError={(e) => {
-                console.log('[AdminDashboard] Logo failed to load:', e.nativeEvent);
-                setCompanyLogoFailed(true);
-              }}
-            />
-          )}
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text
-              style={{ color: colors.text, fontSize: responsiveFont(20), fontWeight: 'bold' }}
-              numberOfLines={1}
-              ellipsizeMode="tail"
-            >
-              Welcome, {user.username}!
-            </Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-              <Text
-                style={{ color: colors.textSecondary, fontSize: responsiveFont(12) }}
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {user.role === 'super_admin' ? 'Super Admin Dashboard' :
-                  user.role === 'manager' ? `${user.department || 'Department'} Manager Dashboard` :
-                  'Admin Dashboard'}
-              </Text>
-              {user.role === 'manager' && user.department && (
-                <>
-                  <Text style={{ color: colors.textTertiary, marginHorizontal: spacing.xs, fontSize: responsiveFont(12) }}>•</Text>
-                  <Text style={{ color: colors.textSecondary, fontSize: responsiveFont(12) }}>{user.department}</Text>
-                </>
-              )}
-            </View>
-          </View>
-        </View>
-
-        {/* Action Buttons - Functions */}
-        <View 
-          className="flex-row items-center justify-end"
-          style={{ 
-            paddingHorizontal: responsivePadding(24),
-            paddingBottom: spacing.md,
-          }}
-        >
-          <TouchableOpacity
-            onPress={() => navigation.navigate('NotificationsScreen', { user: user })}
-            style={{ 
-              position: 'relative',
-              padding: spacing.xs,
-              marginRight: spacing.sm,
+          {/* Header row: Hamburger → Logo → Text. No flex/flexShrink to avoid squeezing the logo. */}
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              padding: responsivePadding(24),
+              paddingBottom: spacing.md,
             }}
           >
-            <Ionicons name="notifications" size={iconSize.lg} color={colors.primary} />
-            {unreadNotificationCount > 0 && (
-              <View
-                style={{
-                  position: 'absolute',
-                  top: 2,
-                  right: 2,
-                  backgroundColor: colors.error,
-                  borderRadius: 10,
-                  minWidth: normalize(18),
-                  height: normalize(18),
-                  paddingHorizontal: spacing.xs / 2,
-                  alignItems: 'center',
-                  justifyContent: 'center',
+            <HamburgerButton color={colors.text} size={28} style={{ marginRight: spacing.sm }} />
+            {company?.logo_url && !companyLogoFailed && (
+              <Image
+                source={{ uri: company.logo_url }}
+                style={styles.companyLogo}
+                resizeMode="contain"
+                onLoad={() => console.log('[AdminDashboard] Logo loaded successfully')}
+                onError={(e) => {
+                  console.log('[AdminDashboard] Logo failed to load:', e.nativeEvent);
+                  setCompanyLogoFailed(true);
                 }}
-              >
-                <Text style={{ 
-                  color: 'white', 
-                  fontSize: responsiveFont(10), 
-                  fontWeight: '600' 
-                }}>
-                  {unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}
+              />
+            )}
+            <View style={{ flex: 1, marginLeft: 12, minWidth: 0 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'nowrap' }}>
+                <Text
+                  style={{ color: colors.text, fontSize: dashboardTitleFont(20), fontWeight: 'bold', flexShrink: 0 }}
+                >
+                  Welcome,{' '}
+                </Text>
+                <Text
+                  style={{
+                    color: colors.text,
+                    fontSize: dashboardTitleFont(20),
+                    fontWeight: 'bold',
+                    flex: 1,
+                    minWidth: 0,
+                  }}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {user.username}!
                 </Text>
               </View>
-            )}
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => {
-              Alert.alert(
-                'Logout',
-                'Are you sure you want to logout?',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Logout', style: 'destructive', onPress: handleLogout },
-                ]
-              );
-            }}
+              <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: tablet ? 'nowrap' : 'wrap', marginTop: spacing.xs / 2 }}>
+                <Text
+                  style={{ color: colors.textSecondary, fontSize: responsiveFont(12), flexShrink: tablet ? 1 : 0, minWidth: 0 }}
+                  numberOfLines={tablet ? 1 : 2}
+                  ellipsizeMode="tail"
+                >
+                  {user.role === 'super_admin' ? 'Super Admin Dashboard' :
+                    user.role === 'manager' ? `${user.department || 'Department'} Manager Dashboard` :
+                    'Admin Dashboard'}
+                </Text>
+                {user.role === 'manager' && user.department && (
+                  <>
+                    <Text style={{ color: colors.textTertiary, marginHorizontal: spacing.xs, fontSize: responsiveFont(12) }}>•</Text>
+                    <Text style={{ color: colors.textSecondary, fontSize: responsiveFont(12) }}>{user.department}</Text>
+                  </>
+                )}
+              </View>
+            </View>
+          </View>
+
+          {/* Action Buttons - Functions */}
+          <View 
+            className="flex-row items-center justify-end"
             style={{ 
-              padding: spacing.xs,
-              marginLeft: spacing.xs,
+              paddingHorizontal: responsivePadding(24),
+              paddingBottom: spacing.md,
             }}
           >
-            <Ionicons name="log-out-outline" size={iconSize.lg} color={colors.error} />
-          </TouchableOpacity>
-          {(user.role === 'super_admin' || user.role === 'manager') && (
             <TouchableOpacity
-              onPress={() => navigation.navigate('SignupApproval', { user: user })}
+              onPress={() => navigation.navigate('NotificationsScreen', { user: user })}
               style={{ 
                 position: 'relative',
                 padding: spacing.xs,
-                marginLeft: spacing.xs,
+                marginRight: spacing.sm,
               }}
             >
-              <Ionicons name="person-add" size={iconSize.lg} color={colors.primary} />
-              {pendingSignupCount > 0 && (
+              <Ionicons name="notifications" size={iconSize.lg} color={colors.primary} />
+              {unreadNotificationCount > 0 && (
                 <View
                   style={{
                     position: 'absolute',
@@ -630,120 +586,191 @@ export default function AdminDashboard({ route }) {
                     fontSize: responsiveFont(10), 
                     fontWeight: '600' 
                   }}>
-                    {pendingSignupCount > 99 ? '99+' : pendingSignupCount}
+                    {unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}
                   </Text>
                 </View>
               )}
             </TouchableOpacity>
-          )}
-          <TouchableOpacity
-            onPress={() => navigation.navigate('ThemeSettingsScreen', { user: user })}
-            style={{ padding: spacing.xs, marginLeft: spacing.xs }}
-          >
-            <Ionicons name="color-palette" size={iconSize.lg} color={colors.primary} />
-          </TouchableOpacity>
-        </View>
-
-        {/* Action Buttons - Manual, Export CSV, Clear All */}
-        {activeTab === 'attendance' && (
-          <View 
-            style={{ 
-              paddingHorizontal: responsivePadding(12),
-              paddingVertical: responsivePadding(12),
-            }}
-          >
-            <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ 
-                alignItems: 'center',
-                justifyContent: 'center',
+            <TouchableOpacity
+              onPress={() => {
+                Alert.alert(
+                  'Logout',
+                  'Are you sure you want to logout?',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Logout', style: 'destructive', onPress: handleLogout },
+                  ]
+                );
               }}
-              style={{ maxWidth: '100%' }}
-              nestedScrollEnabled={true}
+              style={{ 
+                padding: spacing.xs,
+                marginLeft: spacing.xs,
+              }}
             >
+              <Ionicons name="log-out-outline" size={iconSize.lg} color={colors.error} />
+            </TouchableOpacity>
+            {(user.role === 'super_admin' || user.role === 'manager') && (
               <TouchableOpacity
-                className="bg-blue-500"
-                onPress={() => navigation.navigate('ManualAttendance', { user: user })}
+                onPress={() => navigation.navigate('SignupApproval', { user: user })}
                 style={{ 
-                  flexShrink: 0,
-                  paddingHorizontal: responsivePadding(14),
-                  paddingVertical: responsivePadding(6),
-                  marginRight: spacing.xs,
-                  borderRadius: 50,
+                  position: 'relative',
+                  padding: spacing.xs,
+                  marginLeft: spacing.xs,
                 }}
               >
-                <View className="flex-row items-center">
-                  <Ionicons name="create-outline" size={iconSize.sm} color="white" />
-                  <Text 
-                    className="text-white font-semibold"
-                    style={{ 
-                      fontSize: responsiveFont(13),
-                      marginLeft: spacing.xs / 2,
+                <Ionicons name="person-add" size={iconSize.lg} color={colors.primary} />
+                {pendingSignupCount > 0 && (
+                  <View
+                    style={{
+                      position: 'absolute',
+                      top: 2,
+                      right: 2,
+                      backgroundColor: colors.error,
+                      borderRadius: 10,
+                      minWidth: normalize(18),
+                      height: normalize(18),
+                      paddingHorizontal: spacing.xs / 2,
+                      alignItems: 'center',
+                      justifyContent: 'center',
                     }}
                   >
-                    Manual
-                  </Text>
-                </View>
+                    <Text style={{ 
+                      color: 'white', 
+                      fontSize: responsiveFont(10), 
+                      fontWeight: '600' 
+                    }}>
+                      {pendingSignupCount > 99 ? '99+' : pendingSignupCount}
+                    </Text>
+                  </View>
+                )}
               </TouchableOpacity>
-              <TouchableOpacity
-                className="bg-green-500"
-                onPress={handleExport}
-                disabled={isExporting || records.length === 0}
-                style={{ 
-                  flexShrink: 0,
-                  paddingHorizontal: responsivePadding(14),
-                  paddingVertical: responsivePadding(6),
-                  marginRight: spacing.xs,
-                  borderRadius: 50,
-                }}
-              >
-                <View className="flex-row items-center">
-                  <Ionicons name="download-outline" size={iconSize.sm} color="white" />
-                  <Text 
-                    className="text-white font-semibold"
-                    style={{ 
-                      fontSize: responsiveFont(13),
-                      marginLeft: spacing.xs / 2,
-                    }}
-                  >
-                    {isExporting ? 'Exporting...' : 'Export CSV'}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                className="bg-red-500"
-                onPress={handleClearAll}
-                disabled={records.length === 0}
-                style={{ 
-                  flexShrink: 0,
-                  paddingHorizontal: responsivePadding(14),
-                  paddingVertical: responsivePadding(6),
-                  borderRadius: 50,
-                }}
-              >
-                <View className="flex-row items-center">
-                  <Ionicons name="trash-outline" size={iconSize.sm} color="white" />
-                  <Text 
-                    className="text-white font-semibold"
-                    style={{ 
-                      fontSize: responsiveFont(13),
-                      marginLeft: spacing.xs / 2,
-                    }}
-                  >
-                    Clear All
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            </ScrollView>
+            )}
+            <TouchableOpacity
+              onPress={() => navigation.navigate('ThemeSettingsScreen', { user: user })}
+              style={{ padding: spacing.xs, marginLeft: spacing.xs }}
+            >
+              <Ionicons name="color-palette" size={iconSize.lg} color={colors.primary} />
+            </TouchableOpacity>
           </View>
-        )}
-      </View>
 
-      {/* Tab Navigation */}
+          {/* Action Buttons - Manual, Export CSV, Clear All */}
+          {activeTab === 'attendance' && (
+            <View 
+              style={{ 
+                paddingHorizontal: responsivePadding(24),
+                paddingTop: spacing.sm,
+                paddingBottom: responsivePadding(12),
+              }}
+            >
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'stretch',
+                  justifyContent: 'center',
+                  flexWrap: 'nowrap',
+                  gap: tablet ? spacing.md : spacing.xs,
+                }}
+              >
+                <TouchableOpacity
+                  className="bg-blue-500"
+                  onPress={() => navigation.navigate('ManualAttendance', { user: user })}
+                  style={{ 
+                    flex: tablet ? 1 : 0,
+                    flexBasis: tablet ? 0 : undefined,
+                    paddingHorizontal: responsivePadding(tablet ? 10 : 14),
+                    paddingVertical: responsivePadding(tablet ? 10 : 6),
+                    marginRight: tablet ? 0 : spacing.xs,
+                    borderRadius: 50,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minHeight: tablet ? normalize(44) : undefined,
+                  }}
+                >
+                  <View className="flex-row items-center">
+                    <Ionicons name="create-outline" size={iconSize.sm} color="white" />
+                    <Text 
+                      className="text-white font-semibold"
+                      style={{ 
+                        fontSize: responsiveFont(13),
+                        marginLeft: spacing.xs / 2,
+                      }}
+                      numberOfLines={1}
+                    >
+                      Manual
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  className="bg-green-500"
+                  onPress={handleExport}
+                  disabled={isExporting || records.length === 0}
+                  style={{ 
+                    flex: tablet ? 1 : 0,
+                    flexBasis: tablet ? 0 : undefined,
+                    paddingHorizontal: responsivePadding(tablet ? 10 : 14),
+                    paddingVertical: responsivePadding(tablet ? 10 : 6),
+                    marginRight: tablet ? 0 : spacing.xs,
+                    borderRadius: 50,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minHeight: tablet ? normalize(44) : undefined,
+                  }}
+                >
+                  <View className="flex-row items-center">
+                    <Ionicons name="download-outline" size={iconSize.sm} color="white" />
+                    <Text 
+                      className="text-white font-semibold"
+                      style={{ 
+                        fontSize: responsiveFont(13),
+                        marginLeft: spacing.xs / 2,
+                      }}
+                      numberOfLines={1}
+                    >
+                      {isExporting ? 'Exporting...' : 'Export CSV'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  className="bg-red-500"
+                  onPress={handleClearAll}
+                  disabled={records.length === 0}
+                  style={{ 
+                    flex: tablet ? 1 : 0,
+                    flexBasis: tablet ? 0 : undefined,
+                    paddingHorizontal: responsivePadding(tablet ? 10 : 14),
+                    paddingVertical: responsivePadding(tablet ? 10 : 6),
+                    borderRadius: 50,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minHeight: tablet ? normalize(44) : undefined,
+                  }}
+                >
+                  <View className="flex-row items-center">
+                    <Ionicons name="trash-outline" size={iconSize.sm} color="white" />
+                    <Text 
+                      className="text-white font-semibold"
+                      style={{ 
+                        fontSize: responsiveFont(13),
+                        marginLeft: spacing.xs / 2,
+                      }}
+                      numberOfLines={1}
+                    >
+                      Clear All
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </View>
+    </>
+  );
+
+  const DashboardTabs = () => (
         <View
           style={{
+            ...tabletContentStyle,
             flexDirection: 'row',
             justifyContent: 'space-between',
             alignItems: 'center',
@@ -752,38 +779,39 @@ export default function AdminDashboard({ route }) {
             width: '100%',
           }}
         >
-          <TabButton 
-            title="Attendance" 
-            value="attendance" 
+          <TabButton
+            title="Attendance"
+            value="attendance"
             isActive={activeTab === 'attendance'}
             icon="time-outline"
           />
-          <TabButton 
-            title="Employees" 
-            value="employees" 
+          <TabButton
+            title="Employees"
+            value="employees"
             isActive={activeTab === 'employees'}
             icon="people-outline"
           />
-          <TabButton 
-            title="Calendar" 
-            value="calendar" 
+          <TabButton
+            title="Calendar"
+            value="calendar"
             isActive={activeTab === 'calendar'}
             icon="calendar-outline"
           />
-          <TabButton 
-            title="HR" 
-            value="hr" 
+          <TabButton
+            title="HR"
+            value="hr"
             isActive={activeTab === 'hr'}
             icon="briefcase-outline"
           />
         </View>
+  );
 
-        {/* Search Bar - Only for Attendance Tab */}
-        {activeTab === 'attendance' && (
-          <>
-            <View 
+  const AttendanceSearchFilters = () => (
+        <>
+            <View
               className="flex-row items-center rounded-xl"
               style={{
+                ...tabletContentStyle,
                 backgroundColor: colors.borderLight,
                 paddingHorizontal: responsivePadding(16),
                 paddingVertical: spacing.md,
@@ -805,163 +833,204 @@ export default function AdminDashboard({ route }) {
                 placeholderTextColor={colors.textTertiary}
               />
             </View>
-            
-            {/* Filter Buttons */}
-            <View 
-              style={{ 
+
+            <View
+              style={{
+                ...tabletContentStyle,
                 backgroundColor: colors.surface,
                 borderRadius: 12,
-                padding: responsivePadding(12),
-                marginHorizontal: responsivePadding(24),
+                paddingVertical: responsivePadding(12),
+                paddingHorizontal: responsivePadding(tablet ? 16 : 12),
                 marginBottom: spacing.md,
               }}
             >
-              <ScrollView 
-                horizontal 
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ 
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <View className="flex-row">
+              {tablet ? (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexWrap: 'nowrap',
+                    gap: spacing.sm,
+                  }}
+                >
                   <FilterButton title="All" value="all" isActive={filter === 'all'} />
                   <FilterButton title="Check In" value="checkin" isActive={filter === 'checkin'} />
                   <FilterButton title="Check Out" value="checkout" isActive={filter === 'checkout'} />
                 </View>
-              </ScrollView>
+              ) : (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <View className="flex-row">
+                    <FilterButton title="All" value="all" isActive={filter === 'all'} />
+                    <FilterButton title="Check In" value="checkin" isActive={filter === 'checkin'} />
+                    <FilterButton title="Check Out" value="checkout" isActive={filter === 'checkout'} />
+                  </View>
+                </ScrollView>
+              )}
             </View>
-          </>
-        )}
+        </>
+  );
 
-      {/* Conditional Content */}
-      {activeTab === 'hr' ? (
-        <View className="flex-1">
-          <HRDashboard navigation={navigation} route={route} />
-        </View>
-      ) : activeTab === 'calendar' ? (
-        <View className="flex-1">
-          <CalendarScreen navigation={navigation} route={route} />
-        </View>
-      ) : activeTab === 'attendance' ? (
-        <>
-          {/* Stats */}
-          <View 
+  const AttendanceStatsCard = () => (
+          <View
             className="rounded-xl shadow-sm"
             style={{
+              ...tabletContentStyle,
               backgroundColor: colors.surface,
-              marginHorizontal: responsivePadding(16),
               marginVertical: spacing.md,
               padding: responsivePadding(16),
             }}
           >
-            <View className="flex-row justify-around">
-              <View className="items-center" style={{ flex: 1 }}>
-                <Text 
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: spacing.xs }}>
+                <Text
                   className="font-bold"
-                  style={{ 
+                  style={{
                     color: colors.primary,
-                    fontSize: responsiveFont(24) 
+                    fontSize: responsiveFont(tablet ? 22 : 24),
                   }}
                 >
                   {records.length}
                 </Text>
-                <Text 
-                  style={{ 
+                <Text
+                  style={{
                     color: colors.textSecondary,
                     fontSize: responsiveFont(12),
                     marginTop: spacing.xs / 2,
                   }}
-                  numberOfLines={1}
+                  numberOfLines={2}
+                  ellipsizeMode="tail"
+                  textAlign="center"
                 >
                   Total Records
                 </Text>
               </View>
-              <View className="items-center" style={{ flex: 1 }}>
-                <Text 
+              <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: spacing.xs }}>
+                <Text
                   className="font-bold"
-                  style={{ 
+                  style={{
                     color: colors.success,
-                    fontSize: responsiveFont(24) 
+                    fontSize: responsiveFont(tablet ? 22 : 24),
                   }}
                 >
-                  {records.filter(r => r.type === 'checkin').length}
+                  {records.filter((r) => r.type === 'checkin').length}
                 </Text>
-                <Text 
-                  style={{ 
+                <Text
+                  style={{
                     color: colors.textSecondary,
                     fontSize: responsiveFont(12),
                     marginTop: spacing.xs / 2,
                   }}
-                  numberOfLines={1}
+                  numberOfLines={2}
+                  ellipsizeMode="tail"
+                  textAlign="center"
                 >
                   Check Ins
                 </Text>
               </View>
-              <View className="items-center" style={{ flex: 1 }}>
-                <Text 
+              <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: spacing.xs }}>
+                <Text
                   className="font-bold"
-                  style={{ 
+                  style={{
                     color: colors.error,
-                    fontSize: responsiveFont(24) 
+                    fontSize: responsiveFont(tablet ? 22 : 24),
                   }}
                 >
-                  {records.filter(r => r.type === 'checkout').length}
+                  {records.filter((r) => r.type === 'checkout').length}
                 </Text>
-                <Text 
-                  style={{ 
+                <Text
+                  style={{
                     color: colors.textSecondary,
                     fontSize: responsiveFont(12),
                     marginTop: spacing.xs / 2,
                   }}
-                  numberOfLines={1}
+                  numberOfLines={2}
+                  ellipsizeMode="tail"
+                  textAlign="center"
                 >
                   Check Outs
                 </Text>
               </View>
             </View>
           </View>
+  );
 
-          {/* Records List */}
-          {filteredRecords.length > 0 ? (
-            <View style={{ padding: responsivePadding(16), paddingBottom: spacing['2xl'] }}>
-              {filteredRecords.map((item) => (
-                <React.Fragment key={item.id}>
-                  {renderRecord({ item })}
-                </React.Fragment>
-              ))}
+  return (
+    <SafeAreaView className="flex-1" style={{ backgroundColor: colors.background }} edges={['top']}>
+      <View style={{ flex: 1 }}>
+        {isAttendanceTab ? (
+        <FlatList
+          key={`adm-att-${attendanceGridColumns}`}
+          style={{ flex: 1 }}
+          data={filteredRecords}
+          keyExtractor={(item) => String(item.id)}
+          numColumns={attendanceGridColumns}
+          renderItem={({ item }) => (
+            <View
+              style={{
+                flex: 1,
+                minWidth: 0,
+                paddingHorizontal: spacing.sm / 2,
+                marginBottom: spacing.md,
+              }}
+            >
+              {renderRecord({ item, isGridCell: attendanceGridColumns > 1 })}
             </View>
-          ) : (
-            <View 
+          )}
+          columnWrapperStyle={
+            attendanceGridColumns > 1
+              ? {
+                  flexDirection: 'row',
+                  gap: spacing.sm,
+                  paddingHorizontal: responsivePadding(16),
+                  justifyContent: 'flex-start',
+                }
+              : undefined
+          }
+          ListHeaderComponent={
+            <View style={{ width: '100%', alignSelf: 'stretch', paddingHorizontal: attendanceHorizontalPad }}>
+              <DashboardMainCard />
+              <DashboardTabs />
+              <AttendanceSearchFilters />
+              <AttendanceStatsCard />
+            </View>
+          }
+          ListEmptyComponent={
+            <View
               className="justify-center items-center"
-              style={{ paddingHorizontal: responsivePadding(24) }}
+              style={{ ...tabletContentStyle, paddingHorizontal: responsivePadding(24), paddingVertical: spacing.xl }}
             >
               <Ionicons name="people-outline" size={iconSize['4xl']} color={colors.textTertiary} />
-              <Text 
+              <Text
                 className="font-semibold text-center"
-                style={{ 
+                style={{
                   color: colors.textSecondary,
-                  fontSize: responsiveFont(20),
+                  fontSize: responsiveFont(tablet ? 18 : 20),
                   marginTop: spacing.md,
                 }}
               >
-                {records.length === 0 
+                {records.length === 0
                   ? 'No attendance records found'
-                  : 'No records match your search'
-                }
+                  : 'No records match your search'}
               </Text>
-              <Text 
+              <Text
                 className="text-center"
-                style={{ 
+                style={{
                   color: colors.textTertiary,
                   fontSize: responsiveFont(14),
                   marginTop: spacing.xs,
                 }}
               >
-                {records.length === 0 
+                {records.length === 0
                   ? 'Employees need to check in to create records'
-                  : 'Try adjusting your search or filter criteria'
-                }
+                  : 'Try adjusting your search or filter criteria'}
               </Text>
               <TouchableOpacity
                 className="rounded-xl"
@@ -973,48 +1042,61 @@ export default function AdminDashboard({ route }) {
                 }}
                 onPress={onRefresh}
               >
-                <Text 
-                  className="text-white font-semibold"
-                  style={{ fontSize: responsiveFont(16) }}
-                >
+                <Text className="text-white font-semibold" style={{ fontSize: responsiveFont(16) }}>
                   Refresh
                 </Text>
               </TouchableOpacity>
             </View>
-          )}
-
-          {/* Summary */}
-          {filteredRecords.length > 0 && (
-            <View 
-              className="border-t"
-              style={{ 
-                backgroundColor: colors.surface,
-                borderColor: colors.border,
-                padding: responsivePadding(16) 
-              }}
-            >
-              <Text 
-                className="text-center"
-                style={{ 
-                  color: colors.textSecondary,
-                  fontSize: responsiveFont(14) 
+          }
+          ListFooterComponent={
+            filteredRecords.length > 0 ? (
+              <View
+                className="border-t"
+                style={{
+                  ...tabletContentStyle,
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                  padding: responsivePadding(16),
                 }}
               >
-                Showing {filteredRecords.length} of {records.length} record{records.length !== 1 ? 's' : ''}
-              </Text>
-            </View>
-          )}
-
-        </>
-      ) : (
-        <EmployeeManagement
-          route={{ params: { user, openLeaveRequests } }}
-          refreshTick={employeesRefreshTick}
-          onReloadComplete={() => setEmployeesIsRefreshing(false)}
+                <Text className="text-center" style={{ color: colors.textSecondary, fontSize: responsiveFont(14) }}>
+                  Showing {filteredRecords.length} of {records.length} record{records.length !== 1 ? 's' : ''}
+                </Text>
+              </View>
+            ) : null
+          }
+          refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />}
+          contentContainerStyle={{
+            flexGrow: 1,
+            paddingBottom: listBottomPadding,
+          }}
+          showsVerticalScrollIndicator={false}
         />
-      )}
+        ) : (
+        <View style={{ flex: 1 }}>
+          <DashboardMainCard />
+          <DashboardTabs />
+          {activeTab === 'hr' ? (
+            <View className="flex-1">
+              <HRDashboard navigation={navigation} route={route} />
+            </View>
+          ) : activeTab === 'calendar' ? (
+            <View className="flex-1">
+              <CalendarScreen navigation={navigation} route={route} />
+            </View>
+          ) : (
+            <EmployeeManagement
+              route={{ params: { user, openLeaveRequests } }}
+              refreshTick={employeesRefreshTick}
+              onReloadComplete={() => setEmployeesIsRefreshing(false)}
+              refreshing={employeesIsRefreshing}
+              onRefresh={onEmployeesRefresh}
+            />
+          )}
+        </View>
+        )}
+      </View>
 
-      </ContentWrapper>
       {/* Footer - Logo centered above Trademark, stays at bottom via flex layout */}
       <View 
         style={{ 

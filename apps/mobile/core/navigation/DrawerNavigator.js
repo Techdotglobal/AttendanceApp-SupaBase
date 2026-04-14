@@ -11,11 +11,13 @@ import { createDrawerNavigator } from '@react-navigation/drawer';
 import { useTheme } from '../contexts/ThemeContext';
 import CustomDrawer from '../../shared/components/CustomDrawer';
 import MainNavigator from './MainNavigator';
+import { isTablet } from '../../utils/responsive';
 
 const Drawer = createDrawerNavigator();
 
 export default function DrawerNavigator({ user }) {
   const { colors } = useTheme();
+  const tablet = isTablet();
 
   return (
     <Drawer.Navigator
@@ -28,7 +30,7 @@ export default function DrawerNavigator({ user }) {
         drawerPosition: 'left',
         drawerStyle: {
           backgroundColor: colors.surface,
-          width: 280,
+          width: tablet ? 320 : 280,
         },
         drawerActiveTintColor: colors.primary,
         drawerInactiveTintColor: colors.textSecondary,

@@ -21,11 +21,12 @@ import {
 } from '../utils/storage';
 import { getEmployees, getManageableEmployees, canManageEmployee } from '../utils/employees';
 import DatePickerCalendar from '../components/DatePickerCalendar';
-import { spacing, fontSize, responsivePadding, responsiveFont, iconSize } from '../shared/utils/responsive';
+import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTablet } from '../shared/utils/responsive';
 
 export default function ManualAttendanceScreen({ navigation, route }) {
   const { user } = route.params;
   const { colors } = useTheme();
+  const tablet = isTablet();
   const [employees, setEmployees] = useState([]);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -294,12 +295,12 @@ export default function ManualAttendanceScreen({ navigation, route }) {
               </View>
             )}
           </View>
-          <View style={{ alignItems: 'flex-end', marginLeft: spacing.xs }}>
-            <Text style={{ fontSize: fontSize.sm, color: colors.textTertiary }}>
+          <View style={{ alignItems: 'flex-end', marginLeft: spacing.xs, maxWidth: '45%' }}>
+            <Text numberOfLines={1} ellipsizeMode="tail" style={{ fontSize: fontSize.sm, color: colors.textTertiary }}>
               {formatDateTime(item.timestamp || item.createdAt)}
             </Text>
             {item.createdBy && (
-              <Text style={{ fontSize: fontSize.xs, color: colors.textTertiary, marginTop: spacing.xs / 4 }}>
+              <Text numberOfLines={1} ellipsizeMode="tail" style={{ fontSize: fontSize.xs, color: colors.textTertiary, marginTop: spacing.xs / 4 }}>
                 By: {item.createdBy}
               </Text>
             )}
@@ -362,7 +363,7 @@ export default function ManualAttendanceScreen({ navigation, route }) {
       <Text style={{ fontSize: fontSize.md, fontWeight: '600', color: colors.text }}>
         {employee.name}
       </Text>
-      <Text style={{ fontSize: fontSize.sm, color: colors.textSecondary }}>
+      <Text numberOfLines={1} style={{ fontSize: fontSize.sm, color: colors.textSecondary }}>
         {employee.username} • {employee.department}
       </Text>
     </TouchableOpacity>
@@ -434,8 +435,8 @@ export default function ManualAttendanceScreen({ navigation, route }) {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
         >
-          <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
-            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '90%', padding: responsivePadding(20) }}>
+          <View style={{ flex: 1, justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderBottomLeftRadius: tablet ? 20 : 0, borderBottomRightRadius: tablet ? 20 : 0, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', padding: responsivePadding(20) }}>
               <ScrollView 
                 showsVerticalScrollIndicator={false} 
                 contentContainerStyle={{ paddingBottom: spacing['2xl'] }}
@@ -628,8 +629,8 @@ export default function ManualAttendanceScreen({ navigation, route }) {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
         >
-          <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
-            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '90%', padding: responsivePadding(20) }}>
+          <View style={{ flex: 1, justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderBottomLeftRadius: tablet ? 20 : 0, borderBottomRightRadius: tablet ? 20 : 0, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', padding: responsivePadding(20) }}>
               <ScrollView 
                 showsVerticalScrollIndicator={false} 
                 contentContainerStyle={{ paddingBottom: spacing['2xl'] }}

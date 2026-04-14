@@ -12,7 +12,9 @@ import {
   TouchableWithoutFeedback,
   KeyboardAvoidingView,
   Platform,
+  RefreshControl,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { 
   getEmployees, 
@@ -49,12 +51,26 @@ import {
   getHRRoleIcon, 
   getHRRoleLabel 
 } from '../utils/hrRoles';
-import { spacing, responsivePadding } from '../shared/utils/responsive';
+import { spacing, responsivePadding, responsiveFont, isTablet, getTabletGridColumns, SCREEN_WIDTH } from '../shared/utils/responsive';
 import { useTheme } from '../contexts/ThemeContext';
 
-export default function EmployeeManagement({ route, refreshTick = 0, onReloadComplete }) {
+export default function EmployeeManagement({
+  route,
+  refreshTick = 0,
+  onReloadComplete,
+  refreshing = false,
+  onRefresh,
+}) {
   const { user, openLeaveRequests } = route.params || {};
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const tablet = isTablet();
+  const employeeGridColumns = getTabletGridColumns();
+  const tabletContentStyle = {
+    width: '100%',
+    maxWidth: tablet ? Math.min(SCREEN_WIDTH - 32, 1360) : undefined,
+    alignSelf: 'center',
+  };
   const [employees, setEmployees] = useState([]);
   const [filteredEmployees, setFilteredEmployees] = useState([]);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
@@ -542,15 +558,41 @@ export default function EmployeeManagement({ route, refreshTick = 0, onReloadCom
     // Get employee ID
     const employeeId = item.id;
     const leaveInfo = employeeLeaveBalances[employeeId];
-    
+    const showRoleBtn = user.role === 'super_admin' || isHRAdmin(user);
+
     return (
-    <View className="rounded-xl p-4 mb-3 shadow-sm" style={{ backgroundColor: colors.surface }}>
-      <View className="flex-row items-center justify-between">
-        <View className="flex-1">
-          <Text className="text-lg font-semibold" style={{ color: colors.text }}>
+    <View
+      className="rounded-xl shadow-sm"
+      style={{
+        backgroundColor: colors.surface,
+        padding: responsivePadding(tablet ? 18 : 16),
+        marginBottom: 0,
+        width: '100%',
+        alignSelf: 'stretch',
+      }}
+    >
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+        }}
+      >
+        <View style={{ flex: 1, minWidth: 0, paddingRight: spacing.sm }}>
+          <Text
+            className="text-lg font-semibold"
+            style={{ color: colors.text, fontSize: responsiveFont(18) }}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
             {item.name}
           </Text>
-          <Text className="text-sm" style={{ color: colors.textSecondary }}>
+          <Text
+            className="text-sm"
+            style={{ color: colors.textSecondary, fontSize: responsiveFont(14) }}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
             {item.department} • {item.position}
           </Text>
             {/* HR Role Display */}
@@ -564,12 +606,13 @@ export default function EmployeeManagement({ route, refreshTick = 0, onReloadCom
                 <Text 
                   className="text-xs font-medium ml-1"
                   style={{ color: getHRRoleColor(getHRRoleFromPosition(item.position)) }}
+                  numberOfLines={1}
                 >
                   {getHRRoleLabel(getHRRoleFromPosition(item.position))}
                 </Text>
               </View>
             )}
-            <Text className="text-xs mt-1" style={{ color: colors.textTertiary }}>
+            <Text className="text-xs mt-1" style={{ color: colors.textTertiary }} numberOfLines={1}>
             @{item.username}
           </Text>
             
@@ -594,9 +637,17 @@ export default function EmployeeManagement({ route, refreshTick = 0, onReloadCom
               </View>
             )}
         </View>
-        
-        <View className="items-end" style={{ flexShrink: 1, minWidth: 0 }}>
-          <View className="flex-row items-center mb-2">
+
+        <View
+          style={{
+            flexShrink: 0,
+            minWidth: 0,
+            marginLeft: spacing.sm,
+            alignItems: 'flex-end',
+            maxWidth: '42%',
+          }}
+        >
+          <View className="flex-row items-center mb-2" style={{ justifyContent: 'flex-end', maxWidth: '100%' }}>
             <Ionicons 
               name={getWorkModeIcon(item.workMode)} 
               size={16} 
@@ -605,57 +656,59 @@ export default function EmployeeManagement({ route, refreshTick = 0, onReloadCom
             <Text 
               className="text-sm font-medium ml-1"
               style={{ color: getWorkModeColor(item.workMode) }}
+              numberOfLines={1}
             >
               {getWorkModeLabel(item.workMode)}
             </Text>
           </View>
           
-          {/* Action Buttons - Responsive: wraps on small screens */}
           <View 
             style={{ 
               flexDirection: 'row', 
               flexWrap: 'wrap', 
-              gap: spacing.xs,
+              gap: spacing.sm,
               marginTop: spacing.xs / 2,
-              justifyContent: 'flex-end', // Align buttons to the right when they wrap
-              maxWidth: '100%', // Ensure container doesn't exceed parent width
+              justifyContent: 'flex-end',
+              maxWidth: '100%',
             }}
           >
               <TouchableOpacity
-                className="rounded-lg px-3 py-1"
+                className="rounded-lg py-2"
                 style={{ 
                   backgroundColor: colors.primary,
-                  minWidth: 90, // Prevent buttons from being too narrow
-                  flexShrink: 1,
+                  minWidth: 80,
+                  paddingHorizontal: spacing.md,
+                  alignItems: 'center',
                 }}
                 onPress={() => handleWorkModeChange(item)}
               >
-                <Text className="text-white text-xs font-medium">Work Mode</Text>
+                <Text className="text-white text-xs font-medium" numberOfLines={1}>Work Mode</Text>
               </TouchableOpacity>
               
               <TouchableOpacity
-                className="rounded-lg px-3 py-1"
+                className="rounded-lg py-2"
                 style={{ 
                   backgroundColor: colors.success,
-                  minWidth: 70, // Prevent buttons from being too narrow
-                  flexShrink: 1,
+                  minWidth: 72,
+                  paddingHorizontal: spacing.md,
+                  alignItems: 'center',
                 }}
                 onPress={() => handleManageLeaves(item)}
               >
-                <Text className="text-white text-xs font-medium">Leaves</Text>
+                <Text className="text-white text-xs font-medium" numberOfLines={1}>Leaves</Text>
               </TouchableOpacity>
               
               {/* Role Edit Button - For super_admin and HR admins */}
-              {(user.role === 'super_admin' || isHRAdmin(user)) && (
+              {showRoleBtn && (
                 <TouchableOpacity
-                  className="rounded-lg px-3 py-1"
+                  className="rounded-lg py-2"
                   style={{ 
                     backgroundColor: colors.primary,
-                    minWidth: 60, // Prevent buttons from being too narrow
-                    flexShrink: 1,
+                    minWidth: 64,
+                    paddingHorizontal: spacing.md,
+                    alignItems: 'center',
                   }}
                   onPress={() => {
-                    // HR cannot edit super_admin accounts
                     if (isHRAdmin(user) && item.role === 'super_admin') {
                       Alert.alert('Permission Denied', 'HR admins cannot modify super admin accounts.');
                       return;
@@ -665,7 +718,7 @@ export default function EmployeeManagement({ route, refreshTick = 0, onReloadCom
                     setShowRoleEditModal(true);
                   }}
                 >
-                  <Text className="text-white text-xs font-medium">Role</Text>
+                  <Text className="text-white text-xs font-medium" numberOfLines={1}>Role</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -917,53 +970,62 @@ export default function EmployeeManagement({ route, refreshTick = 0, onReloadCom
     </Modal>
   );
 
-  return (
-    <View style={{ backgroundColor: colors.background }}>
-      {/* Header */}
-      <View className="px-6 py-4 shadow-sm" style={{ backgroundColor: colors.surface }}>
-        <View className="flex-row items-center justify-between mb-4" style={{ flexWrap: 'wrap' }}>
-          <Text className="text-xl font-bold" style={{ color: colors.text, flexShrink: 1, minWidth: 0 }}>
+  const employeeListHeader = (
+    <View style={{ width: '100%', alignSelf: 'stretch' }}>
+      <View className="px-6 py-4 shadow-sm" style={{ ...tabletContentStyle, backgroundColor: colors.surface }}>
+        <View
+          className="flex-row items-center justify-between mb-4"
+          style={{ flexWrap: tablet ? 'nowrap' : 'wrap', gap: tablet ? spacing.md : 0 }}
+        >
+          <Text
+            className="text-xl font-bold"
+            style={{ color: colors.text, flexShrink: 1, minWidth: 0 }}
+            numberOfLines={tablet ? 2 : 1}
+            ellipsizeMode="tail"
+          >
             Employee Management
           </Text>
-          
-          {/* Header Action Buttons - Responsive: wraps on small screens */}
-          <View 
-            style={{ 
-              flexDirection: 'row', 
-              flexWrap: 'wrap', 
+
+          <View
+            style={{
+              flexDirection: 'row',
+              flexWrap: 'wrap',
               gap: spacing.xs,
-              marginTop: spacing.xs,
-              flexShrink: 1,
+              marginTop: tablet ? 0 : spacing.xs,
+              flexShrink: 0,
               minWidth: 0,
+              justifyContent: 'flex-end',
             }}
           >
             <TouchableOpacity
               className="rounded-xl px-4 py-2"
-              style={{ 
+              style={{
                 backgroundColor: colors.primary,
-                minWidth: 100, // Prevent buttons from being too narrow
+                minWidth: 100,
                 flexShrink: 1,
               }}
               onPress={() => setShowLeaveSettingsModal(true)}
             >
               <View className="flex-row items-center">
                 <Ionicons name="settings-outline" size={16} color="white" />
-                <Text className="text-white font-semibold ml-1">Leaves</Text>
+                <Text className="text-white font-semibold ml-1" numberOfLines={1}>
+                  Leaves
+                </Text>
               </View>
             </TouchableOpacity>
-          
+
             <TouchableOpacity
               className="rounded-xl px-4 py-2"
-              style={{ 
+              style={{
                 backgroundColor: colors.warning,
-                minWidth: 120, // Prevent buttons from being too narrow (needs space for count)
+                minWidth: 120,
                 flexShrink: 1,
               }}
               onPress={() => setShowRequestsModal(true)}
             >
               <View className="flex-row items-center">
                 <Ionicons name="notifications" size={16} color="white" />
-                <Text className="text-white font-semibold ml-1">
+                <Text className="text-white font-semibold ml-1" numberOfLines={1}>
                   Requests ({pendingRequests.length})
                 </Text>
               </View>
@@ -972,47 +1034,121 @@ export default function EmployeeManagement({ route, refreshTick = 0, onReloadCom
         </View>
       </View>
 
-      {/* Statistics */}
-      <View className="mx-4 my-4 rounded-xl p-4 shadow-sm" style={{ backgroundColor: colors.surface }}>
+      <View
+        className="rounded-xl shadow-sm"
+        style={{
+          ...tabletContentStyle,
+          backgroundColor: colors.surface,
+          marginVertical: spacing.md,
+          padding: responsivePadding(tablet ? 20 : 16),
+        }}
+      >
         <Text className="text-lg font-semibold mb-3" style={{ color: colors.text }}>
           Work Mode Distribution
         </Text>
-        <View className="flex-row justify-around">
-          <View className="items-center">
-            <Text className="text-2xl font-bold" style={{ color: colors.primary }}>{stats.inOffice}</Text>
-            <Text className="text-sm" style={{ color: colors.textSecondary }}>In Office</Text>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: spacing.xs }}>
+            <Text className="text-2xl font-bold" style={{ color: colors.primary }}>
+              {stats.inOffice}
+            </Text>
+            <Text
+              className="text-sm"
+              style={{ color: colors.textSecondary, textAlign: 'center', marginTop: spacing.xs / 2 }}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
+              In Office
+            </Text>
           </View>
-          <View className="items-center">
-            <Text className="text-2xl font-bold" style={{ color: colors.warning }}>{stats.semiRemote}</Text>
-            <Text className="text-sm" style={{ color: colors.textSecondary }}>Semi Remote</Text>
+          <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: spacing.xs }}>
+            <Text className="text-2xl font-bold" style={{ color: colors.warning }}>
+              {stats.semiRemote}
+            </Text>
+            <Text
+              className="text-sm"
+              style={{ color: colors.textSecondary, textAlign: 'center', marginTop: spacing.xs / 2 }}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
+              Semi Remote
+            </Text>
           </View>
-          <View className="items-center">
-            <Text className="text-2xl font-bold" style={{ color: colors.success }}>{stats.fullyRemote}</Text>
-            <Text className="text-sm" style={{ color: colors.textSecondary }}>Fully Remote</Text>
+          <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: spacing.xs }}>
+            <Text className="text-2xl font-bold" style={{ color: colors.success }}>
+              {stats.fullyRemote}
+            </Text>
+            <Text
+              className="text-sm"
+              style={{ color: colors.textSecondary, textAlign: 'center', marginTop: spacing.xs / 2 }}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
+              Fully Remote
+            </Text>
           </View>
         </View>
       </View>
+    </View>
+  );
 
-      {/* Employees List */}
-      {filteredEmployees.length > 0 ? (
-        <View style={{ padding: responsivePadding(16), paddingBottom: spacing['2xl'] }}>
-          {filteredEmployees.map((item) => (
-            <React.Fragment key={item.id}>
-              {renderEmployee({ item })}
-            </React.Fragment>
-          ))}
-        </View>
-      ) : (
-        <View className="justify-center items-center px-6" style={{ paddingVertical: spacing['2xl'] }}>
-          <Ionicons name="people-outline" size={64} color={colors.textTertiary} />
-          <Text className="text-xl font-semibold mt-4 text-center" style={{ color: colors.textSecondary }}>
-            No employees found
-          </Text>
-          <Text className="text-center mt-2" style={{ color: colors.textTertiary }}>
-            Employees will appear here once they are added to the system
-          </Text>
-        </View>
-      )}
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <FlatList
+        key={`emp-${employeeGridColumns}`}
+        style={{ flex: 1 }}
+        data={filteredEmployees}
+        keyExtractor={(item) => item.id}
+        numColumns={employeeGridColumns}
+        keyboardShouldPersistTaps="handled"
+        ListHeaderComponent={employeeListHeader}
+        ListEmptyComponent={
+          <View
+            className="justify-center items-center px-6"
+            style={{ ...tabletContentStyle, paddingVertical: spacing['2xl'] }}
+          >
+            <Ionicons name="people-outline" size={64} color={colors.textTertiary} />
+            <Text className="text-xl font-semibold mt-4 text-center" style={{ color: colors.textSecondary }}>
+              No employees found
+            </Text>
+            <Text className="text-center mt-2" style={{ color: colors.textTertiary }}>
+              Employees will appear here once they are added to the system
+            </Text>
+          </View>
+        }
+        renderItem={({ item }) => (
+          <View
+            style={{
+              flex: 1,
+              minWidth: 0,
+              paddingHorizontal: spacing.sm / 2,
+              marginBottom: spacing.md,
+            }}
+          >
+            {renderEmployee({ item })}
+          </View>
+        )}
+        columnWrapperStyle={
+          employeeGridColumns > 1
+            ? {
+                flexDirection: 'row',
+                gap: spacing.sm,
+                paddingHorizontal: responsivePadding(16),
+                justifyContent: 'flex-start',
+              }
+            : undefined
+        }
+        contentContainerStyle={{
+          flexGrow: 1,
+          paddingTop: spacing.xs,
+          paddingBottom: spacing['2xl'] + insets.bottom,
+        }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          typeof onRefresh === 'function' ? (
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          ) : undefined
+        }
+      />
 
       <WorkModeModal />
       <PendingRequestsModal />

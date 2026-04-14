@@ -19,10 +19,17 @@ import {
 } from '../utils/notifications';
 import { useTheme } from '../contexts/ThemeContext';
 import { handleNotificationNavigation } from '../utils/notificationNavigation';
+import { isTablet, responsivePadding, responsiveFont, spacing } from '../shared/utils/responsive';
 
 export default function NotificationsScreen({ navigation, route }) {
   const { user } = route.params;
   const { colors } = useTheme();
+  const tablet = isTablet();
+  const tabletContentStyle = {
+    width: '100%',
+    maxWidth: tablet ? 1000 : undefined,
+    alignSelf: 'center',
+  };
   const [notifications, setNotifications] = useState([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -325,16 +332,16 @@ export default function NotificationsScreen({ navigation, route }) {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       {/* Header */}
-      <View style={{ backgroundColor: colors.surface, paddingHorizontal: 16, paddingVertical: 12, shadowColor: colors.shadow, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+      <View style={{ ...tabletContentStyle, backgroundColor: colors.surface, paddingHorizontal: tablet ? responsivePadding(24) : 16, paddingVertical: tablet ? spacing.md : 12, shadowColor: colors.shadow, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: spacing.xs }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 1, minWidth: 0 }}>
             <TouchableOpacity
               onPress={() => navigation.goBack()}
               style={{ padding: 8, marginRight: 8 }}
             >
               <Ionicons name="arrow-back" size={24} color={colors.text} />
             </TouchableOpacity>
-            <Text style={{ fontSize: 20, fontWeight: 'bold', color: colors.text }}>
+            <Text numberOfLines={1} style={{ fontSize: tablet ? responsiveFont(22) : 20, fontWeight: 'bold', color: colors.text, flexShrink: 1 }}>
               Notifications
             </Text>
             {unreadCount > 0 && (
@@ -354,7 +361,7 @@ export default function NotificationsScreen({ navigation, route }) {
             )}
           </View>
           
-          <View style={{ flexDirection: 'row', gap: 8 }}>
+          <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'nowrap' }}>
             {unreadCount > 0 && (
               <TouchableOpacity
                 onPress={handleMarkAllAsRead}
@@ -394,10 +401,11 @@ export default function NotificationsScreen({ navigation, route }) {
               }}
             >
               <Text
+                numberOfLines={1}
                 style={{
                   color: filter === filterType ? 'white' : colors.textSecondary,
                   fontWeight: filter === filterType ? '600' : '400',
-                  fontSize: 14,
+                  fontSize: tablet ? responsiveFont(14) : 14,
                   textTransform: 'capitalize',
                 }}
               >
@@ -414,7 +422,7 @@ export default function NotificationsScreen({ navigation, route }) {
           data={notifications}
           renderItem={renderNotification}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: 16 }}
+          contentContainerStyle={{ ...tabletContentStyle, padding: tablet ? responsivePadding(20) : 16 }}
           refreshControl={
             <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
           }

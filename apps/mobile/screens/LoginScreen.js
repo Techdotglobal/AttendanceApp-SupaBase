@@ -15,7 +15,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { authenticateUser } from '../utils/auth';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp } from '../utils/responsive';
+import {
+  spacing,
+  iconSize,
+  componentSize,
+  responsivePadding,
+  responsiveFont,
+  isTablet,
+  getTabletNarrowContentMaxWidth,
+  normalize,
+} from '../utils/responsive';
 import { saveCredentials, loadCredentials, clearCredentials } from '../utils/credentialsStorage';
 import { 
   checkBiometricAvailability, 
@@ -29,6 +38,9 @@ export default function LoginScreen() {
   const navigation = useNavigation();
   const { handleLogin: loginUser } = useAuth();
   const { colors } = useTheme();
+  const tablet = isTablet();
+  const loginColumnMaxWidth = getTabletNarrowContentMaxWidth();
+  const inputMinHeight = tablet ? normalize(52) : normalize(48);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -191,23 +203,35 @@ export default function LoginScreen() {
       >
         <ScrollView 
           style={{ flex: 1 }}
-          contentContainerStyle={{ flexGrow: 1, paddingBottom: spacing['3xl'] }}
+          contentContainerStyle={{
+            flexGrow: 1,
+            paddingBottom: spacing['3xl'],
+            justifyContent: tablet ? 'center' : 'flex-start',
+            paddingVertical: tablet ? spacing['2xl'] : 0,
+          }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View 
-            style={{ paddingHorizontal: responsivePadding(32), paddingTop: spacing.lg, paddingBottom: spacing.xl }}
+          <View
+            style={{
+              width: '100%',
+              maxWidth: loginColumnMaxWidth ?? '100%',
+              alignSelf: 'center',
+              paddingHorizontal: responsivePadding(tablet ? 24 : 32),
+              paddingTop: tablet ? spacing.md : spacing.lg,
+              paddingBottom: spacing.xl,
+            }}
           >
           {/* Header */}
           <View 
             className="items-center"
-            style={{ marginBottom: spacing['3xl'] }}
+            style={{ marginBottom: tablet ? spacing['2xl'] : spacing['3xl'] }}
           >
             <Text 
               className="font-bold"
               style={{ 
                 color: colors.text,
-                fontSize: responsiveFont(30),
+                fontSize: responsiveFont(tablet ? 28 : 30),
                 marginBottom: spacing.xs,
               }}
             >
@@ -217,7 +241,7 @@ export default function LoginScreen() {
               className="text-center"
               style={{ 
                 color: colors.textSecondary,
-                fontSize: responsiveFont(14),
+                fontSize: responsiveFont(tablet ? 15 : 14),
               }}
             >
               Sign in to track your attendance
@@ -229,14 +253,15 @@ export default function LoginScreen() {
             className="rounded-2xl shadow-lg"
             style={{ 
               backgroundColor: colors.surface,
-              padding: responsivePadding(24),
+              padding: responsivePadding(tablet ? 28 : 24),
+              width: '100%',
             }}
           >
             <Text 
               className="font-semibold text-center"
               style={{ 
                 color: colors.text,
-                fontSize: responsiveFont(20),
+                fontSize: responsiveFont(tablet ? 19 : 20),
                 marginBottom: spacing.lg,
               }}
             >
@@ -261,9 +286,10 @@ export default function LoginScreen() {
                   backgroundColor: colors.borderLight,
                   paddingHorizontal: responsivePadding(16),
                   paddingVertical: spacing.md,
+                  minHeight: inputMinHeight,
                 }}
               >
-                <Ionicons name="person-outline" size={iconSize.md} color={colors.textSecondary} />
+                <Ionicons name="person-outline" size={tablet ? iconSize.md + 2 : iconSize.md} color={colors.textSecondary} />
                 <TextInput
                   className="flex-1"
                   placeholder="Enter your username"
@@ -273,7 +299,7 @@ export default function LoginScreen() {
                   autoCorrect={false}
                   style={{
                     color: colors.text,
-                    fontSize: responsiveFont(14),
+                    fontSize: responsiveFont(tablet ? 16 : 14),
                     marginLeft: spacing.md,
                   }}
                   placeholderTextColor={colors.textTertiary}
@@ -299,9 +325,10 @@ export default function LoginScreen() {
                   backgroundColor: colors.borderLight,
                   paddingHorizontal: responsivePadding(16),
                   paddingVertical: spacing.md,
+                  minHeight: inputMinHeight,
                 }}
               >
-                <Ionicons name="lock-closed-outline" size={iconSize.md} color={colors.textSecondary} />
+                <Ionicons name="lock-closed-outline" size={tablet ? iconSize.md + 2 : iconSize.md} color={colors.textSecondary} />
                 <TextInput
                   className="flex-1"
                   placeholder="Enter your password"
@@ -314,7 +341,7 @@ export default function LoginScreen() {
                   returnKeyType="go"
                   style={{
                     color: colors.text,
-                    fontSize: responsiveFont(14),
+                    fontSize: responsiveFont(tablet ? 16 : 14),
                     marginLeft: spacing.md,
                   }}
                   placeholderTextColor={colors.textTertiary}
@@ -385,7 +412,7 @@ export default function LoginScreen() {
                 alignItems: 'center',
                 marginBottom: spacing.md,
                 opacity: isLoading ? 0.5 : 1,
-                minHeight: componentSize.buttonHeight,
+                minHeight: tablet ? normalize(50) : componentSize.buttonHeight,
                 justifyContent: 'center',
               }}
               onPress={handleLogin}

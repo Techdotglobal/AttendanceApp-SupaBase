@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { getUserAttendanceRecords } from '../utils/storage';
-import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, normalize } from '../utils/responsive';
+import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, isTablet, normalize } from '../utils/responsive';
 import { useTheme } from '../contexts/ThemeContext';
 import Logo from '../components/Logo';
 import Trademark from '../components/Trademark';
@@ -19,6 +19,12 @@ import Trademark from '../components/Trademark';
 export default function AttendanceHistory({ route }) {
   const { user } = route.params;
   const { colors } = useTheme();
+  const tablet = isTablet();
+  const tabletContentStyle = {
+    width: '100%',
+    maxWidth: tablet ? 1000 : undefined,
+    alignSelf: 'center',
+  };
   const [records, setRecords] = useState([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [filter, setFilter] = useState('all'); // all, checkin, checkout
@@ -204,6 +210,7 @@ export default function AttendanceHistory({ route }) {
       <View 
         className="shadow-sm"
         style={{
+          ...tabletContentStyle,
           backgroundColor: colors.surface,
           paddingHorizontal: responsivePadding(24),
           paddingVertical: responsivePadding(16),
@@ -242,7 +249,7 @@ export default function AttendanceHistory({ route }) {
           data={records}
           renderItem={renderRecord}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: 16 }}
+          contentContainerStyle={{ ...tabletContentStyle, padding: 16 }}
           refreshControl={
             <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
           }
@@ -251,7 +258,7 @@ export default function AttendanceHistory({ route }) {
       ) : (
         <View 
           className="flex-1 justify-center items-center"
-          style={{ paddingHorizontal: responsivePadding(24) }}
+          style={{ ...tabletContentStyle, paddingHorizontal: responsivePadding(24) }}
         >
           <Ionicons name="time-outline" size={iconSize['4xl']} color={colors.textTertiary} />
           <Text 
@@ -302,6 +309,7 @@ export default function AttendanceHistory({ route }) {
         <View 
           className="border-t"
           style={{ 
+            ...tabletContentStyle,
             backgroundColor: colors.surface,
             borderColor: colors.border,
             padding: responsivePadding(16) 
@@ -320,7 +328,7 @@ export default function AttendanceHistory({ route }) {
       )}
 
       {/* Trademark */}
-      <View style={{ padding: responsivePadding(16) }}>
+      <View style={{ ...tabletContentStyle, padding: responsivePadding(16) }}>
         <Trademark position="bottom" />
       </View>
     </View>

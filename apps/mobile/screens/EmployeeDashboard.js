@@ -40,7 +40,7 @@ import {
   getHRRoleIcon, 
   getHRRoleLabel 
 } from '../utils/hrRoles';
-import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp, normalize } from '../utils/responsive';
+import { spacing, iconSize, componentSize, responsivePadding, responsiveFont, dashboardTitleFont, wp, isTablet, normalize } from '../utils/responsive';
 import Logo from '../components/Logo';
 import Trademark from '../components/Trademark';
 import HamburgerButton from '../shared/components/HamburgerButton';
@@ -51,6 +51,12 @@ export default function EmployeeDashboard({ route }) {
   const { user } = route.params;
   const { handleLogout } = useAuth();
   const { colors } = useTheme();
+  const tablet = isTablet();
+  const tabletContentStyle = {
+    width: '100%',
+    maxWidth: tablet ? 1000 : undefined,
+    alignSelf: 'center',
+  };
   const [lastRecord, setLastRecord] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [employee, setEmployee] = useState(null);
@@ -281,11 +287,15 @@ export default function EmployeeDashboard({ route }) {
       <ScrollView 
         className="flex-1"
         style={{ backgroundColor: colors.background }}
-        contentContainerStyle={{ padding: responsivePadding(24) }}
+        contentContainerStyle={{
+          padding: responsivePadding(24),
+          alignItems: tablet ? 'center' : 'stretch',
+        }}
         refreshControl={
           <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
         }
       >
+        <View style={tabletContentStyle}>
         {/* Welcome Header */}
         <View 
           className="rounded-2xl shadow-sm"
@@ -298,17 +308,32 @@ export default function EmployeeDashboard({ route }) {
             <HamburgerButton color={colors.text} size={28} style={{ marginRight: spacing.sm }} />
             <View className="flex-row items-center flex-1" style={{ flexShrink: 1 }}>
               <Logo size="small" style={{ marginRight: spacing.md }} />
-              <View className="flex-1" style={{ flexShrink: 1 }}>
-                <Text 
-                  className="font-bold"
-                  style={{ 
-                    color: colors.text,
-                    fontSize: responsiveFont(20),
-                  }}
-                  numberOfLines={1}
-                >
-                  Welcome, {user.username}!
-                </Text>
+              <View className="flex-1" style={{ flexShrink: 1, minWidth: 0 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'nowrap' }}>
+                  <Text 
+                    className="font-bold"
+                    style={{ 
+                      color: colors.text,
+                      fontSize: dashboardTitleFont(20),
+                      flexShrink: 0,
+                    }}
+                  >
+                    Welcome,{' '}
+                  </Text>
+                  <Text 
+                    className="font-bold"
+                    style={{ 
+                      color: colors.text,
+                      fontSize: dashboardTitleFont(20),
+                      flex: 1,
+                      minWidth: 0,
+                    }}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {user.username}!
+                  </Text>
+                </View>
               <View className="flex-row items-center flex-wrap">
                 <Text 
                   style={{ 
@@ -386,7 +411,7 @@ export default function EmployeeDashboard({ route }) {
             className="font-semibold"
             style={{ 
               color: colors.text,
-              fontSize: responsiveFont(18),
+              fontSize: responsiveFont(tablet ? 17 : 18),
               marginBottom: spacing.md,
             }}
           >
@@ -1096,6 +1121,7 @@ export default function EmployeeDashboard({ route }) {
         {/* Trademark */}
         <View style={{ paddingBottom: spacing.lg }}>
           <Trademark position="bottom" />
+        </View>
         </View>
       </ScrollView>
 

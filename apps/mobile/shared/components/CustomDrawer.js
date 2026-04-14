@@ -12,7 +12,7 @@ import { useAuth } from '../../core/contexts/AuthContext';
 import { useTheme } from '../../core/contexts/ThemeContext';
 import { getPendingSignupCount } from '../../utils/signupRequests';
 import { getUnreadNotificationCount } from '../../utils/notifications';
-import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp } from '../../utils/responsive';
+import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp, isTablet } from '../../utils/responsive';
 import { ROUTES } from '../constants/routes';
 import { isHRAdmin } from '../constants/roles';
 import { getOfficeLocation } from '../../features/geofencing';
@@ -25,6 +25,7 @@ import HelpButton from './HelpButton';
 export default function CustomDrawer({ navigation, state }) {
   const { user, handleLogout } = useAuth();
   const { colors, theme } = useTheme();
+  const tablet = isTablet();
   const [pendingSignupCount, setPendingSignupCount] = useState(0);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [isEmployeeInsideRadius, setIsEmployeeInsideRadius] = useState(false);
@@ -394,7 +395,15 @@ export default function CustomDrawer({ navigation, state }) {
                 {user.name || user.username}
               </Text>
               <View style={styles.roleBadge}>
-                <Text style={styles.roleText}>{getRoleLabel()}</Text>
+                <Text
+                  style={[
+                    styles.roleText,
+                    tablet && { fontSize: responsiveFont(14) },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {getRoleLabel()}
+                </Text>
               </View>
               {user.department && (
                 <Text style={[styles.department, { color: 'rgba(255,255,255,0.8)' }]} numberOfLines={1}>
@@ -414,22 +423,25 @@ export default function CustomDrawer({ navigation, state }) {
                 key={index}
                 style={[
                   styles.menuItem,
+                  tablet && { paddingVertical: spacing.base, paddingHorizontal: spacing.base },
                   isActive && { backgroundColor: colors.primaryLight },
                 ]}
                 onPress={() => handleNavigation(item)}
               >
-                <View style={styles.menuItemContent}>
+                <View style={[styles.menuItemContent, { flexWrap: 'nowrap' }]}>
                   <Ionicons
                     name={item.icon}
-                    size={iconSize.lg}
+                    size={tablet ? iconSize.xl : iconSize.lg}
                     color={isActive ? colors.primary : colors.textSecondary}
                   />
                   <Text
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
                     style={[
                       styles.menuItemText,
                       {
                         color: isActive ? colors.primary : colors.text,
-                        fontSize: responsiveFont(16),
+                        fontSize: tablet ? responsiveFont(18) : responsiveFont(16),
                       },
                     ]}
                   >
@@ -513,7 +525,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   menuContainer: {
-    padding: spacing.sm,
+    padding: spacing.base,
   },
   menuItem: {
     flexDirection: 'row',
@@ -531,6 +543,7 @@ const styles = StyleSheet.create({
   menuItemText: {
     marginLeft: spacing.md,
     fontWeight: '500',
+    flexShrink: 1,
   },
   badge: {
     minWidth: 20,

@@ -24,10 +24,12 @@ import {
 import { getEmployeeByUsername } from '../utils/employees';
 import DatePickerCalendar from '../components/DatePickerCalendar';
 import { useTheme } from '../contexts/ThemeContext';
+import { isTablet, responsivePadding, responsiveFont, spacing } from '../shared/utils/responsive';
 
 export default function LeaveRequestScreen({ navigation, route }) {
   const { user } = route.params;
   const { colors } = useTheme();
+  const tablet = isTablet();
   const [leaveBalance, setLeaveBalance] = useState(null);
   const [myRequests, setMyRequests] = useState([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -394,8 +396,8 @@ export default function LeaveRequestScreen({ navigation, route }) {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
       >
-        <View className="flex-1 justify-end" style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
-          <View className="rounded-t-3xl p-6" style={{ backgroundColor: colors.surface, maxHeight: '90%' }}>
+        <View className="flex-1" style={{ justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
+          <View className="rounded-t-3xl p-6" style={{ backgroundColor: colors.surface, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', borderBottomLeftRadius: tablet ? 24 : 0, borderBottomRightRadius: tablet ? 24 : 0 }}>
               <ScrollView 
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
@@ -487,7 +489,8 @@ export default function LeaveRequestScreen({ navigation, route }) {
                           key={cat.value}
                           className="rounded-lg p-3 border-2"
                           style={{
-                            minWidth: '30%',
+                            flexBasis: tablet ? '31%' : '48%',
+                            maxWidth: tablet ? '31%' : '48%',
                             borderColor: isSelected ? colors.primary : colors.border,
                             backgroundColor: isSelected 
                               ? colors.primaryLight 
@@ -504,6 +507,7 @@ export default function LeaveRequestScreen({ navigation, route }) {
                           disabled={!isEnabled}
                         >
                           <Text
+                            numberOfLines={1}
                             className="text-center font-medium text-sm"
                             style={{
                               color: isSelected

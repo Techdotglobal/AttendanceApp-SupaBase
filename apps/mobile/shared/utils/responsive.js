@@ -9,9 +9,19 @@ const BASE_HEIGHT = 844;
 // Scale factor based on screen width
 const scale = SCREEN_WIDTH / BASE_WIDTH;
 
+// Tablets: avoid linear scaling (would look like a "zoomed phone"); cap effective scale
+const TABLET_NORMALIZE_MAX_SCALE = 1.22;
+
+export const getEffectiveScale = () => {
+  if (SCREEN_WIDTH >= 768) {
+    return Math.min(scale, TABLET_NORMALIZE_MAX_SCALE);
+  }
+  return scale;
+};
+
 // Normalize function for responsive sizing
 export const normalize = (size) => {
-  const newSize = size * scale;
+  const newSize = size * getEffectiveScale();
   if (Platform.OS === 'ios') {
     return Math.round(PixelRatio.roundToNearestPixel(newSize));
   } else {
@@ -28,11 +38,7 @@ export const getScreenDimensions = () => ({
 
 // Check if device is tablet
 export const isTablet = () => {
-  const aspectRatio = SCREEN_HEIGHT / SCREEN_WIDTH;
-  return (
-    (SCREEN_WIDTH >= 768 && SCREEN_HEIGHT >= 1024) ||
-    (SCREEN_WIDTH >= 1024 && SCREEN_HEIGHT >= 768)
-  );
+  return SCREEN_WIDTH >= 768;
 };
 
 // Check if device is small screen
@@ -120,12 +126,38 @@ export const responsivePadding = (base = 16) => {
 // Responsive font helper
 export const responsiveFont = (base = 14) => {
   if (isTablet()) {
-    return normalize(base * 1.2);
+    return normalize(base * 1.04);
   }
   if (isSmallScreen()) {
     return normalize(base * 0.9);
   }
   return normalize(base);
+};
+
+/** Dashboard / hero title: slightly smaller on tablet so it does not dominate */
+export const dashboardTitleFont = (base = 20) => {
+  if (isTablet()) {
+    return normalize(Math.min(base, 18));
+  }
+  return responsiveFont(base);
+};
+
+/** Multi-column grids on tablet: 2 cols from 768px, 3 cols from 1024px. */
+export const getTabletGridColumns = (largeBreakpoint = 1024) => {
+  if (SCREEN_WIDTH < 768) return 1;
+  if (SCREEN_WIDTH >= largeBreakpoint) return 3;
+  return 2;
+};
+
+/**
+ * Login / narrow content column on tablet (500–700pt width cap).
+ * Returns max width in px; undefined when not tablet.
+ */
+export const getTabletNarrowContentMaxWidth = (min = 500, max = 700) => {
+  if (!isTablet()) return undefined;
+  const horizontalGutter = normalize(48);
+  const target = Math.min(max, Math.max(min, SCREEN_WIDTH * 0.58));
+  return Math.min(target, SCREEN_WIDTH - horizontalGutter);
 };
 
 // Responsive width with max constraint
@@ -159,6 +191,7 @@ export const getColumns = (baseColumns = 2) => {
 
 export default {
   normalize,
+  getEffectiveScale,
   getScreenDimensions,
   isTablet,
   isSmallScreen,
@@ -171,6 +204,9 @@ export default {
   hp,
   responsivePadding,
   responsiveFont,
+  dashboardTitleFont,
+  getTabletNarrowContentMaxWidth,
+  getTabletGridColumns,
   responsiveWidth,
   responsiveHeight,
   getColumns,

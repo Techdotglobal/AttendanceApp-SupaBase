@@ -29,13 +29,19 @@ import {
 import { getEmployees, getManageableEmployees, canManageEmployee } from '../utils/employees';
 import { generateAttendanceReport, generateLeaveReport } from '../utils/export';
 import { ROUTES } from '../shared/constants/routes';
-import { spacing, fontSize, responsivePadding, responsiveFont, iconSize } from '../shared/utils/responsive';
+import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTablet } from '../shared/utils/responsive';
 import { isHRAdmin } from '../shared/constants/roles';
 
 export default function HRDashboard({ navigation, route }) {
   const { user: routeUser, initialTab, openLeaveRequests, ticketId } = route.params || {};
   const { user: authUser } = useAuth();
   const { colors } = useTheme();
+  const tablet = isTablet();
+  const tabletContentStyle = {
+    width: '100%',
+    maxWidth: tablet ? 1100 : undefined,
+    alignSelf: 'center',
+  };
   
   // CRITICAL FIX: Role guard - prevent rendering if user is not manager/super_admin
   // Use authUser from context (most up-to-date) with fallback to route params
@@ -1132,8 +1138,9 @@ export default function HRDashboard({ navigation, route }) {
       {/* Header */}
       <View
         style={{
+          ...tabletContentStyle,
           backgroundColor: colors.surface,
-          paddingHorizontal: responsivePadding(16),
+          paddingHorizontal: tablet ? responsivePadding(24) : responsivePadding(16),
           paddingVertical: spacing.md,
           shadowColor: colors.shadow,
           shadowOffset: { width: 0, height: 2 },
@@ -1154,19 +1161,20 @@ export default function HRDashboard({ navigation, route }) {
         </Text>
 
         {/* Tab Navigation - Responsive: wraps on small screens */}
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
+        <View style={{ flexDirection: 'row', flexWrap: tablet ? 'nowrap' : 'wrap', gap: spacing.xs }}>
           {['overview', 'attendance', 'leaves', 'tickets'].map((tab) => (
             <TouchableOpacity
               key={tab}
               onPress={() => setActiveTab(tab)}
               style={{
-                paddingHorizontal: responsivePadding(16),
+                paddingHorizontal: tablet ? responsivePadding(20) : responsivePadding(16),
                 paddingVertical: spacing.xs,
                 borderRadius: 20,
                 backgroundColor: activeTab === tab ? colors.primary : colors.background,
               }}
             >
               <Text
+                numberOfLines={1}
                 style={{
                   color: activeTab === tab ? 'white' : colors.textSecondary,
                   fontWeight: activeTab === tab ? '600' : '400',
@@ -1182,10 +1190,12 @@ export default function HRDashboard({ navigation, route }) {
       </View>
 
       {/* Content */}
-      {activeTab === 'overview' && renderOverview()}
-      {activeTab === 'attendance' && renderAttendance()}
-      {activeTab === 'leaves' && renderLeaves()}
-      {activeTab === 'tickets' && renderTickets()}
+      <View style={[{ flex: 1 }, tabletContentStyle]}>
+        {activeTab === 'overview' && renderOverview()}
+        {activeTab === 'attendance' && renderAttendance()}
+        {activeTab === 'leaves' && renderLeaves()}
+        {activeTab === 'tickets' && renderTickets()}
+      </View>
     </View>
   );
 }

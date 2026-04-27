@@ -3,6 +3,7 @@ const cors = require('cors');
 
 const authRoutes = require('./routes/auth');
 const reportRoutes = require('./routes/reports');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -26,6 +27,7 @@ app.use((req, res, next) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Health check route
 app.get('/health', (req, res) => {

@@ -4,7 +4,7 @@ const axios = require('axios');
 const router = express.Router();
 
 // Auth service base URL
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
+const AUTH_SERVICE_URL = (process.env.AUTH_SERVICE_URL || 'http://localhost:3001').replace(/\/+$/, '');
 
 /**
  * Forward login request to auth-service

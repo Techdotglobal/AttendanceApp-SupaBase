@@ -9,17 +9,19 @@ import { DepartmentsPage } from '../../features/admin/pages/DepartmentsPage';
 import { SitesPage } from '../../features/admin/pages/SitesPage';
 import { AttendancePage } from '../../features/admin/pages/AttendancePage';
 import { LeavesPage } from '../../features/admin/pages/LeavesPage';
+import { AnalyticsPage } from '../../features/admin/pages/AnalyticsPage';
+import { SettingsPage } from '../../features/admin/pages/SettingsPage';
 
 function Protected({ children }) {
   const { user, loading } = useAuthStore();
-  if (loading) return <div className="min-h-screen bg-slate-950 text-slate-100 p-8">Loading...</div>;
+  if (loading) return <div className="min-h-screen bg-slate-50 text-slate-700 p-8">Loading...</div>;
   if (!user) return <Navigate to="/login" replace />;
   if (user.role === 'employee') return <Navigate to="/unauthorized" replace />;
   return children;
 }
 
 function Unauthorized() {
-  return <div className="min-h-screen bg-slate-950 text-red-300 p-8">You do not have portal access.</div>;
+  return <div className="min-h-screen bg-slate-50 text-red-500 p-8">You do not have portal access.</div>;
 }
 
 export function AppRouter() {
@@ -34,6 +36,8 @@ export function AppRouter() {
         <Route index element={<DashboardPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="departments" element={<DepartmentsPage />} />
+        <Route path="analytics" element={<AnalyticsPage />} />
+        <Route path="settings" element={<SettingsPage />} />
         <Route path="sites" element={<SitesPage />} />
         <Route path="attendance" element={<AttendancePage />} />
         <Route path="leaves" element={<LeavesPage />} />

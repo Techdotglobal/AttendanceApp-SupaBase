@@ -1,29 +1,72 @@
 import { useEffect, useState } from 'react';
 import { adminService } from '../services/adminService';
+import { GlassCard } from '../../../shared/components/GlassCard';
 
 export function LeavesPage() {
   const [rows, setRows] = useState([]);
-  const load = () => adminService.getLeaves().then(setRows);
-  useEffect(() => { load(); }, []);
-  const processLeave = async (id, status) => {
-    await adminService.processLeave(id, { status });
-    load();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await adminService.getLeaves();
+      setRows(data || []);
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || 'Failed to load leaves');
+    } finally {
+      setLoading(false);
+    }
   };
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 30000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const processLeave = async (id, status) => {
+    try {
+      await adminService.processLeave(id, { status });
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || 'Failed to process leave');
+    }
+  };
+
   return (
-    <div>
-      <h1 className="text-2xl font-semibold mb-6">Leaves</h1>
+    <div className="space-y-5 animate-fade-up">
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold text-white">Leaves</h1>
+        <button
+          type="button"
+          onClick={load}
+          className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-xs text-slate-100 hover:bg-white/20 transition-all duration-200"
+        >
+          Refresh
+        </button>
+      </div>
+      {error && <GlassCard className="p-4 text-sm text-red-100">{error}</GlassCard>}
       <div className="space-y-2">
-        {rows.map((r) => (
-          <div key={r.id} className="rounded border border-slate-800 p-3 flex justify-between">
-            <span>{r.employee_id} - {r.leave_type} - {r.status}</span>
-            {r.status === 'pending' && (
-              <div className="space-x-2">
-                <button className="rounded bg-green-700 px-2 py-1" onClick={() => processLeave(r.id, 'approved')}>Approve</button>
-                <button className="rounded bg-red-700 px-2 py-1" onClick={() => processLeave(r.id, 'rejected')}>Reject</button>
-              </div>
-            )}
-          </div>
-        ))}
+        {loading &&
+          Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="h-14 rounded-xl border border-white/15 bg-white/10 skeleton" />
+          ))}
+        {!loading && rows.length === 0 && <GlassCard className="p-4 text-sm text-slate-300">No leave requests found.</GlassCard>}
+        {!loading &&
+          rows.map((r) => (
+            <GlassCard key={r.id} className="p-3 flex justify-between items-center gap-3">
+              <span className="text-slate-100">{r.employee_id} - {r.leave_type || 'leave'} - {r.status || 'pending'}</span>
+              {r.status === 'pending' && (
+                <div className="space-x-2 shrink-0">
+                  <button className="rounded bg-green-700 px-2 py-1 text-white" onClick={() => processLeave(r.id, 'approved')}>Approve</button>
+                  <button className="rounded bg-red-700 px-2 py-1 text-white" onClick={() => processLeave(r.id, 'rejected')}>Reject</button>
+                </div>
+              )}
+            </GlassCard>
+          ))}
       </div>
     </div>
   );

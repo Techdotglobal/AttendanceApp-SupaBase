@@ -33,6 +33,23 @@ export function SitesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const createSite = async () => {
+    setError('');
+    try {
+      await adminService.createSite({
+        ...form,
+        latitude: Number(form.latitude),
+        longitude: Number(form.longitude),
+        radius: Number(form.radius),
+      });
+      setForm({ name: '', latitude: '', longitude: '', radius: '', department_id: '' });
+      await load();
+    } catch (err) {
+      console.error('[SitesPage] Failed to create site:', err);
+      setError(err?.message || 'Failed to create site');
+    }
+  };
+
   return (
     <div className="space-y-5 animate-fade-up">
       <div className="flex items-center justify-between gap-3">
@@ -62,7 +79,7 @@ export function SitesPage() {
           ))}
         </select>
       </div>
-      <button className="rounded bg-indigo-600 px-3 py-2 mb-4 text-white" onClick={async () => { await adminService.createSite({ ...form, latitude: Number(form.latitude), longitude: Number(form.longitude), radius: Number(form.radius) }); setForm({ name: '', latitude: '', longitude: '', radius: '', department_id: '' }); load(); }}>
+      <button className="rounded bg-indigo-600 px-3 py-2 mb-4 text-white" onClick={createSite}>
         Create Site
       </button>
       <div className="space-y-2">

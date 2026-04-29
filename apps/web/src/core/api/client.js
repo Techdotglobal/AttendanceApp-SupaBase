@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { API_BASE_URL } from '../config/env';
+import { API_BASE_URL, IS_API_GATEWAY_CONFIGURED, IS_API_GATEWAY_LOCAL } from '../config/api';
 import { useAuthStore } from '../../features/auth/store/authStore';
 
 export const api = axios.create({
@@ -8,9 +8,30 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  if (!IS_API_GATEWAY_CONFIGURED) {
+    console.error('[api] API base URL is missing. Set NEXT_PUBLIC_API_URL (or VITE_API_GATEWAY_URL).');
+    throw new Error('Service configuration is missing. Please try again later.');
+  }
+
+  if (IS_API_GATEWAY_LOCAL && !import.meta.env.DEV) {
+    console.error('[api] Local API URL detected in non-development environment:', API_BASE_URL);
+    throw new Error('Service endpoint is not publicly reachable. Please contact support.');
+  }
+
   const user = useAuthStore.getState().user;
   if (user) {
     config.headers['x-user-context'] = JSON.stringify(user);
   }
   return config;
 });
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status;
+    const endpoint = error?.config?.url || 'unknown-endpoint';
+    const payload = error?.response?.data;
+    console.error('[api] Request failed:', { endpoint, status, payload, message: error?.message });
+    return Promise.reject(error);
+  }
+);

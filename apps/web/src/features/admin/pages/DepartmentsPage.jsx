@@ -10,8 +10,17 @@ export function DepartmentsPage() {
   const [rows, setRows] = useState([]);
   const [expandedIds, setExpandedIds] = useState({});
   const [renameState, setRenameState] = useState({ id: null, value: '' });
+  const [error, setError] = useState('');
 
-  const load = () => adminService.getDepartmentsOverview().then(setRows);
+  const load = async () => {
+    try {
+      const departmentRows = await adminService.getDepartmentsOverview();
+      setRows(departmentRows || []);
+    } catch (err) {
+      console.error('[DepartmentsPage] Failed to load departments:', err);
+      setError(err?.message || 'Failed to load departments');
+    }
+  };
 
   useEffect(() => {
     load();
@@ -30,22 +39,40 @@ export function DepartmentsPage() {
 
   const onCreateDepartment = async () => {
     if (!name.trim()) return;
-    await adminService.createDepartment({ name });
-    setName('');
-    await load();
+    setError('');
+    try {
+      await adminService.createDepartment({ name });
+      setName('');
+      await load();
+    } catch (err) {
+      console.error('[DepartmentsPage] Failed to create department:', err);
+      setError(err?.message || 'Failed to create department');
+    }
   };
 
   const onRenameDepartment = async (id) => {
     const newName = renameState.value.trim();
     if (!newName) return;
-    await adminService.renameDepartment(id, { name: newName });
-    setRenameState({ id: null, value: '' });
-    await load();
+    setError('');
+    try {
+      await adminService.renameDepartment(id, { name: newName });
+      setRenameState({ id: null, value: '' });
+      await load();
+    } catch (err) {
+      console.error('[DepartmentsPage] Failed to rename department:', err);
+      setError(err?.message || 'Failed to rename department');
+    }
   };
 
   const onDeleteDepartment = async (id) => {
-    await adminService.deleteDepartment(id);
-    await load();
+    setError('');
+    try {
+      await adminService.deleteDepartment(id);
+      await load();
+    } catch (err) {
+      console.error('[DepartmentsPage] Failed to delete department:', err);
+      setError(err?.message || 'Failed to delete department');
+    }
   };
 
   return (
@@ -76,6 +103,7 @@ export function DepartmentsPage() {
           </>
         )}
       </div>
+      {error && <GlassCard className="p-4 text-sm text-red-100">{error}</GlassCard>}
 
       <div className="space-y-3">
         {filteredRows.map((d) => (

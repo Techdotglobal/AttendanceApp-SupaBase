@@ -35,23 +35,45 @@ export function UsersPage() {
   const [departmentFilter, setDepartmentFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [activeUser, setActiveUser] = useState(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    adminService
-      .getUsers()
-      .then(setRows)
-      .finally(() => setLoading(false));
+    const loadUsers = async () => {
+      setError('');
+      try {
+        const users = await adminService.getUsers();
+        setRows(users || []);
+      } catch (err) {
+        console.error('[UsersPage] Failed to load users:', err);
+        setError(err?.message || 'Failed to load users');
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadUsers();
   }, []);
 
   const toggleActive = async (u) => {
-    await adminService.updateUser(u.uid, { is_active: !u.is_active });
-    setRows((prev) => prev.map((x) => (x.uid === u.uid ? { ...x, is_active: !x.is_active, updated_at: new Date().toISOString() } : x)));
+    setError('');
+    try {
+      await adminService.updateUser(u.uid, { is_active: !u.is_active });
+      setRows((prev) => prev.map((x) => (x.uid === u.uid ? { ...x, is_active: !x.is_active, updated_at: new Date().toISOString() } : x)));
+    } catch (err) {
+      console.error('[UsersPage] Failed to toggle user status:', err);
+      setError(err?.message || 'Failed to update user status');
+    }
   };
 
   const changeRole = async (u) => {
     const nextRole = u.role === 'employee' ? 'manager' : 'employee';
-    await adminService.updateUser(u.uid, { role: nextRole });
-    setRows((prev) => prev.map((x) => (x.uid === u.uid ? { ...x, role: nextRole } : x)));
+    setError('');
+    try {
+      await adminService.updateUser(u.uid, { role: nextRole });
+      setRows((prev) => prev.map((x) => (x.uid === u.uid ? { ...x, role: nextRole } : x)));
+    } catch (err) {
+      console.error('[UsersPage] Failed to change role:', err);
+      setError(err?.message || 'Failed to update user role');
+    }
   };
 
   const filteredRows = useMemo(() => {
@@ -87,13 +109,19 @@ export function UsersPage() {
 
   const bulkDeactivate = async () => {
     const target = filteredRows.filter((r) => selected[r.uid] && r.is_active);
-    for (const row of target) {
-      // sequential for simplicity and easier server protection
-      // eslint-disable-next-line no-await-in-loop
-      await adminService.updateUser(row.uid, { is_active: false });
+    setError('');
+    try {
+      for (const row of target) {
+        // sequential for simplicity and easier server protection
+        // eslint-disable-next-line no-await-in-loop
+        await adminService.updateUser(row.uid, { is_active: false });
+      }
+      setRows((prev) => prev.map((row) => (selected[row.uid] ? { ...row, is_active: false } : row)));
+      setSelected({});
+    } catch (err) {
+      console.error('[UsersPage] Failed to bulk deactivate users:', err);
+      setError(err?.message || 'Failed to disable selected users');
     }
-    setRows((prev) => prev.map((row) => (selected[row.uid] ? { ...row, is_active: false } : row)));
-    setSelected({});
   };
 
   const closePanel = () => setActiveUser(null);
@@ -150,6 +178,7 @@ export function UsersPage() {
           </button>
         </div>
       </GlassCard>
+      {error && <GlassCard className="p-4 text-sm text-red-100">{error}</GlassCard>}
 
       <GlassTable
         columns={[

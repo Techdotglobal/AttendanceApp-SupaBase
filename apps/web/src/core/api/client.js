@@ -1,21 +1,28 @@
 import axios from 'axios';
-import { API_BASE_URL, IS_API_GATEWAY_CONFIGURED, IS_API_GATEWAY_LOCAL } from '../config/api';
+import { apiUrl, IS_API_GATEWAY_CONFIGURED, IS_API_GATEWAY_LOCAL } from '../config/api';
 import { useAuthStore } from '../../features/auth/store/authStore';
 
 export const api = axios.create({
-  baseURL: API_BASE_URL,
   timeout: 10000,
 });
 
 api.interceptors.request.use((config) => {
   if (!IS_API_GATEWAY_CONFIGURED) {
-    console.error('[api] API base URL is missing. Set NEXT_PUBLIC_API_URL (or VITE_API_GATEWAY_URL).');
+    console.error('[api] API base URL is missing. Set VITE_API_GATEWAY_URL or NEXT_PUBLIC_API_URL on Vercel.');
     throw new Error('Service configuration is missing. Please try again later.');
   }
 
   if (IS_API_GATEWAY_LOCAL && !import.meta.env.DEV) {
-    console.error('[api] Local API URL detected in non-development environment:', API_BASE_URL);
+    console.error('[api] Local API URL detected in non-development environment.');
     throw new Error('Service endpoint is not publicly reachable. Please contact support.');
+  }
+
+  if (config.url && !/^https?:\/\//i.test(String(config.url))) {
+    const full = apiUrl(config.url);
+    if (import.meta.env.DEV) {
+      console.log('[api] request:', (config.method || 'get').toUpperCase(), full);
+    }
+    config.url = full;
   }
 
   const user = useAuthStore.getState().user;

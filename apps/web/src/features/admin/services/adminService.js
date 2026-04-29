@@ -1,4 +1,5 @@
 import { api } from '../../../core/api/client';
+import { apiUrl } from '../../../core/config/api';
 
 const extractApiMessage = (error, fallbackMessage) =>
   error?.response?.data?.error || error?.message || fallbackMessage;
@@ -18,31 +19,31 @@ const executeApiCall = async (call, fallbackMessage) => {
 
 export const adminService = {
   getStats: async () =>
-    executeApiCall(async () => (await api.get('/api/admin/dashboard/stats')).data.data, 'Failed to load dashboard stats'),
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/dashboard/stats'))).data.data, 'Failed to load dashboard stats'),
   getUsers: async () =>
-    executeApiCall(async () => (await api.get('/api/admin/users')).data.data, 'Failed to load users'),
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/users'))).data.data, 'Failed to load users'),
   updateUser: async (uid, payload) =>
-    executeApiCall(async () => (await api.patch(`/api/admin/users/${uid}`, payload)).data, 'Failed to update user'),
+    executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/users/${uid}`), payload)).data, 'Failed to update user'),
   getDepartments: async () =>
-    executeApiCall(async () => (await api.get('/api/admin/departments')).data.data, 'Failed to load departments'),
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/departments'))).data.data, 'Failed to load departments'),
   getDepartmentsOverview: async () =>
-    executeApiCall(async () => (await api.get('/api/admin/departments/overview')).data.data, 'Failed to load departments overview'),
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/departments/overview'))).data.data, 'Failed to load departments overview'),
   createDepartment: async (payload) =>
-    executeApiCall(async () => (await api.post('/api/admin/departments', payload)).data, 'Failed to create department'),
+    executeApiCall(async () => (await api.post(apiUrl('/api/admin/departments'), payload)).data, 'Failed to create department'),
   renameDepartment: async (id, payload) =>
-    executeApiCall(async () => (await api.patch(`/api/admin/departments/${id}`, payload)).data, 'Failed to rename department'),
+    executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/departments/${id}`), payload)).data, 'Failed to rename department'),
   deleteDepartment: async (id) =>
-    executeApiCall(async () => (await api.delete(`/api/admin/departments/${id}`)).data, 'Failed to delete department'),
+    executeApiCall(async () => (await api.delete(apiUrl(`/api/admin/departments/${id}`))).data, 'Failed to delete department'),
   getSites: async () =>
-    executeApiCall(async () => (await api.get('/api/admin/sites')).data.data, 'Failed to load sites'),
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/sites'))).data.data, 'Failed to load sites'),
   createSite: async (payload) =>
-    executeApiCall(async () => (await api.post('/api/admin/sites', payload)).data, 'Failed to create site'),
+    executeApiCall(async () => (await api.post(apiUrl('/api/admin/sites'), payload)).data, 'Failed to create site'),
   assignEmployeeSite: async (payload) =>
-    executeApiCall(async () => (await api.post('/api/admin/employee-sites', payload)).data, 'Failed to assign site'),
+    executeApiCall(async () => (await api.post(apiUrl('/api/admin/employee-sites'), payload)).data, 'Failed to assign site'),
   getAttendance: async () =>
-    executeApiCall(async () => (await api.get('/api/admin/attendance')).data.data, 'Failed to load attendance'),
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/attendance'))).data.data, 'Failed to load attendance'),
   getLeaves: async () =>
-    executeApiCall(async () => (await api.get('/api/admin/leaves')).data.data, 'Failed to load leaves'),
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/leaves'))).data.data, 'Failed to load leaves'),
   processLeave: async (id, payload) =>
-    executeApiCall(async () => (await api.patch(`/api/admin/leaves/${id}`, payload)).data, 'Failed to process leave request'),
+    executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/leaves/${id}`), payload)).data, 'Failed to process leave request'),
 };

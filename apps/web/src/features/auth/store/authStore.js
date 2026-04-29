@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { supabase } from '../../../core/config/supabase';
 import { api } from '../../../core/api/client';
-import { IS_API_GATEWAY_CONFIGURED, IS_API_GATEWAY_LOCAL } from '../../../core/config/api';
+import { apiUrl, IS_API_GATEWAY_CONFIGURED, IS_API_GATEWAY_LOCAL } from '../../../core/config/api';
 
 const extractErrorMessage = (error, fallbackMessage) =>
   error?.response?.data?.error || error?.message || fallbackMessage;
@@ -34,7 +34,7 @@ export const useAuthStore = create((set) => ({
   login: async (usernameOrEmail, password) => {
     set({ loading: true, error: null });
     try {
-      const { data } = await api.post('/api/auth/login', { usernameOrEmail, password });
+      const { data } = await api.post(apiUrl('/api/auth/login'), { usernameOrEmail, password });
       if (!data.success) throw new Error(data.error || 'Login failed');
       await supabase.auth.signInWithPassword({ email: data.user.email, password });
       set({

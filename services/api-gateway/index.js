@@ -16,10 +16,14 @@ app.use(express.urlencoded({ extended: true }));
 // Request logging middleware
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
+  let bodyLog = req.method !== 'GET' ? req.body : undefined;
+  if (bodyLog && typeof bodyLog === 'object' && 'password' in bodyLog) {
+    bodyLog = { ...bodyLog, password: '[REDACTED]' };
+  }
   console.log(`[${timestamp}] ${req.method} ${req.path}`, {
     ip: req.ip,
     userAgent: req.get('user-agent'),
-    body: req.method !== 'GET' ? req.body : undefined
+    body: bodyLog,
   });
   next();
 });

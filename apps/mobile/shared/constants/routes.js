@@ -2,6 +2,7 @@
 export const ROUTES = {
   // Auth Routes
   LOGIN: 'Login',
+  COMPANY_ONBOARDING: 'CompanyOnboarding',
   SIGNUP: 'SignUp',
   FORGOT_PASSWORD: 'ForgotPassword',
   RESET_PASSWORD: 'ResetPassword',

@@ -337,6 +337,14 @@ router.post('/users', async (req, res) => {
       });
     }
 
+    if (String(role).toLowerCase() === 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        error:
+          'Creating super_admin accounts is only allowed via POST /api/auth/onboard-company (tenant onboarding).',
+      });
+    }
+
     const canonicalEmail = normalizeEmailForAuth(email);
 
     const resolved = await resolveCompanyIdForUserCreate(req.body);
@@ -579,6 +587,14 @@ router.patch('/users/:username/role', async (req, res) => {
       });
     }
 
+    if (String(role).toLowerCase() === 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        error:
+          'Assigning super_admin is only supported via POST /api/auth/onboard-company (tenant onboarding).',
+      });
+    }
+
     // Update role in Supabase database
     const { data, error } = await supabase
       .from('users')
@@ -772,6 +788,14 @@ router.patch('/users/:username', async (req, res) => {
     
     dbUpdates.updated_at = new Date().toISOString();
 
+    if (dbUpdates.role !== undefined && String(dbUpdates.role).toLowerCase() === 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        error:
+          'Assigning super_admin is only supported via POST /api/auth/onboard-company (tenant onboarding).',
+      });
+    }
+
     // Update user data in Supabase database
     const { data, error } = await supabase
       .from('users')
@@ -814,5 +838,8 @@ router.patch('/users/:username', async (req, res) => {
     });
   }
 });
+
+const onboardingRoutes = require('./onboarding');
+router.use(onboardingRoutes);
 
 module.exports = router;

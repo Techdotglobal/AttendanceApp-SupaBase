@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 
 const LOGO_PATH = '/logo.jpeg';
@@ -98,6 +98,12 @@ export function LoginPage() {
             >
               {loading ? 'Signing in...' : 'Sign In'}
             </button>
+
+            <p className="text-center text-sm text-blue-100/85">
+              <Link to="/onboard" className="text-white hover:underline font-medium">
+                New tenant? Create company &amp; super admin
+              </Link>
+            </p>
           </form>
         </div>
       </div>

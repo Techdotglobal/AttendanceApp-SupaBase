@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuthStore } from '../../features/auth/store/authStore';
 import { LoginPage } from '../../features/auth/pages/LoginPage';
+import { CompanyOnboardingPage } from '../../features/auth/pages/CompanyOnboardingPage';
 import { AppShell } from '../../shared/components/AppShell';
 import { DashboardPage } from '../../features/admin/pages/DashboardPage';
 import { UsersPage } from '../../features/admin/pages/UsersPage';
@@ -31,6 +32,7 @@ export function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/onboard" element={<CompanyOnboardingPage />} />
       <Route path="/unauthorized" element={<Unauthorized />} />
       <Route path="/" element={<Protected><AppShell /></Protected>}>
         <Route index element={<DashboardPage />} />

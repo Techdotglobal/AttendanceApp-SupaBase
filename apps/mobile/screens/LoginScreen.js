@@ -33,6 +33,7 @@ import {
 } from '../utils/biometricAuth';
 import Logo from '../components/Logo';
 import Trademark from '../components/Trademark';
+import { ROUTES } from '../shared/constants/routes';
 
 export default function LoginScreen() {
   const navigation = useNavigation();
@@ -507,6 +508,21 @@ export default function LoginScreen() {
               }}
             >
               Don't have an account? Sign Up
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => navigation.navigate(ROUTES.COMPANY_ONBOARDING)}
+            style={{ alignItems: 'center', marginTop: spacing.md }}
+          >
+            <Text
+              style={{
+                color: colors.primary,
+                fontSize: responsiveFont(14),
+                fontWeight: '600',
+              }}
+            >
+              New tenant? Create company & super admin
             </Text>
           </TouchableOpacity>
 

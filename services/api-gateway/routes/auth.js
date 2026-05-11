@@ -54,6 +54,65 @@ router.post('/login', async (req, res) => {
  * POST /api/auth/sync-metadata
  * Authorization: Bearer <access_token>
  */
+/**
+ * GET /api/auth/onboarding-status
+ */
+router.get('/onboarding-status', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  try {
+    const response = await axios.get(`${AUTH_SERVICE_URL}/api/auth/onboarding-status`, {
+      timeout: 10000,
+    });
+    console.log(`[${timestamp}] API Gateway: onboarding-status -> ${response.status}`);
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    console.error(`[${timestamp}] API Gateway - onboarding-status error:`, error.message);
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else if (error.request) {
+      res.status(503).json({
+        success: false,
+        error: 'Auth service unavailable',
+        message: 'Unable to connect to authentication service',
+      });
+    } else {
+      res.status(500).json({ success: false, error: 'Internal server error', message: error.message });
+    }
+  }
+});
+
+/**
+ * POST /api/auth/onboard-company
+ * Optional header: X-Onboarding-Key (required when at least one company exists).
+ */
+router.post('/onboard-company', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  try {
+    const response = await axios.post(`${AUTH_SERVICE_URL}/api/auth/onboard-company`, req.body || {}, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Onboarding-Key': req.get('x-onboarding-key') || req.get('X-Onboarding-Key') || '',
+      },
+      timeout: 30000,
+    });
+    console.log(`[${timestamp}] API Gateway: onboard-company -> ${response.status}`);
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    console.error(`[${timestamp}] API Gateway - onboard-company error:`, error.message);
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else if (error.request) {
+      res.status(503).json({
+        success: false,
+        error: 'Auth service unavailable',
+        message: 'Unable to connect to authentication service',
+      });
+    } else {
+      res.status(500).json({ success: false, error: 'Internal server error', message: error.message });
+    }
+  }
+});
+
 router.post('/sync-metadata', async (req, res) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] API Gateway: Received sync-metadata request`);

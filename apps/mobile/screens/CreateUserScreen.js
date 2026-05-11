@@ -14,7 +14,6 @@ import { createEmployee } from '../utils/employees';
 import { WORK_MODES } from '../utils/workModes';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../core/contexts/AuthContext';
-import { isHRAdmin } from '../shared/constants/roles';
 import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp } from '../utils/responsive';
 import Logo from '../components/Logo';
 import Trademark from '../components/Trademark';
@@ -22,7 +21,6 @@ import Trademark from '../components/Trademark';
 const ROLES = [
   { value: 'employee', label: 'Employee' },
   { value: 'manager', label: 'Manager' },
-  { value: 'super_admin', label: 'Super Admin' },
 ];
 
 const WORK_MODE_OPTIONS = [
@@ -93,12 +91,6 @@ export default function CreateUserScreen({ navigation, route }) {
 
   const handleCreateUser = async () => {
     if (!validateForm()) {
-      return;
-    }
-
-    // HR admins cannot create super_admin users
-    if (isHRAdmin(user) && formData.role === 'super_admin') {
-      Alert.alert('Permission Denied', 'HR admins cannot create super admin users. Only super admins can create other super admins.');
       return;
     }
 
@@ -288,13 +280,7 @@ export default function CreateUserScreen({ navigation, route }) {
               Role *
             </Text>
             <View className="flex-row" style={{ gap: spacing.sm }}>
-              {ROLES.filter(role => {
-                // HR admins cannot create super_admin users
-                if (isHRAdmin(user) && role.value === 'super_admin') {
-                  return false;
-                }
-                return true;
-              }).map((role) => {
+              {ROLES.map((role) => {
                 const isSelected = formData.role === role.value;
                 return (
                   <TouchableOpacity

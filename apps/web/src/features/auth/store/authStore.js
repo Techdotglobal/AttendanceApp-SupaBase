@@ -4,6 +4,11 @@ import { api } from '../../../core/api/client';
 import { apiUrl, IS_API_GATEWAY_CONFIGURED, IS_API_GATEWAY_LOCAL } from '../../../core/config/api';
 import { shouldSyncTenantMetadata } from '../../../core/auth/tenantClaims';
 import { syncTenantMetadataViaGateway } from '../../../core/auth/syncTenantMetadata';
+import {
+  normalizeEmailForAuth,
+  parseLoginIdentifier,
+  usernameEqVariants,
+} from '../../../core/auth/normalizeLogin';
 
 const extractErrorMessage = (error, fallbackMessage) =>
   error?.response?.data?.error || error?.message || fallbackMessage;
@@ -42,11 +47,20 @@ export const useAuthStore = create((set) => ({
     }
   },
   login: async (usernameOrEmail, password) => {
+    const { ident, isEmail } = parseLoginIdentifier(usernameOrEmail);
     set({ loading: true, error: null });
     try {
-      const { data } = await api.post(apiUrl('/api/auth/login'), { usernameOrEmail, password });
+      if (import.meta.env.DEV) {
+        console.log('[authStore] login', { isEmail, identPreview: isEmail ? `${ident.slice(0, 2)}***@${ident.split('@')[1]}` : ident });
+      }
+      const { data } = await api.post(apiUrl('/api/auth/login'), { usernameOrEmail: ident, password });
       if (!data.success) throw new Error(data.error || 'Login failed');
-      await supabase.auth.signInWithPassword({ email: data.user.email, password });
+      const signInEmail = normalizeEmailForAuth(data.user.email);
+      const { error: signInErr } = await supabase.auth.signInWithPassword({ email: signInEmail, password });
+      if (signInErr) {
+        console.error('[authStore] signIn after gateway', signInErr.message, signInErr);
+        throw signInErr;
+      }
       const { data: { session } } = await supabase.auth.getSession();
       const profile = {
         uid: data.user.uid,
@@ -85,8 +99,28 @@ export const useAuthStore = create((set) => ({
 
       if (gatewayLikelyUnavailable) {
         try {
+          let signInEmail;
+          if (isEmail) {
+            signInEmail = normalizeEmailForAuth(ident);
+          } else {
+            let row = null;
+            for (const u of usernameEqVariants(ident)) {
+              const { data: r } = await supabase.from('users').select('email').eq('username', u).maybeSingle();
+              if (r?.email) {
+                row = r;
+                break;
+              }
+            }
+            if (!row?.email) {
+              throw new Error('User not found for username');
+            }
+            signInEmail = normalizeEmailForAuth(row.email);
+          }
+          if (import.meta.env.DEV) {
+            console.log('[authStore] fallback signIn', { isEmail, emailHint: `${signInEmail.slice(0, 2)}***@${signInEmail.split('@')[1]}` });
+          }
           const { data: authData, error: signInError } = await supabase.auth.signInWithPassword({
-            email: usernameOrEmail.includes('@') ? usernameOrEmail : usernameOrEmail.toLowerCase(),
+            email: signInEmail,
             password,
           });
 

@@ -9,6 +9,7 @@
  */
 
 import { supabase } from '../core/config/supabase';
+import { normalizeEmailForAuth } from '../core/auth/normalizeLogin';
 
 /**
  * Change user password
@@ -43,7 +44,7 @@ export const changePassword = async (currentPassword, newPassword, userEmail) =>
     // Step 1: Re-authenticate user with current password
     // This ensures the user knows their current password before changing it
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email: userEmail,
+      email: normalizeEmailForAuth(userEmail),
       password: currentPassword,
     });
 

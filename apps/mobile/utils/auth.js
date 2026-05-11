@@ -1,6 +1,11 @@
 // Supabase Authentication
 import { API_GATEWAY_URL, API_TIMEOUT } from '../core/config/api';
 import { supabase } from '../core/config/supabase';
+import {
+  normalizeEmailForAuth,
+  parseLoginIdentifier,
+  usernameEqVariants,
+} from '../core/auth/normalizeLogin';
 
 async function refreshSessionIfCurrentUser(username) {
   try {
@@ -42,6 +47,8 @@ async function resyncTenantMetadataIfSessionUsername(username) {
  * @returns {Promise<{success: boolean, user?: {username: string, role: string}}>}
  */
 export const authenticateUser = async (usernameOrEmail, password) => {
+  const { ident, isEmail } = parseLoginIdentifier(usernameOrEmail);
+
   // ===== CRITICAL FIX: Clear existing session before new login =====
   // This prevents crashes when switching users (especially manager → employee)
   try {
@@ -88,8 +95,8 @@ export const authenticateUser = async (usernameOrEmail, password) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        usernameOrEmail: usernameOrEmail.trim(),
-        password: password,
+        usernameOrEmail: ident,
+        password,
       }),
       signal: controller.signal,
     });
@@ -100,39 +107,45 @@ export const authenticateUser = async (usernameOrEmail, password) => {
     
     // If API Gateway returns success, use it
     if (response.ok && data.success) {
-      console.log('✓ Authentication successful via API Gateway for:', data.user?.username || usernameOrEmail);
+      console.log('✓ Authentication successful via API Gateway for:', data.user?.username || ident);
       
       // IMPORTANT: We need to establish a Supabase session for RLS policies to work
       // API Gateway authenticates on the backend, but we need client-side session for database operations
       try {
-        // Get email from API Gateway response or resolve from username
-        let email = data.user?.email || usernameOrEmail;
-        
-        // If email is not provided and input is a username, look it up
-        if (!email.includes('@') || !data.user?.email) {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('email')
-            .eq('username', data.user?.username || usernameOrEmail)
-            .single();
-          
-          if (userData?.email) {
-            email = userData.email;
+        let emailForSession = data.user?.email ? normalizeEmailForAuth(data.user.email) : null;
+
+        if (!emailForSession) {
+          const nameCandidates = usernameEqVariants(data.user?.username || ident);
+          const toTry = nameCandidates.length ? nameCandidates : [data.user?.username || ident].filter(Boolean);
+          for (const u of toTry) {
+            const { data: userData } = await supabase.from('users').select('email').eq('username', u).maybeSingle();
+            if (userData?.email) {
+              emailForSession = normalizeEmailForAuth(userData.email);
+              break;
+            }
           }
         }
-        
-        // Establish Supabase session with the same credentials
-        // This is needed for RLS policies (auth.uid()) to work
-        const { data: authData, error: sessionError } = await supabase.auth.signInWithPassword({
-          email: email,
-          password: password,
-        });
-        
-        if (sessionError) {
-          console.warn('⚠️ Could not establish Supabase session after API Gateway login:', sessionError.message);
-          console.warn('⚠️ Database operations requiring RLS may fail. Consider using direct Supabase authentication.');
-        } else if (authData?.user) {
-          console.log('✓ Supabase session established for RLS policies');
+
+        if (__DEV__) {
+          console.log('[AUTH] post-gateway signIn', {
+            emailHint: emailForSession ? `${emailForSession.slice(0, 2)}***@${emailForSession.split('@')[1]}` : null,
+          });
+        }
+
+        if (emailForSession) {
+          const { error: sessionError } = await supabase.auth.signInWithPassword({
+            email: emailForSession,
+            password,
+          });
+
+          if (sessionError) {
+            console.warn('⚠️ Could not establish Supabase session after API Gateway login:', sessionError.message);
+            console.warn('⚠️ Database operations requiring RLS may fail. Consider using direct Supabase authentication.');
+          } else {
+            console.log('✓ Supabase session established for RLS policies');
+          }
+        } else {
+          console.warn('⚠️ No resolved email for Supabase session after API Gateway login');
         }
       } catch (sessionError) {
         console.warn('⚠️ Error establishing Supabase session:', sessionError.message);
@@ -142,10 +155,10 @@ export const authenticateUser = async (usernameOrEmail, password) => {
       return {
         success: true,
         user: {
-          username: data.user?.username || usernameOrEmail.split('@')[0],
+          username: data.user?.username || ident.split('@')[0],
           role: data.user?.role || 'employee',
           uid: data.user?.uid || '',
-          email: data.user?.email || usernameOrEmail,
+          email: data.user?.email || ident,
           name: data.user?.name,
           department: data.user?.department || '',
           position: data.user?.position || '',
@@ -195,39 +208,49 @@ export const authenticateUser = async (usernameOrEmail, password) => {
   // Fallback to Supabase authentication (direct client-side auth)
   try {
     console.log('Attempting authentication via Supabase...');
-    let email = usernameOrEmail.trim();
-    
-    // Check if input is a username (not an email)
-    if (!usernameOrEmail.includes('@')) {
-      // Find user by username in Supabase database
-      const { data: userData, error: queryError } = await supabase
-        .from('users')
-        .select('email, username')
-        .eq('username', usernameOrEmail)
-        .limit(1)
-        .single();
-      
-      if (queryError || !userData) {
+    let emailForAuth;
+
+    if (isEmail) {
+      emailForAuth = normalizeEmailForAuth(ident);
+    } else {
+      let userData = null;
+      for (const u of usernameEqVariants(ident)) {
+        const { data: row, error: queryError } = await supabase
+          .from('users')
+          .select('email, username')
+          .eq('username', u)
+          .maybeSingle();
+        if (queryError) {
+          console.warn('[AUTH] username lookup', u, queryError.message);
+        }
+        if (row?.email) {
+          userData = row;
+          break;
+        }
+      }
+
+      if (!userData?.email) {
         console.log('✗ Authentication failed: User not found');
         return { success: false, error: 'Invalid username or password' };
       }
-      
-      email = userData.email;
-      
-      if (!email) {
-        console.log('✗ Authentication failed: No email found for username');
-        return { success: false, error: 'Invalid username or password' };
-      }
+
+      emailForAuth = normalizeEmailForAuth(userData.email);
     }
-    
-    // Authenticate with Supabase using email
+
+    if (__DEV__) {
+      console.log('[AUTH] direct signIn', {
+        isEmail,
+        emailHint: `${emailForAuth.slice(0, 2)}***@${emailForAuth.split('@')[1]}`,
+      });
+    }
+
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email: email,
-      password: password,
+      email: emailForAuth,
+      password,
     });
     
     if (authError || !authData.user) {
-      console.error('Supabase authentication error:', authError?.message);
+      console.error('Supabase authentication error:', authError?.message, { code: authError?.status });
       let errorMessage = 'Invalid username or password';
       
       if (authError?.message?.includes('Invalid login credentials')) {
@@ -253,11 +276,12 @@ export const authenticateUser = async (usernameOrEmail, password) => {
     if (userError || !userData) {
       console.log('Query by uid failed, trying by email...', userError?.message);
       if (authData.user.email) {
+        const canon = normalizeEmailForAuth(authData.user.email);
         const { data: userDataByEmail, error: emailError } = await supabase
           .from('users')
           .select('*')
-          .eq('email', authData.user.email)
-          .single();
+          .eq('email', canon)
+          .maybeSingle();
         
         if (!emailError && userDataByEmail) {
           console.log('Found user by email:', userDataByEmail.username);
@@ -274,14 +298,14 @@ export const authenticateUser = async (usernameOrEmail, password) => {
       return { success: false, error: 'User data not found' };
     }
     
-    console.log('✓ Authentication successful via Supabase for:', userData.username || email, 'with role:', userData.role);
+    console.log('✓ Authentication successful via Supabase for:', userData.username || emailForAuth, 'with role:', userData.role);
     return {
       success: true,
       user: {
-        username: userData.username || email.split('@')[0],
+        username: userData.username || emailForAuth.split('@')[0],
         role: userData.role || 'employee',
         uid: authData.user.id,
-        email: authData.user.email || email,
+        email: authData.user.email || emailForAuth,
         name: userData.name,
         department: userData.department || '',
         position: userData.position || '',

@@ -2,6 +2,11 @@
 // Migrated to Supabase
 import { supabase } from '../../../core/config/supabase';
 import { API_GATEWAY_URL } from '../../../core/config/api';
+import {
+  normalizeEmailForAuth,
+  parseLoginIdentifier,
+  usernameEqVariants,
+} from '../../../core/auth/normalizeLogin';
 
 async function refreshSessionIfCurrentUser(username) {
   try {
@@ -42,6 +47,8 @@ async function resyncTenantMetadataIfSessionUsername(username) {
  * @returns {Promise<{success: boolean, user?: Object, error?: string}>}
  */
 export const authenticateUser = async (usernameOrEmail, password) => {
+  const { ident, isEmail } = parseLoginIdentifier(usernameOrEmail);
+
   try {
     // Try API Gateway first (recommended - uses backend service)
     try {
@@ -51,22 +58,22 @@ export const authenticateUser = async (usernameOrEmail, password) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          usernameOrEmail: usernameOrEmail.trim(),
-          password: password,
+          usernameOrEmail: ident,
+          password,
         }),
       });
       
       const data = await response.json();
       
       if (response.ok && data.success) {
-        console.log('✓ Authentication successful via API Gateway for:', data.user?.username || usernameOrEmail);
+        console.log('✓ Authentication successful via API Gateway for:', data.user?.username || ident);
         return {
           success: true,
           user: {
-            username: data.user?.username || usernameOrEmail.split('@')[0],
+            username: data.user?.username || ident.split('@')[0],
             role: data.user?.role || 'employee',
             uid: data.user?.uid || '',
-            email: data.user?.email || usernameOrEmail,
+            email: data.user?.email || ident,
             name: data.user?.name,
             department: data.user?.department || '',
             position: data.user?.position || '',
@@ -81,39 +88,48 @@ export const authenticateUser = async (usernameOrEmail, password) => {
     }
     
     // Fallback: Direct Supabase authentication
-    let email = usernameOrEmail.trim();
-    
-    // Check if input is a username (not an email)
-    if (!usernameOrEmail.includes('@')) {
-      // Find user by username in Supabase database
-      const { data: userData, error: queryError } = await supabase
-        .from('users')
-        .select('email, username')
-        .eq('username', usernameOrEmail)
-        .limit(1)
-        .single();
-      
-      if (queryError || !userData) {
+    let emailForAuth;
+    if (isEmail) {
+      emailForAuth = normalizeEmailForAuth(ident);
+    } else {
+      let userData = null;
+      for (const u of usernameEqVariants(ident)) {
+        const { data: row, error: queryError } = await supabase
+          .from('users')
+          .select('email, username')
+          .eq('username', u)
+          .maybeSingle();
+        if (queryError) {
+          console.warn('[authService] username lookup', u, queryError.message);
+        }
+        if (row?.email) {
+          userData = row;
+          break;
+        }
+      }
+
+      if (!userData?.email) {
         console.log('✗ Authentication failed: User not found');
         return { success: false, error: 'Invalid username or password' };
       }
-      
-      email = userData.email;
-      
-      if (!email) {
-        console.log('✗ Authentication failed: No email found for username');
-        return { success: false, error: 'Invalid username or password' };
-      }
+
+      emailForAuth = normalizeEmailForAuth(userData.email);
     }
-    
-    // Authenticate with Supabase using email
+
+    if (__DEV__) {
+      console.log('[authService] direct signIn', {
+        isEmail,
+        emailHint: `${emailForAuth.slice(0, 2)}***@${emailForAuth.split('@')[1]}`,
+      });
+    }
+
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email: email,
-      password: password,
+      email: emailForAuth,
+      password,
     });
     
     if (authError || !authData.user) {
-      console.error('Supabase authentication error:', authError?.message);
+      console.error('Supabase authentication error:', authError?.message, { code: authError?.status });
       let errorMessage = 'Invalid username or password';
       
       if (authError?.message?.includes('Invalid login credentials')) {
@@ -139,14 +155,14 @@ export const authenticateUser = async (usernameOrEmail, password) => {
       return { success: false, error: 'User data not found' };
     }
     
-    console.log('✓ Authentication successful for:', userData.username || email, 'with role:', userData.role);
+    console.log('✓ Authentication successful for:', userData.username || emailForAuth, 'with role:', userData.role);
     return {
       success: true,
       user: {
-        username: userData.username || email.split('@')[0],
+        username: userData.username || emailForAuth.split('@')[0],
         role: userData.role || 'employee',
         uid: authData.user.id,
-        email: authData.user.email || email,
+        email: authData.user.email || emailForAuth,
         name: userData.name,
         department: userData.department || '',
         position: userData.position || '',

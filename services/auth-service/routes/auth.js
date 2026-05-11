@@ -2,6 +2,11 @@ const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/supabase');
 const { syncAuthMetadataForUid } = require('../lib/authMetadata');
+const {
+  normalizeEmailForAuth,
+  parseLoginIdentifier,
+  usernameEqVariants,
+} = require('../lib/loginNormalize');
 
 /**
  * Resolve company UUID for user creation (body override or first company row).
@@ -47,12 +52,18 @@ async function resolveCompanyIdForUserCreate(body) {
  */
 router.post('/login', async (req, res) => {
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] Auth Service: Login request received for:`, req.body.usernameOrEmail || 'unknown');
-  
-  try {
-    const { usernameOrEmail, password } = req.body;
+  const { usernameOrEmail, password } = req.body || {};
+  const { ident, isEmail } = parseLoginIdentifier(usernameOrEmail);
+  console.log(`[${timestamp}] Auth Service: Login request`, {
+    hasIdentifier: Boolean(ident),
+    isEmail,
+    identifierPreview: isEmail
+      ? `${ident.slice(0, 2)}***@${ident.split('@')[1] || ''}`
+      : ident,
+  });
 
-    if (!usernameOrEmail || !password) {
+  try {
+    if (!ident || !password) {
       console.log(`[${timestamp}] Auth Service: Login failed - missing credentials`);
       return res.status(400).json({
         success: false,
@@ -60,36 +71,36 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    let email = usernameOrEmail.trim();
-    
-    // Step 1: If input is a username (not an email), resolve email using Supabase
-    if (!usernameOrEmail.includes('@')) {
+    let emailForAuth;
+
+    if (!isEmail) {
       try {
-        // Query Supabase database for user by username
-        const { data: userData, error: queryError } = await supabase
-          .from('users')
-          .select('email, username')
-          .eq('username', usernameOrEmail)
-          .limit(1)
-          .single();
-        
-        if (queryError || !userData) {
-          console.log('✗ Authentication failed: User not found');
+        let resolved = null;
+        const variants = usernameEqVariants(ident);
+        for (const u of variants) {
+          const { data: row, error: qErr } = await supabase
+            .from('users')
+            .select('email, username')
+            .eq('username', u)
+            .maybeSingle();
+          if (qErr) {
+            console.warn(`[${timestamp}] Auth Service: username lookup error`, { username: u, message: qErr.message });
+          }
+          if (row?.email) {
+            resolved = row;
+            break;
+          }
+        }
+
+        if (!resolved?.email) {
+          console.log(`[${timestamp}] Auth Service: ✗ User not found for username variants`, { variants });
           return res.status(401).json({
             success: false,
             error: 'Invalid username or password',
           });
         }
-        
-        email = userData.email;
-        
-        if (!email) {
-          console.log('✗ Authentication failed: No email found for username');
-          return res.status(401).json({
-            success: false,
-            error: 'Invalid username or password',
-          });
-        }
+
+        emailForAuth = normalizeEmailForAuth(resolved.email);
       } catch (queryError) {
         console.error('Database query error:', queryError.message);
         return res.status(500).json({
@@ -97,20 +108,29 @@ router.post('/login', async (req, res) => {
           error: 'Internal server error',
         });
       }
+    } else {
+      emailForAuth = normalizeEmailForAuth(ident);
     }
-    
-    // Step 2: Authenticate using Supabase Auth
+
+    // Step 2: Authenticate using Supabase Auth (email must match GoTrue canonical lowercased form)
     try {
+      console.log(`[${timestamp}] Auth Service: signInWithPassword`, {
+        emailHint: `${emailForAuth.slice(0, 2)}***@${emailForAuth.split('@')[1] || ''}`,
+      });
+
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email: email,
-        password: password,
+        email: emailForAuth,
+        password,
       });
       
       if (authError || !authData.user) {
         // Handle authentication errors
         if (authError?.message?.includes('Invalid login credentials') || 
             authError?.message?.includes('Email not confirmed')) {
-          console.log('✗ Authentication failed: Invalid credentials');
+          console.log(`[${timestamp}] Auth Service: ✗ signIn rejected`, {
+            code: authError?.status,
+            message: authError?.message,
+          });
           return res.status(401).json({
             success: false,
             error: 'Invalid username or password',
@@ -150,7 +170,7 @@ router.post('/login', async (req, res) => {
         });
       }
       
-      console.log(`[${timestamp}] Auth Service: ✓ Authentication successful for:`, userData.username || email, 'with role:', userData.role);
+      console.log(`[${timestamp}] Auth Service: ✓ Authentication successful for:`, userData.username || emailForAuth, 'with role:', userData.role);
 
       const metaSync = await syncAuthMetadataForUid(supabase, userId);
       if (!metaSync.ok) {
@@ -162,8 +182,8 @@ router.post('/login', async (req, res) => {
         success: true,
         user: {
           uid: userId,
-          username: userData.username || email.split('@')[0],
-          email: userData.email || email,
+          username: userData.username || emailForAuth.split('@')[0],
+          email: userData.email || emailForAuth,
           role: userData.role || 'employee',
           name: userData.name,
           department: userData.department || '',
@@ -317,6 +337,8 @@ router.post('/users', async (req, res) => {
       });
     }
 
+    const canonicalEmail = normalizeEmailForAuth(email);
+
     const resolved = await resolveCompanyIdForUserCreate(req.body);
     if (resolved.error) {
       return res.status(400).json({ success: false, error: resolved.error });
@@ -324,7 +346,7 @@ router.post('/users', async (req, res) => {
     const { companyId } = resolved;
 
     const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
-      email: email,
+      email: canonicalEmail,
       password: password,
       email_confirm: true,
       user_metadata: {
@@ -365,7 +387,7 @@ router.post('/users', async (req, res) => {
       .insert({
         uid: authUser.user.id,
         username: username,
-        email: email,
+        email: canonicalEmail,
         name: name || username,
         role: role,
         company_id: companyId,
@@ -401,7 +423,7 @@ router.post('/users', async (req, res) => {
       user: {
         uid: authUser.user.id,
         username: username,
-        email: email,
+        email: canonicalEmail,
         role: role,
         name: name || username,
         department: userData.department || '',

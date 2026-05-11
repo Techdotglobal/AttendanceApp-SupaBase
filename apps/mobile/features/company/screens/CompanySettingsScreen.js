@@ -41,7 +41,7 @@ export default function CompanySettingsScreen({ navigation, route }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await getCompany();
+      const data = await getCompany(currentUser?.companyId);
       setCompany(data);
     } catch (e) {
       console.error('[CompanySettingsScreen] loadCompany:', e);

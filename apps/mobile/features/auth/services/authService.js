@@ -241,21 +241,12 @@ export const createUser = async (userData) => {
       company_id: company_id_snake,
     } = userData;
 
-    let companyId = companyIdInput ?? company_id_snake;
+    const companyId = companyIdInput ?? company_id_snake;
     if (!companyId) {
-      const { data: comp, error: compErr } = await supabase
-        .from('companies')
-        .select('id')
-        .order('created_at', { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (compErr) {
-        console.warn('[authService] Could not load default company:', compErr.message);
-      }
-      companyId = comp?.id;
-    }
-    if (!companyId) {
-      return { success: false, error: 'companyId is required (no companies row to default to)' };
+      return {
+        success: false,
+        error: 'company_id is required for this tenant (no default company fallback)',
+      };
     }
     
     if (!username || !password || !role) {

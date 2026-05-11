@@ -91,14 +91,19 @@ function logStorageError(error, context) {
 }
 
 /**
- * Get the single company record (first row).
+ * Get the company row for the current tenant.
+ * @param {string} companyId - UUID from authenticated user (required for isolation)
  * @returns {Promise<{ id: string, name: string, logo_url: string | null, created_at: string, updated_at: string } | null>}
  */
-export async function getCompany() {
+export async function getCompany(companyId) {
+  if (!companyId) {
+    console.warn('[companyService] getCompany called without companyId');
+    return null;
+  }
   const { data, error } = await supabase
     .from('companies')
     .select('id, name, logo_url, created_at, updated_at')
-    .limit(1)
+    .eq('id', companyId)
     .maybeSingle();
 
   if (error) {

@@ -9,32 +9,23 @@ const {
 } = require('../lib/loginNormalize');
 
 /**
- * Resolve company UUID for user creation (body override or first company row).
+ * Resolve company UUID for user creation — explicit tenant only (no default/first company).
  * @returns {Promise<{ companyId: string } | { error: string }>}
  */
 async function resolveCompanyIdForUserCreate(body) {
   const requested = body.company_id;
-  if (requested) {
-    const { data: comp, error } = await supabase.from('companies').select('id').eq('id', requested).maybeSingle();
-    if (error) {
-      return { error: error.message || 'Failed to validate company_id' };
-    }
-    if (!comp?.id) {
-      return { error: 'Invalid company_id' };
-    }
-    return { companyId: comp.id };
+  if (!requested || String(requested).trim() === '') {
+    return {
+      error:
+        'company_id is required. Pass the caller tenant UUID (no automatic default company).',
+    };
   }
-  const { data: comp, error: listErr } = await supabase
-    .from('companies')
-    .select('id')
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  if (listErr) {
-    return { error: listErr.message || 'Failed to resolve default company' };
+  const { data: comp, error } = await supabase.from('companies').select('id').eq('id', requested).maybeSingle();
+  if (error) {
+    return { error: error.message || 'Failed to validate company_id' };
   }
   if (!comp?.id) {
-    return { error: 'No company configured. Create a companies row or pass company_id.' };
+    return { error: 'Invalid company_id' };
   }
   return { companyId: comp.id };
 }

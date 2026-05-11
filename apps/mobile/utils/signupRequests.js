@@ -246,10 +246,12 @@ export const approveSignupRequest = async (requestId, approvedBy) => {
       .eq('username', approvedBy)
       .maybeSingle();
 
-    let companyId = approverRow?.company_id;
+    const companyId = approverRow?.company_id;
     if (!companyId) {
-      const { data: comp } = await supabase.from('companies').select('id').limit(1).maybeSingle();
-      companyId = comp?.id;
+      return {
+        success: false,
+        error: 'Approver has no company_id; cannot assign tenant for approved signup.',
+      };
     }
 
     // Create user in Supabase

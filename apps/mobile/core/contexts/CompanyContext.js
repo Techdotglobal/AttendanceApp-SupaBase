@@ -18,7 +18,7 @@ export function CompanyProvider({ children }) {
     }
     setLoading(true);
     try {
-      const data = await getCompany();
+      const data = await getCompany(user.companyId);
       setCompany(data);
       setLogoUrl(data?.logo_url || null);
     } catch (e) {

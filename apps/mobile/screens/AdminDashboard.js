@@ -113,10 +113,17 @@ export default function AdminDashboard({ route }) {
     const fetchCompany = async () => {
       setCompanyLoading(true);
       try {
+        const tenantId = user?.companyId;
+        if (!tenantId) {
+          if (!isMounted) return;
+          setCompany(null);
+          setCompanyLoading(false);
+          return;
+        }
         const { data, error } = await supabase
           .from('companies')
           .select('id, name, logo_url')
-          .limit(1)
+          .eq('id', tenantId)
           .maybeSingle();
 
         if (!isMounted) return;
@@ -147,7 +154,7 @@ export default function AdminDashboard({ route }) {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [user?.companyId]);
 
   const loadRecords = async () => {
     try {

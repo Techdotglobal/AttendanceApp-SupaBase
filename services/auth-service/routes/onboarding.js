@@ -160,6 +160,7 @@ router.post('/onboard-company', async (req, res) => {
       return res.status(500).json({ success: false, error: companyErr?.message || 'Failed to create company' });
     }
     companyId = companyRow.id;
+    console.log(`[${ts}] [onboard-company] inserted company`, { created_company_id: companyId, name: companyNameTrim });
 
     const { data: deptRow, error: deptErr } = await supabase
       .from('departments')
@@ -174,6 +175,10 @@ router.post('/onboard-company', async (req, res) => {
       return res.status(500).json({ success: false, error: deptErr?.message || 'Failed to create Management department' });
     }
     departmentId = deptRow.id;
+    console.log(`[${ts}] [onboard-company] inserted department`, {
+      created_department_id: departmentId,
+      company_id: companyId,
+    });
 
     const initialMeta = {
       username,
@@ -242,7 +247,29 @@ router.post('/onboard-company', async (req, res) => {
       console.error(`[${ts}] [onboard-company] JWT sync failed (user may need refresh):`, syncResult.error);
     }
 
-    console.log(`[${ts}] [onboard-company] success company=${companyRow.id} user=${username}`);
+    const jwtCompany =
+      syncResult.ok && syncResult.row?.company_id != null
+        ? String(syncResult.row.company_id)
+        : null;
+    if (String(profileRow.company_id) !== String(companyRow.id)) {
+      console.error(`[${ts}] [onboard-company] INVARIANT FAILED: profile.company_id !== inserted company`, {
+        profileCompany: profileRow.company_id,
+        expectedCompany: companyRow.id,
+      });
+      await teardownPartialOnboarding({ companyId: companyRow.id, authUserId });
+      return res.status(500).json({
+        success: false,
+        error: 'Onboarding invariant failed: user profile company mismatch',
+      });
+    }
+
+    console.log(`[${ts}] [onboard-company] success`, {
+      created_company_id: companyRow.id,
+      created_department_id: departmentId,
+      assigned_company_id: profileRow.company_id,
+      jwt_company_id_after_sync: jwtCompany,
+      username,
+    });
 
     return res.status(201).json({
       success: true,

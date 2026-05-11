@@ -2,6 +2,38 @@
 import { API_GATEWAY_URL, API_TIMEOUT } from '../core/config/api';
 import { supabase } from '../core/config/supabase';
 
+async function refreshSessionIfCurrentUser(username) {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const metaU = session?.user?.user_metadata?.username;
+    if (session?.user && metaU === username) {
+      const { error } = await supabase.auth.refreshSession();
+      if (error) {
+        console.warn('[AUTH] refreshSession after profile change:', error.message);
+      }
+    }
+  } catch (e) {
+    console.warn('[AUTH] refreshSessionIfCurrentUser:', e?.message || e);
+  }
+}
+
+/** When DB was updated without auth-service, push JWT from DB for the signed-in user only. */
+async function resyncTenantMetadataIfSessionUsername(username) {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const metaU = session?.user?.user_metadata?.username;
+    if (!session?.user || metaU !== username) return;
+    const { syncTenantMetadataViaGateway } = await import('../core/auth/syncTenantMetadata');
+    const syncRes = await syncTenantMetadataViaGateway();
+    if (!syncRes.success) {
+      console.warn('[AUTH] Tenant resync after direct DB update failed:', syncRes.error);
+      await supabase.auth.refreshSession();
+    }
+  } catch (e) {
+    console.warn('[AUTH] resyncTenantMetadataIfSessionUsername:', e?.message || e);
+  }
+}
+
 /**
  * Authenticate user - tries API Gateway first, falls back to Supabase
  * Supports both username and email login
@@ -118,6 +150,8 @@ export const authenticateUser = async (usernameOrEmail, password) => {
           department: data.user?.department || '',
           position: data.user?.position || '',
           workMode: data.user?.workMode || 'in_office',
+          companyId: data.user?.company_id != null ? String(data.user.company_id) : null,
+          departmentId: data.user?.department_id != null ? String(data.user.department_id) : null,
         },
       };
     }
@@ -252,6 +286,8 @@ export const authenticateUser = async (usernameOrEmail, password) => {
         department: userData.department || '',
         position: userData.position || '',
         workMode: userData.work_mode || 'in_office',
+        companyId: userData.company_id != null ? String(userData.company_id) : null,
+        departmentId: userData.department_id != null ? String(userData.department_id) : null,
       }
     };
   } catch (error) {
@@ -320,8 +356,27 @@ export const addUserToFile = async (userData) => {
       department = '',
       position = '',
       workMode = 'in_office',
-      hireDate = new Date().toISOString().split('T')[0]
+      hireDate = new Date().toISOString().split('T')[0],
+      companyId: companyIdInput,
+      company_id: company_id_snake,
     } = userData;
+
+    let companyId = companyIdInput ?? company_id_snake;
+    if (!companyId) {
+      const { data: comp, error: compErr } = await supabase
+        .from('companies')
+        .select('id')
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (compErr) {
+        console.warn('[AUTH] Could not load default company:', compErr.message);
+      }
+      companyId = comp?.id;
+    }
+    if (!companyId) {
+      return { success: false, error: 'companyId is required (no companies row to default to)' };
+    }
     
     if (!username || !password || !role) {
       return { success: false, error: 'Username, password, and role are required' };
@@ -355,6 +410,7 @@ export const addUserToFile = async (userData) => {
           position,
           workMode,
           hireDate,
+          company_id: companyId,
         }),
       });
       
@@ -377,8 +433,11 @@ export const addUserToFile = async (userData) => {
           data: {
             username: username,
             name: name || username,
-          }
-        }
+            company_id: String(companyId),
+            role,
+            department_id: null,
+          },
+        },
       });
       
       if (authError || !authData.user) {
@@ -400,6 +459,7 @@ export const addUserToFile = async (userData) => {
           email: email,
           name: name || username,
           role: role,
+          company_id: companyId,
           department: department || '',
           position: position || '',
           work_mode: workMode || 'in_office',
@@ -411,6 +471,19 @@ export const addUserToFile = async (userData) => {
         // Try to delete the auth user if database insert fails
         await supabase.auth.admin.deleteUser(authData.user.id).catch(() => {});
         return { success: false, error: 'Failed to create user profile' };
+      }
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user?.id === authData.user.id) {
+          const { syncTenantMetadataViaGateway } = await import('../core/auth/syncTenantMetadata');
+          const syncRes = await syncTenantMetadataViaGateway();
+          if (!syncRes.success) {
+            console.warn('[AUTH] Post-signup tenant metadata sync:', syncRes.error);
+          }
+        }
+      } catch (syncErr) {
+        console.warn('[AUTH] Post-signup sync skipped:', syncErr?.message || syncErr);
       }
       
       console.log('✓ User created in Supabase:', username, `(${role}, ${department || 'No dept'})`);
@@ -445,6 +518,7 @@ export const updateUserRole = async (username, newRole) => {
       
       if (response.ok && data.success) {
         console.log('✓ User role updated via API Gateway:', username, '->', newRole);
+        await refreshSessionIfCurrentUser(username);
         return { success: true };
       } else {
         return { success: false, error: data.error || 'Failed to update user role' };
@@ -466,6 +540,7 @@ export const updateUserRole = async (username, newRole) => {
       }
       
       console.log('✓ User role updated in Supabase:', username, '->', newRole);
+      await resyncTenantMetadataIfSessionUsername(username);
       return { success: true };
     }
   } catch (error) {
@@ -516,6 +591,7 @@ export const updateUserInfo = async (username, updates) => {
       
       if (response.ok && data.success) {
         console.log('✓ User info updated via API Gateway:', username);
+        await refreshSessionIfCurrentUser(username);
         return { success: true };
       } else {
         return { success: false, error: data.error || 'Failed to update user info' };
@@ -535,6 +611,7 @@ export const updateUserInfo = async (username, updates) => {
       }
       
       console.log('✓ User info updated in Supabase:', username);
+      await resyncTenantMetadataIfSessionUsername(username);
       return { success: true };
     }
   } catch (error) {

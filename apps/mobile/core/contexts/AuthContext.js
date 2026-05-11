@@ -1,3 +1,9 @@
+/**
+ * AuthProvider loads the signed-in user from public.users, keeps JWT user_metadata
+ * aligned (company_id, role, department_id) via the API Gateway sync-metadata endpoint,
+ * and exposes tenant fields on context `user` (companyId, departmentId, role). The
+ * database row is authoritative for display; JWT is refreshed for Supabase RLS.
+ */
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { supabase } from '../config/supabase';
 import { getEmployeeByUsername } from '../../utils/employees';
@@ -281,13 +287,16 @@ export function AuthProvider({ children }) {
         // Check if cancelled
         if (currentCall.cancelled) return;
         
-        // Fallback to basic user info from auth
+        // Fallback to basic user info from auth (no DB row — tenant unknown)
         if (authUser) {
+          console.warn('[AUTH_CONTEXT] No users row for uid; JWT-only fallback (RLS may fail until profile exists)');
           setUser({
             uid: authUser.id,
             email: authUser.email,
             username: authUser.email?.split('@')[0],
             role: 'employee',
+            companyId: null,
+            departmentId: null,
           });
         }
         setIsLoading(false);
@@ -297,6 +306,47 @@ export function AuthProvider({ children }) {
       // Check if cancelled before setting user
       if (currentCall.cancelled) {
         return;
+      }
+
+      /**
+       * Multi-tenant: keep Supabase JWT user_metadata aligned with public.users
+       * (company_id, role, department_id) via trusted auth-service + refreshSession.
+       */
+      try {
+        const { shouldSyncTenantMetadata, getTenantClaimsFromSession, tenantClaimsMatchUserRow } = await import(
+          '../auth/tenantClaims'
+        );
+        const { syncTenantMetadataViaGateway } = await import('../auth/syncTenantMetadata');
+
+        let sessionForClaims = session;
+        if (shouldSyncTenantMetadata(session, userData)) {
+          console.log('[AUTH_CONTEXT] JWT tenant metadata missing or stale vs users row; syncing via gateway...');
+          const syncResult = await syncTenantMetadataViaGateway();
+          if (!syncResult.success) {
+            console.error('[AUTH_CONTEXT] Tenant metadata sync failed:', syncResult.error);
+          }
+          const { data: { session: refreshed }, error: refreshReadError } = await supabase.auth.getSession();
+          if (refreshReadError) {
+            console.warn('[AUTH_CONTEXT] getSession after sync:', refreshReadError.message);
+          }
+          if (refreshed) {
+            sessionForClaims = refreshed;
+          }
+        }
+
+        const claims = getTenantClaimsFromSession(sessionForClaims);
+        if (!tenantClaimsMatchUserRow(sessionForClaims, userData)) {
+          console.error('[AUTH_CONTEXT] Tenant JWT mismatched users row after sync attempt', {
+            jwt: claims,
+            db: {
+              company_id: userData.company_id,
+              role: userData.role,
+              department_id: userData.department_id,
+            },
+          });
+        }
+      } catch (syncBlockError) {
+        console.error('[AUTH_CONTEXT] Tenant metadata sync block error:', syncBlockError?.message || syncBlockError);
       }
       
       // Try to get employee data for additional info
@@ -316,6 +366,8 @@ export function AuthProvider({ children }) {
         email: authUser?.email || userData.email,
         username: userData.username || authUser?.email?.split('@')[0],
         role: userData.role || 'employee',
+        companyId: userData.company_id != null ? String(userData.company_id) : null,
+        departmentId: userData.department_id != null ? String(userData.department_id) : null,
         name: userData.name || employee?.name || authUser?.user_metadata?.name,
         department: userData.department || employee?.department || '',
         position: userData.position || employee?.position || '',
@@ -368,6 +420,8 @@ export function AuthProvider({ children }) {
               email: fallbackSession.user.email,
               username: fallbackSession.user.email?.split('@')[0],
               role: 'employee',
+              companyId: null,
+              departmentId: null,
             });
           }
         } catch (getSessionError) {

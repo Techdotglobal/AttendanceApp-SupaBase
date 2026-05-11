@@ -50,6 +50,47 @@ router.post('/login', async (req, res) => {
 });
 
 /**
+ * Forward JWT metadata sync to auth-service
+ * POST /api/auth/sync-metadata
+ * Authorization: Bearer <access_token>
+ */
+router.post('/sync-metadata', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] API Gateway: Received sync-metadata request`);
+
+  try {
+    const response = await axios.post(`${AUTH_SERVICE_URL}/api/auth/sync-metadata`, req.body || {}, {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: req.headers.authorization || '',
+      },
+      timeout: 10000,
+    });
+
+    console.log(`[${timestamp}] API Gateway: Auth Service responded with status ${response.status}`);
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    console.error(`[${timestamp}] API Gateway - sync-metadata forwarding error:`, error.message);
+
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else if (error.request) {
+      res.status(503).json({
+        success: false,
+        error: 'Auth service unavailable',
+        message: 'Unable to connect to authentication service',
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error.message,
+      });
+    }
+  }
+});
+
+/**
  * Forward username check request to auth-service
  * GET /api/auth/check-username/:username
  */

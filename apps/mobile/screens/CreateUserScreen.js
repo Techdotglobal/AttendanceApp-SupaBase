@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { createEmployee } from '../utils/employees';
 import { WORK_MODES } from '../utils/workModes';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../core/contexts/AuthContext';
 import { isHRAdmin } from '../shared/constants/roles';
 import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp } from '../utils/responsive';
 import Logo from '../components/Logo';
@@ -31,7 +32,9 @@ const WORK_MODE_OPTIONS = [
 ];
 
 export default function CreateUserScreen({ navigation, route }) {
-  const { user } = route.params || {};
+  const { user: routeUser } = route.params || {};
+  const { user: authUser } = useAuth();
+  const user = authUser || routeUser || {};
   const { colors } = useTheme();
   const [formData, setFormData] = useState({
     username: '',
@@ -111,6 +114,7 @@ export default function CreateUserScreen({ navigation, route }) {
         position: formData.position.trim(),
         workMode: formData.workMode,
         hireDate: formData.hireDate,
+        companyId: user?.companyId ?? null,
       });
 
       if (result.success) {

@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { supabase } from '../../../core/config/supabase';
 import { api } from '../../../core/api/client';
 import { apiUrl, IS_API_GATEWAY_CONFIGURED, IS_API_GATEWAY_LOCAL } from '../../../core/config/api';
+import { shouldSyncTenantMetadata } from '../../../core/auth/tenantClaims';
+import { syncTenantMetadataViaGateway } from '../../../core/auth/syncTenantMetadata';
 
 const extractErrorMessage = (error, fallbackMessage) =>
   error?.response?.data?.error || error?.message || fallbackMessage;
@@ -15,6 +17,12 @@ export const useAuthStore = create((set) => ({
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return set({ loading: false, user: null });
       const { data } = await supabase.from('users').select('*').eq('uid', session.user.id).single();
+      if (data && shouldSyncTenantMetadata(session, data)) {
+        const syncRes = await syncTenantMetadataViaGateway();
+        if (!syncRes.success) {
+          console.warn('[authStore] bootstrap tenant metadata sync:', syncRes.error);
+        }
+      }
       set({
         loading: false,
         user: data
@@ -24,6 +32,8 @@ export const useAuthStore = create((set) => ({
               email: data.email,
               role: data.role,
               department: data.department,
+              companyId: data.company_id != null ? String(data.company_id) : null,
+              departmentId: data.department_id != null ? String(data.department_id) : null,
             }
           : null,
       });
@@ -37,9 +47,25 @@ export const useAuthStore = create((set) => ({
       const { data } = await api.post(apiUrl('/api/auth/login'), { usernameOrEmail, password });
       if (!data.success) throw new Error(data.error || 'Login failed');
       await supabase.auth.signInWithPassword({ email: data.user.email, password });
+      const { data: { session } } = await supabase.auth.getSession();
+      const profile = {
+        uid: data.user.uid,
+        username: data.user.username,
+        email: data.user.email,
+        role: data.user.role,
+        department: data.user.department,
+        companyId: data.user.company_id != null ? String(data.user.company_id) : null,
+        departmentId: data.user.department_id != null ? String(data.user.department_id) : null,
+      };
+      if (session && shouldSyncTenantMetadata(session, { ...profile, company_id: profile.companyId, department_id: profile.departmentId, role: profile.role })) {
+        const syncRes = await syncTenantMetadataViaGateway();
+        if (!syncRes.success) {
+          console.warn('[authStore] login tenant sync:', syncRes.error);
+        }
+      }
       set({
         loading: false,
-        user: data.user,
+        user: profile,
       });
       return { success: true, role: data.user.role };
     } catch (error) {
@@ -90,8 +116,24 @@ export const useAuthStore = create((set) => ({
                 email: profile.email,
                 role: profile.role,
                 department: profile.department,
+                companyId: profile.company_id != null ? String(profile.company_id) : null,
+                departmentId: profile.department_id != null ? String(profile.department_id) : null,
               }
             : null;
+
+          if (normalizedUser && authData?.session) {
+            const row = {
+              company_id: normalizedUser.companyId,
+              department_id: normalizedUser.departmentId,
+              role: normalizedUser.role,
+            };
+            if (shouldSyncTenantMetadata(authData.session, row)) {
+              const syncRes = await syncTenantMetadataViaGateway();
+              if (!syncRes.success) {
+                console.warn('[authStore] fallback login tenant sync:', syncRes.error);
+              }
+            }
+          }
 
           set({ loading: false, user: normalizedUser, error: null });
           return { success: true, role: normalizedUser?.role };

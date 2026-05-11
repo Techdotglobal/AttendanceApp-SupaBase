@@ -1057,6 +1057,8 @@ export const createEmployee = async (employeeData) => {
       position = '',
       workMode = WORK_MODES.IN_OFFICE,
       hireDate = new Date().toISOString().split('T')[0],
+      companyId,
+      company_id,
     } = employeeData;
 
     // Validate required fields
@@ -1111,6 +1113,7 @@ export const createEmployee = async (employeeData) => {
       position,
       workMode,
       hireDate,
+      companyId: companyId ?? company_id,
     });
 
     if (!addUserResult.success) {

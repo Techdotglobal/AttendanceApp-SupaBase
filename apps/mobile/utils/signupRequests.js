@@ -240,6 +240,18 @@ export const approveSignupRequest = async (requestId, approvedBy) => {
       return { success: false, error: `Request is already ${request.status}` };
     }
 
+    const { data: approverRow } = await supabase
+      .from('users')
+      .select('company_id')
+      .eq('username', approvedBy)
+      .maybeSingle();
+
+    let companyId = approverRow?.company_id;
+    if (!companyId) {
+      const { data: comp } = await supabase.from('companies').select('id').limit(1).maybeSingle();
+      companyId = comp?.id;
+    }
+
     // Create user in Supabase
     const { addUserToFile } = await import('./auth');
     const addResult = await addUserToFile({
@@ -251,7 +263,8 @@ export const approveSignupRequest = async (requestId, approvedBy) => {
       department: request.department || '',
       position: request.position || '',
       workMode: request.workMode || 'in_office',
-      hireDate: request.hireDate || new Date().toISOString().split('T')[0]
+      hireDate: request.hireDate || new Date().toISOString().split('T')[0],
+      companyId,
     });
     
     if (!addResult.success) {

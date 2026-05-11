@@ -2,6 +2,94 @@ import { supabase } from '../../../core/config/supabase';
 
 const BUCKET_NAME = 'company-logos';
 
+/** UUID pattern — storage object prefix must be the company id only (no path segments). */
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const MIME_TO_EXT = {
+  'image/png': 'png',
+  'image/jpeg': 'jpeg',
+  'image/jpg': 'jpeg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+};
+
+const ALLOWED_LOGO_EXT = new Set(Object.values(MIME_TO_EXT));
+
+/**
+ * @param {string} companyId
+ * @returns {void}
+ */
+function assertValidCompanyId(companyId) {
+  if (companyId == null || String(companyId).trim() === '') {
+    const err = new Error('Company ID is required');
+    console.error('[companyService]', err.message);
+    throw err;
+  }
+  const id = String(companyId).trim();
+  if (!UUID_REGEX.test(id)) {
+    const err = new Error('Invalid company ID format');
+    console.error('[companyService]', err.message, { companyId: id });
+    throw err;
+  }
+}
+
+/**
+ * Resolve a safe file extension for `logo.{ext}` from picker asset (mime, type, or URI).
+ * @param {object} file
+ * @returns {string} lowercase extension without dot
+ */
+function resolveLogoFileExtension(file) {
+  const mimeRaw = (file.mimeType || file.type || '').trim().toLowerCase();
+  const mime = mimeRaw.split(';')[0].trim();
+
+  if (mime && MIME_TO_EXT[mime]) {
+    return MIME_TO_EXT[mime];
+  }
+  if (mime && mime.startsWith('image/')) {
+    const sub = mime.split('/')[1]?.split('+')[0];
+    if (sub === 'jpg') return 'jpeg';
+    if (sub && ALLOWED_LOGO_EXT.has(sub)) return sub;
+  }
+
+  const uri = file.uri || '';
+  const pathPart = uri.split('?')[0] || '';
+  const last = pathPart.split('/').pop() || '';
+  const fromUri = last.includes('.') ? last.split('.').pop()?.toLowerCase().split('?')[0] : null;
+  if (fromUri === 'jpg') return 'jpeg';
+  if (fromUri && ALLOWED_LOGO_EXT.has(fromUri)) {
+    return fromUri;
+  }
+
+  const err = new Error(
+    'Invalid image: use PNG, JPEG, WebP, or GIF (HEIC supported where the picker provides type).'
+  );
+  console.error('[companyService] resolveLogoFileExtension: could not infer extension', {
+    mimeType: file.mimeType,
+    type: file.type,
+    uriSample: uri ? `${uri.slice(0, 80)}…` : null,
+  });
+  throw err;
+}
+
+/**
+ * @param {object} error
+ * @param {string} context
+ */
+function logStorageError(error, context) {
+  if (!error) return;
+  const msg = error.message || String(error);
+  const status = error.statusCode ?? error.status;
+  const name = error.name;
+  console.error(`[companyService] ${context}: Supabase storage error`, {
+    message: msg,
+    statusCode: status,
+    name,
+    error,
+  });
+}
+
 /**
  * Get the single company record (first row).
  * @returns {Promise<{ id: string, name: string, logo_url: string | null, created_at: string, updated_at: string } | null>}
@@ -21,120 +109,108 @@ export async function getCompany() {
 }
 
 /**
- * Upload logo file to storage and return public URL.
- * Uses versioned filenames (company-{companyId}-{timestamp}.{ext}) to avoid CDN caching issues.
+ * Upload company logo to `{companyId}/logo.{ext}` (upsert) and return the public URL.
  * Uses ArrayBuffer for reliable binary upload in React Native / Expo.
- * Does NOT use upsert; each upload creates a new file.
  *
  * @param {string} companyId - UUID of company
  * @param {object} file - { uri: string, mimeType?: string, type?: string } from ImagePicker
  * @returns {Promise<string>} Public URL of uploaded file
  */
-export async function uploadLogo(companyId, file) {
-  // 1. Validate input
+async function uploadLogoToStorage(companyId, file) {
+  assertValidCompanyId(companyId);
+
   if (!file) {
-    const err = new Error('uploadLogo: file is required');
+    const err = new Error('No image selected');
     console.error('[companyService]', err.message);
     throw err;
   }
   if (!file.uri) {
-    const err = new Error('uploadLogo: file.uri is required');
-    console.error('[companyService]', err.message);
-    throw err;
-  }
-  if (!file.mimeType && !file.type) {
-    const err = new Error('uploadLogo: file.mimeType or file.type is required');
+    const err = new Error('Invalid image selection: missing file location');
     console.error('[companyService]', err.message);
     throw err;
   }
 
-  // 2. Extract extension safely
-  let fileExt = (
-    file.mimeType?.split('/').pop() ||
-    file.type?.split('/').pop() ||
-    file.uri.split('.').pop() ||
-    'png'
-  )
-    .toLowerCase()
-    .split('?')[0];
+  let fileExt;
+  try {
+    fileExt = resolveLogoFileExtension(file);
+  } catch (e) {
+    console.error('[companyService] uploadLogoToStorage: invalid image selection', e?.message || e);
+    throw e;
+  }
 
-  // 3. Normalize
-  if (fileExt === 'jpg') fileExt = 'jpeg';
+  const storagePath = `${companyId}/logo.${fileExt}`;
+  const contentType = `image/${fileExt === 'jpeg' ? 'jpeg' : fileExt}`;
 
-  // 4. Versioned filename (no upsert, no reuse – prevents CDN caching issues)
-  const version = Date.now();
-  const fileName = `company-${companyId}-${version}.${fileExt}`;
-  const contentType = `image/${fileExt}`;
-
-  console.log('[companyService] uploadLogo: starting', {
-    fileName,
-    fileUri: file.uri,
+  console.log('[companyService] uploadLogoToStorage: starting', {
+    storagePath,
+    bucket: BUCKET_NAME,
     contentType,
   });
 
-  // 5. Convert to ArrayBuffer (NOT blob)
   let arrayBuffer;
   try {
     const response = await fetch(file.uri);
     if (!response.ok) {
-      throw new Error(`uploadLogo: failed to fetch image URI (status ${response.status})`);
+      const err = new Error(`Could not read selected image (HTTP ${response.status})`);
+      console.error('[companyService] uploadLogoToStorage: fetch failed', {
+        status: response.status,
+        storagePath,
+      });
+      throw err;
     }
     arrayBuffer = await response.arrayBuffer();
   } catch (e) {
-    console.error('[companyService] uploadLogo: fetch/arrayBuffer failed', e?.message || e);
-    throw e;
+    if (e.message?.startsWith('Could not read selected image')) throw e;
+    console.error('[companyService] uploadLogoToStorage: fetch/arrayBuffer failed', e?.message || e);
+    throw new Error('Could not read the selected image. Try another photo or format.');
   }
 
-  // Validate arrayBuffer
   if (!arrayBuffer) {
-    const err = new Error('uploadLogo: arrayBuffer is null/undefined');
+    const err = new Error('Invalid image: empty file');
     console.error('[companyService]', err.message);
     throw err;
   }
   const byteLength = arrayBuffer.byteLength ?? 0;
   if (byteLength === 0) {
-    const err = new Error('uploadLogo: arrayBuffer.byteLength is 0 (will NOT upload blank file)');
+    const err = new Error('Invalid image: empty file (will not upload)');
     console.error('[companyService]', err.message);
     throw err;
   }
 
-  console.log('[companyService] uploadLogo:', {
-    fileName,
-    fileUri: file.uri,
+  console.log('[companyService] uploadLogoToStorage: uploading', {
+    storagePath,
     contentType,
     arrayBufferByteLength: byteLength,
   });
 
-  // 6. Upload (no upsert; new file every time)
-  const { data, error } = await supabase.storage
-    .from(BUCKET_NAME)
-    .upload(fileName, arrayBuffer, {
-      contentType,
-      cacheControl: '3600',
-    });
+  const { data, error } = await supabase.storage.from(BUCKET_NAME).upload(storagePath, arrayBuffer, {
+    contentType,
+    cacheControl: '3600',
+    upsert: true,
+  });
 
   if (error) {
-    console.error('[companyService] uploadLogo error:', error.message);
-    throw error;
+    logStorageError(error, 'uploadLogoToStorage');
+    const friendly =
+      error.message?.includes('JWT') || error.message?.includes('row-level security')
+        ? 'Upload denied. Check you are signed in as a super admin.'
+        : error.message || 'Logo upload failed';
+    throw new Error(friendly);
   }
 
-  // 7. Generate public URL
   const { data: urlData } = supabase.storage.from(BUCKET_NAME).getPublicUrl(data.path);
   const publicUrl = urlData?.publicUrl ?? null;
 
-  // 8. Validate publicUrl exists
   if (!publicUrl) {
-    const err = new Error('uploadLogo: failed to generate public URL');
-    console.error('[companyService]', err.message);
+    const err = new Error('Could not build public URL for uploaded logo');
+    console.error('[companyService]', err.message, { path: data.path });
     throw err;
   }
 
-  console.log('[companyService] uploadLogo success:', {
-    fileName: data.path,
-    fileUri: file.uri,
-    contentType,
-    arrayBufferByteLength: byteLength,
+  console.log('[companyService] uploadLogoToStorage: success', {
+    path: data.path,
     publicUrl,
+    arrayBufferByteLength: byteLength,
   });
 
   return publicUrl;
@@ -149,13 +225,15 @@ export async function uploadLogo(companyId, file) {
  * @returns {Promise<{ logo_url: string | null }>}
  */
 export async function updateCompanyLogo(companyId, file) {
+  assertValidCompanyId(companyId);
+
   let logoUrl = null;
 
   if (file) {
     try {
-      logoUrl = await uploadLogo(companyId, file);
+      logoUrl = await uploadLogoToStorage(companyId, file);
     } catch (e) {
-      console.error('[companyService] updateCompanyLogo: upload failed, not updating DB', e?.message || e);
+      console.error('[companyService] updateCompanyLogo: upload failed, DB not updated', e?.message || e);
       throw e;
     }
   }

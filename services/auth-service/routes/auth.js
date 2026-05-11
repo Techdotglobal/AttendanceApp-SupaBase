@@ -1,6 +1,38 @@
 const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/supabase');
+const { syncAuthMetadataForUid } = require('../lib/authMetadata');
+
+/**
+ * Resolve company UUID for user creation (body override or first company row).
+ * @returns {Promise<{ companyId: string } | { error: string }>}
+ */
+async function resolveCompanyIdForUserCreate(body) {
+  const requested = body.company_id;
+  if (requested) {
+    const { data: comp, error } = await supabase.from('companies').select('id').eq('id', requested).maybeSingle();
+    if (error) {
+      return { error: error.message || 'Failed to validate company_id' };
+    }
+    if (!comp?.id) {
+      return { error: 'Invalid company_id' };
+    }
+    return { companyId: comp.id };
+  }
+  const { data: comp, error: listErr } = await supabase
+    .from('companies')
+    .select('id')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (listErr) {
+    return { error: listErr.message || 'Failed to resolve default company' };
+  }
+  if (!comp?.id) {
+    return { error: 'No company configured. Create a companies row or pass company_id.' };
+  }
+  return { companyId: comp.id };
+}
 
 /**
  * POST /api/auth/login
@@ -119,8 +151,13 @@ router.post('/login', async (req, res) => {
       }
       
       console.log(`[${timestamp}] Auth Service: ✓ Authentication successful for:`, userData.username || email, 'with role:', userData.role);
-      
-      // Step 4: Return user info
+
+      const metaSync = await syncAuthMetadataForUid(supabase, userId);
+      if (!metaSync.ok) {
+        console.error(`[${timestamp}] Auth Service: JWT user_metadata sync failed after login:`, metaSync.error);
+      }
+
+      // Step 4: Return user info (tenant fields mirror DB; client also refreshes JWT)
       return res.status(200).json({
         success: true,
         user: {
@@ -132,6 +169,8 @@ router.post('/login', async (req, res) => {
           department: userData.department || '',
           position: userData.position || '',
           workMode: userData.work_mode || 'in_office',
+          company_id: userData.company_id != null ? String(userData.company_id) : null,
+          department_id: userData.department_id != null ? String(userData.department_id) : null,
         },
       });
     } catch (authError) {
@@ -145,6 +184,55 @@ router.post('/login', async (req, res) => {
   } catch (error) {
     console.error('Login error:', error);
     
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * POST /api/auth/sync-metadata
+ * Bearer: current access_token. Rebuilds user_metadata from public.users (service role).
+ * Used when JWT tenant claims are missing or stale after role/department/company changes.
+ */
+router.post('/sync-metadata', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+
+  if (!token) {
+    console.warn(`[${timestamp}] Auth Service: sync-metadata missing bearer token`);
+    return res.status(401).json({
+      success: false,
+      error: 'Missing Authorization: Bearer <access_token>',
+    });
+  }
+
+  try {
+    const { data: userResult, error: userErr } = await supabase.auth.getUser(token);
+    if (userErr || !userResult?.user?.id) {
+      console.error(`[${timestamp}] Auth Service: sync-metadata invalid token`, userErr?.message);
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired session',
+      });
+    }
+
+    const syncResult = await syncAuthMetadataForUid(supabase, userResult.user.id);
+    if (!syncResult.ok) {
+      console.error(`[${timestamp}] Auth Service: sync-metadata failed`, syncResult.error);
+      return res.status(500).json({
+        success: false,
+        error: syncResult.error || 'Failed to sync metadata',
+      });
+    }
+
+    console.log(`[${timestamp}] Auth Service: ✓ sync-metadata for uid`, userResult.user.id);
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('sync-metadata error:', error);
     return res.status(500).json({
       success: false,
       error: 'Internal server error',
@@ -207,7 +295,7 @@ router.get('/check-username/:username', async (req, res) => {
 router.post('/users', async (req, res) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] Auth Service: Create user request received for:`, req.body.username || 'unknown');
-  
+
   try {
     const {
       username,
@@ -229,34 +317,41 @@ router.post('/users', async (req, res) => {
       });
     }
 
-    // Create user in Supabase Auth using Admin API
+    const resolved = await resolveCompanyIdForUserCreate(req.body);
+    if (resolved.error) {
+      return res.status(400).json({ success: false, error: resolved.error });
+    }
+    const { companyId } = resolved;
+
     const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
       email: email,
       password: password,
-      email_confirm: true, // Auto-confirm email
+      email_confirm: true,
       user_metadata: {
-        username: username,
+        username,
         name: name || username,
+        company_id: companyId,
+        role,
+        department_id: null,
       },
     });
 
     if (authError) {
-      // Handle Supabase Auth errors
-      if (authError.message?.includes('already registered') || 
+      if (authError.message?.includes('already registered') ||
           authError.message?.includes('already exists')) {
         return res.status(409).json({
           success: false,
           error: 'Email already exists',
         });
       }
-      
+
       if (authError.message?.includes('Invalid email')) {
         return res.status(400).json({
           success: false,
           error: 'Invalid email address',
         });
       }
-      
+
       console.error('Create user auth error:', authError);
       return res.status(500).json({
         success: false,
@@ -265,7 +360,6 @@ router.post('/users', async (req, res) => {
       });
     }
 
-    // Create user document in Supabase database
     const { data: userData, error: dbError } = await supabase
       .from('users')
       .insert({
@@ -274,6 +368,7 @@ router.post('/users', async (req, res) => {
         email: email,
         name: name || username,
         role: role,
+        company_id: companyId,
         department: department || '',
         position: position || '',
         work_mode: workMode || 'in_office',
@@ -284,9 +379,8 @@ router.post('/users', async (req, res) => {
       .single();
 
     if (dbError) {
-      // If database insert fails, try to delete the auth user
       await supabase.auth.admin.deleteUser(authUser.user.id);
-      
+
       console.error('Create user database error:', dbError);
       return res.status(500).json({
         success: false,
@@ -295,7 +389,12 @@ router.post('/users', async (req, res) => {
       });
     }
 
-    console.log(`[${timestamp}] Auth Service: ✓ User created:`, username, 'with role:', role);
+    const metaSync = await syncAuthMetadataForUid(supabase, authUser.user.id);
+    if (!metaSync.ok) {
+      console.error(`[${timestamp}] Auth Service: JWT metadata sync failed after create:`, metaSync.error);
+    }
+
+    console.log(`[${timestamp}] Auth Service: ✓ User created:`, username, 'company:', companyId, 'role:', role);
 
     return res.status(201).json({
       success: true,
@@ -305,14 +404,16 @@ router.post('/users', async (req, res) => {
         email: email,
         role: role,
         name: name || username,
-        department: department || '',
+        department: userData.department || '',
         position: position || '',
         workMode: workMode || 'in_office',
+        company_id: userData.company_id != null ? String(userData.company_id) : String(companyId),
+        department_id: userData.department_id != null ? String(userData.department_id) : null,
       },
     });
   } catch (error) {
     console.error('Create user error:', error);
-    
+
     return res.status(500).json({
       success: false,
       error: 'Internal server error',
@@ -479,6 +580,12 @@ router.patch('/users/:username/role', async (req, res) => {
         success: false,
         error: 'User not found',
       });
+    }
+
+    const targetUid = data[0].uid;
+    const metaSync = await syncAuthMetadataForUid(supabase, targetUid);
+    if (!metaSync.ok) {
+      console.error(`[${timestamp}] Auth Service: JWT metadata sync failed after role update:`, metaSync.error);
     }
 
     console.log(`[${timestamp}] Auth Service: ✓ User role updated:`, username, 'to', role);
@@ -663,6 +770,12 @@ router.patch('/users/:username', async (req, res) => {
         success: false,
         error: 'User not found',
       });
+    }
+
+    const targetUid = data[0].uid;
+    const metaSync = await syncAuthMetadataForUid(supabase, targetUid);
+    if (!metaSync.ok) {
+      console.error(`[${timestamp}] Auth Service: JWT metadata sync failed after profile update:`, metaSync.error);
     }
 
     console.log(`[${timestamp}] Auth Service: ✓ User info updated:`, username);

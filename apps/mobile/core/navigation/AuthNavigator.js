@@ -2,7 +2,6 @@
 import React from 'react';
 import { createStackNavigator } from '@react-navigation/stack';
 import LoginScreen from '../../screens/LoginScreen';
-import CompanyOnboardingScreen from '../../screens/CompanyOnboardingScreen';
 import SignUpScreen from '../../screens/SignUpScreen';
 import ForgotPasswordScreen from '../../screens/ForgotPasswordScreen';
 import ResetPasswordScreen from '../../screens/ResetPasswordScreen';
@@ -21,11 +20,6 @@ export default function AuthNavigator() {
         name={ROUTES.LOGIN} 
         component={LoginScreen}
         options={{ title: 'hadir.ai' }}
-      />
-      <Stack.Screen
-        name={ROUTES.COMPANY_ONBOARDING}
-        component={CompanyOnboardingScreen}
-        options={{ title: 'Create company' }}
       />
       <Stack.Screen 
         name={ROUTES.SIGNUP} 

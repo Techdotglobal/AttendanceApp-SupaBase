@@ -517,21 +517,6 @@ export default function LoginScreen() {
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={() => navigation.navigate(ROUTES.COMPANY_ONBOARDING)}
-            style={{ alignItems: 'center', marginTop: spacing.md }}
-          >
-            <Text
-              style={{
-                color: colors.primary,
-                fontSize: responsiveFont(14),
-                fontWeight: '600',
-              }}
-            >
-              New tenant? Create company & super admin
-            </Text>
-          </TouchableOpacity>
-
           {/* Footer: Logo and Trademark - inside ScrollView so never cut off */}
           <View 
             style={{ 

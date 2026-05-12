@@ -25,6 +25,18 @@ const roleStyles = {
   employee: 'bg-slate-100 text-slate-700 border-slate-200',
 };
 
+const EMPTY_CREATE_FORM = {
+  username: '',
+  email: '',
+  password: '',
+  name: '',
+  role: 'employee',
+  department: '',
+  position: '',
+  workMode: 'in_office',
+  hireDate: '',
+};
+
 export function UsersPage() {
   const { user } = useAuthStore();
   const [rows, setRows] = useState([]);
@@ -36,22 +48,89 @@ export function UsersPage() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [activeUser, setActiveUser] = useState(null);
   const [error, setError] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState(EMPTY_CREATE_FORM);
+  const [createError, setCreateError] = useState('');
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [tenantDepartments, setTenantDepartments] = useState([]);
+
+  const canCreate = user?.role === 'super_admin' || user?.role === 'manager';
+
+  const loadUsers = async () => {
+    setError('');
+    try {
+      const users = await adminService.getUsers();
+      setRows(users || []);
+    } catch (err) {
+      console.error('[UsersPage] Failed to load users:', err);
+      setError(err?.message || 'Failed to load users');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadDepartments = async () => {
+    try {
+      const depts = await adminService.getDepartments();
+      setTenantDepartments(depts || []);
+    } catch (err) {
+      console.warn('[UsersPage] Failed to load departments:', err?.message || err);
+    }
+  };
 
   useEffect(() => {
-    const loadUsers = async () => {
-      setError('');
-      try {
-        const users = await adminService.getUsers();
-        setRows(users || []);
-      } catch (err) {
-        console.error('[UsersPage] Failed to load users:', err);
-        setError(err?.message || 'Failed to load users');
-      } finally {
-        setLoading(false);
-      }
-    };
     loadUsers();
+    loadDepartments();
   }, []);
+
+  const openCreate = () => {
+    setCreateError('');
+    setCreateForm(EMPTY_CREATE_FORM);
+    setCreateOpen(true);
+  };
+
+  const submitCreate = async (e) => {
+    e?.preventDefault?.();
+    setCreateError('');
+
+    const payload = {
+      username: createForm.username.trim(),
+      email: createForm.email.trim(),
+      password: createForm.password,
+      name: createForm.name.trim() || createForm.username.trim(),
+      role: createForm.role,
+      department: createForm.department || '',
+      position: createForm.position.trim(),
+      workMode: createForm.workMode || 'in_office',
+      hireDate: createForm.hireDate || undefined,
+    };
+
+    if (!payload.username || !payload.email || !payload.password || !payload.role) {
+      setCreateError('Username, email, password and role are required.');
+      return;
+    }
+    if (payload.password.length < 8) {
+      setCreateError('Password must be at least 8 characters.');
+      return;
+    }
+    if (payload.role === 'super_admin') {
+      setCreateError('Super admins are created only via company onboarding.');
+      return;
+    }
+
+    setCreateSubmitting(true);
+    try {
+      await adminService.createUser(payload);
+      setCreateOpen(false);
+      setCreateForm(EMPTY_CREATE_FORM);
+      await loadUsers();
+    } catch (err) {
+      console.error('[UsersPage] Create user failed:', err);
+      setCreateError(err?.message || 'Failed to create user');
+    } finally {
+      setCreateSubmitting(false);
+    }
+  };
 
   const toggleActive = async (u) => {
     setError('');
@@ -140,9 +219,20 @@ export function UsersPage() {
 
   return (
     <div className="space-y-5 animate-fade-up">
-      <div>
-        <h1 className="text-2xl font-semibold text-white">User Management</h1>
-        <p className="mt-1 text-sm text-slate-200">Manage users, roles, and department assignments.</p>
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">User Management</h1>
+          <p className="mt-1 text-sm text-slate-200">Manage users, roles, and department assignments.</p>
+        </div>
+        {canCreate && (
+          <button
+            type="button"
+            onClick={openCreate}
+            className="self-start md:self-auto rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 active:scale-[0.99] transition-all duration-200 shadow"
+          >
+            + Create user
+          </button>
+        )}
       </div>
 
       <GlassCard className="p-4">
@@ -258,6 +348,164 @@ export function UsersPage() {
                 </tr>
               ))}
       </GlassTable>
+
+      <SlideOverPanel open={createOpen} onClose={() => (createSubmitting ? null : setCreateOpen(false))}>
+        <form className="h-full flex flex-col" onSubmit={submitCreate}>
+          <div className="p-5 border-b border-white/10 flex items-center justify-between">
+            <div>
+              <p className="text-lg font-semibold text-white">Create user</p>
+              <p className="text-xs text-slate-300">
+                New users are automatically assigned to your company.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => !createSubmitting && setCreateOpen(false)}
+              className="rounded-md border border-white/20 bg-white/10 px-2 py-1 text-sm text-slate-200 hover:bg-white/20"
+              disabled={createSubmitting}
+            >
+              Close
+            </button>
+          </div>
+
+          <div className="p-5 space-y-4 overflow-y-auto">
+            {createError && (
+              <div className="rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+                {createError}
+              </div>
+            )}
+
+            <label className="block space-y-1">
+              <span className="text-xs text-slate-300">Username *</span>
+              <input
+                required
+                value={createForm.username}
+                onChange={(e) => setCreateForm((f) => ({ ...f, username: e.target.value }))}
+                autoCapitalize="off"
+                className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-400"
+                placeholder="jane.doe"
+              />
+            </label>
+
+            <label className="block space-y-1">
+              <span className="text-xs text-slate-300">Full name</span>
+              <input
+                value={createForm.name}
+                onChange={(e) => setCreateForm((f) => ({ ...f, name: e.target.value }))}
+                className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-400"
+                placeholder="Jane Doe"
+              />
+            </label>
+
+            <label className="block space-y-1">
+              <span className="text-xs text-slate-300">Email *</span>
+              <input
+                required
+                type="email"
+                value={createForm.email}
+                onChange={(e) => setCreateForm((f) => ({ ...f, email: e.target.value }))}
+                className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-400"
+                placeholder="jane@company.com"
+              />
+            </label>
+
+            <label className="block space-y-1">
+              <span className="text-xs text-slate-300">Temporary password * (min 8 chars)</span>
+              <input
+                required
+                type="password"
+                minLength={8}
+                value={createForm.password}
+                onChange={(e) => setCreateForm((f) => ({ ...f, password: e.target.value }))}
+                className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-400"
+                placeholder="At least 8 characters"
+              />
+              <span className="text-[10px] text-slate-400">Share this securely with the user; they can change it later.</span>
+            </label>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="block space-y-1">
+                <span className="text-xs text-slate-300">Role *</span>
+                <select
+                  value={createForm.role}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, role: e.target.value }))}
+                  className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100"
+                >
+                  <option value="employee">Employee</option>
+                  {user?.role === 'super_admin' && <option value="manager">Manager</option>}
+                </select>
+              </label>
+
+              <label className="block space-y-1">
+                <span className="text-xs text-slate-300">Department</span>
+                <select
+                  value={createForm.department}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, department: e.target.value }))}
+                  className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100"
+                >
+                  <option value="">— None —</option>
+                  {tenantDepartments.map((d) => (
+                    <option key={d.id} value={d.name}>{d.name}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="block space-y-1">
+                <span className="text-xs text-slate-300">Position</span>
+                <input
+                  value={createForm.position}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, position: e.target.value }))}
+                  className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-400"
+                  placeholder="Software Engineer"
+                />
+              </label>
+
+              <label className="block space-y-1">
+                <span className="text-xs text-slate-300">Work mode</span>
+                <select
+                  value={createForm.workMode}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, workMode: e.target.value }))}
+                  className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100"
+                >
+                  <option value="in_office">In office</option>
+                  <option value="remote">Remote</option>
+                  <option value="hybrid">Hybrid</option>
+                </select>
+              </label>
+            </div>
+
+            <label className="block space-y-1">
+              <span className="text-xs text-slate-300">Hire date</span>
+              <input
+                type="date"
+                value={createForm.hireDate}
+                onChange={(e) => setCreateForm((f) => ({ ...f, hireDate: e.target.value }))}
+                className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100"
+              />
+            </label>
+          </div>
+
+          <div className="mt-auto p-5 border-t border-white/10 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setCreateOpen(false)}
+              disabled={createSubmitting}
+              className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-slate-100 hover:bg-white/20"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={createSubmitting}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60 active:scale-[0.99] transition-all duration-200"
+            >
+              {createSubmitting ? 'Creating…' : 'Create user'}
+            </button>
+          </div>
+        </form>
+      </SlideOverPanel>
 
       <SlideOverPanel open={Boolean(activeUser)} onClose={closePanel}>
           {activeUser && (

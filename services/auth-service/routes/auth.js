@@ -8,26 +8,62 @@ const {
   usernameEqVariants,
 } = require('../lib/loginNormalize');
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PRIVILEGED_ROLES = new Set(['super_admin', 'manager']);
+
 /**
- * Resolve company UUID for user creation — explicit tenant only (no default/first company).
- * @returns {Promise<{ companyId: string } | { error: string }>}
+ * Parse X-User-Context (caller identity injected by the api-gateway from the
+ * web/mobile auth store). Required for any route that mutates tenant data.
+ * @param {import('express').Request} req
+ * @returns {{ uid?: string, role?: string, company_id?: string, companyId?: string, department?: string } | null}
  */
-async function resolveCompanyIdForUserCreate(body) {
-  const requested = body.company_id;
-  if (!requested || String(requested).trim() === '') {
-    return {
-      error:
-        'company_id is required. Pass the caller tenant UUID (no automatic default company).',
-    };
+function parseRequester(req) {
+  const raw = req.get('x-user-context') || req.get('X-User-Context');
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
   }
-  const { data: comp, error } = await supabase.from('companies').select('id').eq('id', requested).maybeSingle();
-  if (error) {
-    return { error: error.message || 'Failed to validate company_id' };
+}
+
+/**
+ * Resolve the caller tenant. Prefers the requester's company_id from
+ * X-User-Context; if absent, reads it from public.users by uid. Returns null
+ * when the caller cannot be tied to a tenant.
+ * @returns {Promise<string|null>}
+ */
+async function resolveRequesterCompanyId(requester) {
+  if (!requester) return null;
+  const direct = requester.company_id ?? requester.companyId;
+  if (direct && UUID_RE.test(String(direct))) {
+    return String(direct);
   }
-  if (!comp?.id) {
-    return { error: 'Invalid company_id' };
-  }
-  return { companyId: comp.id };
+  if (!requester.uid) return null;
+  const { data, error } = await supabase
+    .from('users')
+    .select('company_id')
+    .eq('uid', requester.uid)
+    .maybeSingle();
+  if (error || !data?.company_id) return null;
+  return UUID_RE.test(String(data.company_id)) ? String(data.company_id) : null;
+}
+
+/**
+ * Look up department_id within the requester's tenant for a given name.
+ * Returns null if not found or the input is empty.
+ */
+async function resolveDepartmentIdByName(companyId, departmentName) {
+  if (!departmentName || !companyId) return null;
+  const trimmed = String(departmentName).trim();
+  if (!trimmed) return null;
+  const { data } = await supabase
+    .from('departments')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('name', trimmed)
+    .maybeSingle();
+  return data?.id ?? null;
 }
 
 /**
@@ -336,13 +372,74 @@ router.post('/users', async (req, res) => {
       });
     }
 
+    // Tenant guard: caller must be authenticated (X-User-Context), in a
+    // privileged role, and we pin company_id to the caller's tenant — never
+    // trust a client-supplied company_id (prevents cross-tenant injection).
+    const requester = parseRequester(req);
+    if (!requester || !requester.role) {
+      return res.status(401).json({
+        success: false,
+        error: 'Missing requester identity (X-User-Context).',
+      });
+    }
+    if (!PRIVILEGED_ROLES.has(String(requester.role))) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only super admins or managers can create users.',
+      });
+    }
+    const companyId = await resolveRequesterCompanyId(requester);
+    if (!companyId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Caller is not bound to a tenant (company_id missing). Re-login or update the client.',
+      });
+    }
+    // Managers can only create employees (no manager/super_admin escalation).
+    if (requester.role === 'manager' && String(role).toLowerCase() !== 'employee') {
+      return res.status(403).json({
+        success: false,
+        error: 'Managers can only create users with role "employee".',
+      });
+    }
+    // If the client supplied a different company_id, reject (signal of bug or attack).
+    const suppliedCompany = req.body.company_id ?? req.body.companyId;
+    if (suppliedCompany && String(suppliedCompany) !== companyId) {
+      return res.status(403).json({
+        success: false,
+        error: 'company_id mismatch with authenticated tenant.',
+      });
+    }
+
     const canonicalEmail = normalizeEmailForAuth(email);
 
-    const resolved = await resolveCompanyIdForUserCreate(req.body);
-    if (resolved.error) {
-      return res.status(400).json({ success: false, error: resolved.error });
+    // Tenant-scoped duplicate checks (username unique within tenant; email
+    // unique globally because Supabase Auth is project-wide).
+    const { data: dupEmail } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', canonicalEmail)
+      .maybeSingle();
+    if (dupEmail) {
+      return res.status(409).json({ success: false, error: 'Email already exists.' });
     }
-    const { companyId } = resolved;
+    const { data: dupUsername } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', username)
+      .maybeSingle();
+    if (dupUsername) {
+      return res.status(409).json({ success: false, error: 'Username already taken.' });
+    }
+
+    // Resolve department_id within the caller's tenant (if name provided).
+    const departmentId = await resolveDepartmentIdByName(companyId, department);
+    if (department && !departmentId) {
+      return res.status(400).json({
+        success: false,
+        error: `Department "${department}" does not exist in your tenant. Create it first.`,
+      });
+    }
 
     const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
       email: canonicalEmail,
@@ -353,7 +450,7 @@ router.post('/users', async (req, res) => {
         name: name || username,
         company_id: companyId,
         role,
-        department_id: null,
+        department_id: departmentId,
       },
     });
 
@@ -390,6 +487,7 @@ router.post('/users', async (req, res) => {
         name: name || username,
         role: role,
         company_id: companyId,
+        department_id: departmentId,
         department: department || '',
         position: position || '',
         work_mode: workMode || 'in_office',

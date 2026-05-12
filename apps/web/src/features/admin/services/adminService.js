@@ -22,6 +22,14 @@ export const adminService = {
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/dashboard/stats'))).data.data, 'Failed to load dashboard stats'),
   getUsers: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/users'))).data.data, 'Failed to load users'),
+  /**
+   * Create a user in the caller's tenant.
+   * @param {object} payload {username,email,password,name,role,department,position,workMode,hireDate}
+   *   - company_id is intentionally NOT sent: the auth-service pins it from the
+   *     authenticated requester (X-User-Context) to prevent cross-tenant injection.
+   */
+  createUser: async (payload) =>
+    executeApiCall(async () => (await api.post(apiUrl('/api/auth/users'), payload)).data, 'Failed to create user'),
   updateUser: async (uid, payload) =>
     executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/users/${uid}`), payload)).data, 'Failed to update user'),
   getDepartments: async () =>

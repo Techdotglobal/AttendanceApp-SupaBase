@@ -200,6 +200,9 @@ router.post('/users', async (req, res) => {
     const response = await axios.post(`${AUTH_SERVICE_URL}/api/auth/users`, req.body, {
       headers: {
         'Content-Type': 'application/json',
+        // Forward caller identity so auth-service can enforce tenant isolation
+        // (must include role + company_id of the requester).
+        'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
       },
       timeout: 10000,
     });
@@ -241,6 +244,7 @@ router.delete('/users/:uid', async (req, res) => {
     const response = await axios.delete(`${AUTH_SERVICE_URL}/api/auth/users/${uid}`, {
       headers: {
         'Content-Type': 'application/json',
+        'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
       },
       data: req.body || {},
       timeout: 10000,
@@ -286,6 +290,7 @@ router.patch('/users/:username/role', async (req, res) => {
       {
         headers: {
           'Content-Type': 'application/json',
+          'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
         },
         timeout: 10000,
       }
@@ -331,6 +336,7 @@ router.patch('/users/:username', async (req, res) => {
       {
         headers: {
           'Content-Type': 'application/json',
+          'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
         },
         timeout: 10000,
       }

@@ -3,11 +3,21 @@
   "version": "1.0.0",
   "description": "Attendance App - Supabase Migration",
   "scripts": {
-    "create-users": "node scripts/create-users-supabase.js"
+    "create-users": "node scripts/create-users-supabase.js",
+    "supabase": "supabase",
+    "db:login": "supabase login",
+    "db:link": "supabase link",
+    "db:push": "supabase db push",
+    "db:pull": "supabase db pull",
+    "db:diff": "supabase db diff",
+    "db:reset": "supabase db reset --linked",
+    "db:new": "supabase migration new",
+    "db:status": "supabase migration list"
   },
   "devDependencies": {
     "@supabase/supabase-js": "^2.89.0",
-    "dotenv": "^17.2.3"
+    "dotenv": "^17.2.3",
+    "supabase": "^2.98.2"
   },
   "private": true
 }

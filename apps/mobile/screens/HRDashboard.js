@@ -26,7 +26,7 @@ import {
   updateTicketStatus,
   getTicketById,
 } from '../utils/ticketManagement';
-import { getEmployees, getManageableEmployees, canManageEmployee } from '../utils/employees';
+import { getManageableEmployees, canManageEmployee } from '../utils/employees';
 import { generateAttendanceReport, generateLeaveReport } from '../utils/export';
 import { ROUTES } from '../shared/constants/routes';
 import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTablet } from '../shared/utils/responsive';
@@ -155,11 +155,9 @@ export default function HRDashboard({ navigation, route }) {
     try {
       // Get employees based on user role
       // HR admins and super admins see all employees
-      const employees = (user.role === 'super_admin' || isHRAdmin(user))
-        ? await getEmployees() 
-        : await getManageableEmployees(user);
+      const employees = await getManageableEmployees(user);
       
-      const attendance = await getAttendanceRecords();
+      const attendance = await getAttendanceRecords(user?.companyId);
       
       // Get pending leave requests (already filtered by role in getPendingLeaveRequests)
       const pending = await getPendingLeaveRequests();
@@ -196,7 +194,7 @@ export default function HRDashboard({ navigation, route }) {
 
   const loadAttendanceData = async () => {
     try {
-      const records = await getAttendanceRecords();
+      const records = await getAttendanceRecords(user?.companyId);
       const sorted = records.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
       setAttendanceRecords(sorted.slice(0, 50)); // Show last 50
     } catch (error) {
@@ -270,7 +268,7 @@ export default function HRDashboard({ navigation, route }) {
   const handleGenerateAttendanceReport = async () => {
     try {
       Alert.alert('Generating Report', 'Please wait while we generate the attendance report...');
-      const result = await generateAttendanceReport();
+      const result = await generateAttendanceReport(user?.companyId);
       
       if (result.success) {
         Alert.alert(
@@ -290,7 +288,7 @@ export default function HRDashboard({ navigation, route }) {
   const handleGenerateLeaveReport = async () => {
     try {
       Alert.alert('Generating Report', 'Please wait while we generate the leave report...');
-      const result = await generateLeaveReport();
+      const result = await generateLeaveReport(user?.companyId);
       
       if (result.success) {
         Alert.alert(
@@ -353,7 +351,7 @@ export default function HRDashboard({ navigation, route }) {
         canManage = true;
       } else {
         // Check if employee is in manager's department
-        const employees = await getEmployees();
+        const employees = await getManageableEmployees(user);
         const employee = employees.find(emp => emp.id === request.employeeId);
         if (employee && canManageEmployee(user, employee)) {
           canManage = true;

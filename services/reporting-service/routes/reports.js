@@ -43,7 +43,7 @@ async function verifySuperAdmin(req, res, next) {
 
     // Query user from database to verify role
     // Prioritize email lookup as it's more reliable than ID matching
-    let query = supabase.from('users').select('role, uid, id, email, username').eq('is_active', true);
+    let query = supabase.from('users').select('role, uid, id, email, username, company_id').eq('is_active', true);
     
     if (userEmail) {
       // Email lookup is most reliable - try this first
@@ -65,7 +65,8 @@ async function verifySuperAdmin(req, res, next) {
       userRole: data?.role || null,
       userId: data?.id || null,
       userUid: data?.uid || null,
-      userEmail: data?.email || null
+      userEmail: data?.email || null,
+      company_id: data?.company_id || null,
     });
 
     if (error) {
@@ -100,6 +101,15 @@ async function verifySuperAdmin(req, res, next) {
         success: false,
         error: 'Forbidden',
         message: 'Only super admins can generate reports',
+      });
+    }
+
+    if (!data.company_id) {
+      console.warn('[verifySuperAdmin] super_admin missing company_id');
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden',
+        message: 'User missing tenant scope (company_id)',
       });
     }
 
@@ -159,7 +169,7 @@ router.post('/generate', verifySuperAdmin, async (req, res) => {
     console.log(`[${timestamp}] Generated report ID: ${reportId}`);
 
     // Generate report data (async - don't wait)
-    generateReportData(range, from, to)
+    generateReportData(range, from, to, req.user.company_id)
       .then(async (reportData) => {
         console.log(`[${timestamp}] Report data generated:`, reportData.period.label);
 
@@ -178,7 +188,7 @@ router.post('/generate', verifySuperAdmin, async (req, res) => {
           console.log(`[${timestamp}] Report metadata stored for download: ${reportId}`);
 
           // Get super admin email
-          const superAdminEmail = await getSuperAdminEmail();
+          const superAdminEmail = await getSuperAdminEmail(req.user.company_id);
           if (!superAdminEmail) {
             throw new Error('Super admin email not found');
           }

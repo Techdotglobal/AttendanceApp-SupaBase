@@ -3,7 +3,6 @@
  */
 const {
   getAllEmployees,
-  getEmployeesByDepartment,
   getAttendanceRecords,
   getLeaveRequests,
   getTickets,
@@ -77,20 +76,25 @@ function calculateWorkDays(from, to) {
  * @param {string} range - Report range type
  * @param {string} from - Custom start date (optional)
  * @param {string} to - Custom end date (optional)
+ * @param {string} companyId - Tenant UUID (required)
  * @returns {Promise<Object>} Formatted report data
  */
-async function generateReportData(range, from = null, to = null) {
+async function generateReportData(range, from = null, to = null, companyId = null) {
   try {
+    if (!companyId) {
+      throw new Error('company_id is required to generate tenant-scoped reports');
+    }
+
     // Get date range
     const dateRange = getDateRange(range, from, to);
     const { from: fromDate, to: toDate } = dateRange;
 
     // Fetch all data in parallel
     const [allEmployees, attendanceRecords, leaveRequests, tickets] = await Promise.all([
-      getAllEmployees(),
-      getAttendanceRecords(fromDate, toDate),
-      getLeaveRequests(fromDate, toDate),
-      getTickets(fromDate, toDate),
+      getAllEmployees(companyId),
+      getAttendanceRecords(fromDate, toDate, companyId),
+      getLeaveRequests(fromDate, toDate, companyId),
+      getTickets(fromDate, toDate, companyId),
     ]);
 
     // Debug logging

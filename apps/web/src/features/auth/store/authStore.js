@@ -38,6 +38,7 @@ export const useAuthStore = create((set) => ({
               role: data.role,
               department: data.department,
               companyId: data.company_id != null ? String(data.company_id) : null,
+              company_id: data.company_id != null ? String(data.company_id) : null,
               departmentId: data.department_id != null ? String(data.department_id) : null,
             }
           : null,
@@ -69,6 +70,7 @@ export const useAuthStore = create((set) => ({
         role: data.user.role,
         department: data.user.department,
         companyId: data.user.company_id != null ? String(data.user.company_id) : null,
+        company_id: data.user.company_id != null ? String(data.user.company_id) : null,
         departmentId: data.user.department_id != null ? String(data.user.department_id) : null,
       };
       if (session && shouldSyncTenantMetadata(session, { ...profile, company_id: profile.companyId, department_id: profile.departmentId, role: profile.role })) {
@@ -151,6 +153,7 @@ export const useAuthStore = create((set) => ({
                 role: profile.role,
                 department: profile.department,
                 companyId: profile.company_id != null ? String(profile.company_id) : null,
+                company_id: profile.company_id != null ? String(profile.company_id) : null,
                 departmentId: profile.department_id != null ? String(profile.department_id) : null,
               }
             : null;

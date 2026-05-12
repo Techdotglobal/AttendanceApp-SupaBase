@@ -353,7 +353,10 @@ export function AuthProvider({ children }) {
       let employee = null;
       if (userData.username) {
         try {
-          employee = await getEmployeeByUsername(userData.username);
+          employee = await getEmployeeByUsername(
+            userData.username,
+            userData.company_id != null ? String(userData.company_id) : null
+          );
         } catch (error) {
           console.log('Employee not found, using database data only');
         }

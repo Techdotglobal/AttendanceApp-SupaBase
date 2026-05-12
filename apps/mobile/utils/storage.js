@@ -2,6 +2,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../core/config/supabase';
 import { getEmployeeByUsername } from './employees';
+import { fetchSessionUserCompanyId, fetchCompanyUserUids, requireValidCompanyId } from '../core/tenant/tenantScope';
 
 const ATTENDANCE_RECORDS_KEY = '@attendance_records'; // For fallback only
 
@@ -43,7 +44,8 @@ export const saveAttendanceRecord = async (attendanceRecord) => {
     }
 
     // Get employee data for employee_name
-    const employee = await getEmployeeByUsername(attendanceRecord.username);
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    const employee = await getEmployeeByUsername(attendanceRecord.username, tenantCid);
     
     const recordData = {
       user_uid: authUser.id,
@@ -101,26 +103,39 @@ const saveAttendanceRecordFallback = async (attendanceRecord) => {
 };
 
 /**
- * Get all attendance records from Supabase
- * @returns {Promise<Array>} Array of attendance records
+ * Get all attendance records from Supabase (tenant-scoped)
+ * @param {string|null} companyId - optional; defaults to session user's company
  */
-export const getAttendanceRecords = async () => {
+export const getAttendanceRecords = async (companyId = null) => {
   try {
+    const tenantCid = requireValidCompanyId(companyId, 'getAttendanceRecords') || (await fetchSessionUserCompanyId(supabase));
+    if (!tenantCid) {
+      console.warn('[tenant] getAttendanceRecords: no company_id');
+      return await getAttendanceRecordsFallback();
+    }
+    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getAttendanceRecords');
+    if (tenantUids.length === 0) {
+      return [];
+    }
+
+    if (__DEV__) {
+      console.log('[tenant] getAttendanceRecords', { queried_company_id: tenantCid, uid_count: tenantUids.length });
+    }
+
     const { data, error } = await supabase
       .from('attendance_records')
       .select('*')
+      .in('user_uid', tenantUids)
       .order('timestamp', { ascending: false });
 
     if (error) {
       console.error('Error getting attendance records from Supabase:', error);
-      // Fallback to AsyncStorage
       return await getAttendanceRecordsFallback();
     }
 
     return data.map(convertAttendanceFromDb);
   } catch (error) {
     console.error('Error getting attendance records:', error);
-    // Fallback to AsyncStorage
     return await getAttendanceRecordsFallback();
   }
 };
@@ -145,30 +160,43 @@ const getAttendanceRecordsFallback = async () => {
  */
 export const getUserAttendanceRecords = async (username) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      const allRecords = await getAttendanceRecordsFallback();
+      return allRecords.filter(
+        (record) => record.username === username || record.userId === username
+      );
+    }
+    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getUserAttendanceRecords');
+    if (tenantUids.length === 0) {
+      return [];
+    }
+
+    if (__DEV__) {
+      console.log('[tenant] getUserAttendanceRecords', { username, queried_company_id: tenantCid });
+    }
+
     const { data, error } = await supabase
       .from('attendance_records')
       .select('*')
       .eq('username', username)
+      .in('user_uid', tenantUids)
       .order('timestamp', { ascending: false });
 
     if (error) {
       console.error('Error getting user attendance records from Supabase:', error);
-      // Fallback to AsyncStorage
       const allRecords = await getAttendanceRecordsFallback();
-      return allRecords.filter(record => 
-        record.username === username || 
-        record.userId === username
+      return allRecords.filter(
+        (record) => record.username === username || record.userId === username
       );
     }
 
     return data.map(convertAttendanceFromDb);
   } catch (error) {
     console.error('Error getting user attendance records:', error);
-    // Fallback to AsyncStorage
     const allRecords = await getAttendanceRecordsFallback();
-    return allRecords.filter(record => 
-      record.username === username || 
-      record.userId === username
+    return allRecords.filter(
+      (record) => record.username === username || record.userId === username
     );
   }
 };
@@ -181,6 +209,20 @@ export const getUserAttendanceRecords = async (username) => {
  */
 export const updateAttendanceRecord = async (recordId, updates) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    const tenantUids = tenantCid ? await fetchCompanyUserUids(supabase, tenantCid, 'updateAttendanceRecord') : [];
+    if (tenantCid && tenantUids.length > 0) {
+      const { data: existing, error: exErr } = await supabase
+        .from('attendance_records')
+        .select('user_uid')
+        .eq('id', recordId)
+        .maybeSingle();
+      if (exErr || !existing || !tenantUids.includes(existing.user_uid)) {
+        console.error('[tenant] updateAttendanceRecord: record outside tenant or not found');
+        return { success: false, error: 'Record not found' };
+      }
+    }
+
     const updateData = {
       ...updates,
       updated_at: new Date().toISOString(),
@@ -245,6 +287,20 @@ const updateAttendanceRecordFallback = async (recordId, updates) => {
  */
 export const deleteAttendanceRecord = async (recordId) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    const tenantUids = tenantCid ? await fetchCompanyUserUids(supabase, tenantCid, 'deleteAttendanceRecord') : [];
+    if (tenantCid && tenantUids.length > 0) {
+      const { data: existing, error: exErr } = await supabase
+        .from('attendance_records')
+        .select('user_uid')
+        .eq('id', recordId)
+        .maybeSingle();
+      if (exErr || !existing || !tenantUids.includes(existing.user_uid)) {
+        console.error('[tenant] deleteAttendanceRecord: record outside tenant or not found');
+        return { success: false, error: 'Record not found' };
+      }
+    }
+
     const { error } = await supabase
       .from('attendance_records')
       .delete()
@@ -292,8 +348,8 @@ const deleteAttendanceRecordFallback = async (recordId) => {
  */
 export const createManualAttendanceRecord = async (attendanceData, createdBy) => {
   try {
-    // Get employee UID from username
-    const employee = await getEmployeeByUsername(attendanceData.username);
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    const employee = await getEmployeeByUsername(attendanceData.username, tenantCid);
     if (!employee) {
       return { success: false, error: 'Employee not found' };
     }

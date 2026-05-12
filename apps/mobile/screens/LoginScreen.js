@@ -109,7 +109,7 @@ export default function LoginScreen() {
         await initializeDefaultEmployees();
         
         // Fetch full employee data including department
-        const employee = await getEmployeeByUsername(result.user.username);
+        const employee = await getEmployeeByUsername(result.user.username, result.user.companyId);
         console.log('Employee lookup result:', employee);
         
         if (employee) {
@@ -120,7 +120,10 @@ export default function LoginScreen() {
             department: employee.department,
             name: employee.name,
             email: employee.email,
-            id: employee.id
+            id: employee.id,
+            companyId: result.user.companyId ?? employee.companyId ?? null,
+            departmentId: result.user.departmentId ?? employee.departmentId ?? null,
+            uid: result.user.uid ?? employee.uid ?? null,
           };
           console.log('Logging in with employee data (using auth role):', userData);
           loginUser(userData);
@@ -128,7 +131,10 @@ export default function LoginScreen() {
           // Fallback to basic user data if employee not found
           const userData = {
             username: result.user.username,
-            role: result.user.role
+            role: result.user.role,
+            companyId: result.user.companyId ?? null,
+            departmentId: result.user.departmentId ?? null,
+            uid: result.user.uid ?? null,
           };
           console.log('Logging in with auth data (employee not found):', userData);
           loginUser(userData);

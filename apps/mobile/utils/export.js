@@ -1,15 +1,39 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { supabase } from '../core/config/supabase';
 import { getAttendanceRecords } from './storage';
 import { getAllLeaveRequests, getAllEmployeesLeaveBalances } from './leaveManagement';
-import { getEmployees } from './employees';
+import { fetchSessionUserCompanyId, requireValidCompanyId } from '../core/tenant/tenantScope';
+
+async function resolveExportCompanyId(explicitCompanyId) {
+  const direct = requireValidCompanyId(explicitCompanyId, 'export');
+  if (direct) return direct;
+  return fetchSessionUserCompanyId(supabase);
+}
+
+async function fetchUsernameToNameMap(companyId) {
+  const cid = requireValidCompanyId(companyId, 'export');
+  if (!cid) return new Map();
+  const { data, error } = await supabase.from('users').select('username, name, uid').eq('company_id', cid);
+  if (error) {
+    console.warn('[export] fetchUsernameToNameMap:', error.message);
+    return new Map();
+  }
+  const m = new Map();
+  (data || []).forEach((r) => {
+    if (r.username) m.set(r.username, r.name || r.username);
+    if (r.uid) m.set(r.uid, r.name || r.username);
+  });
+  return m;
+}
 
 /**
  * Export attendance records to CSV format
  * @returns {Promise<{success: boolean, fileUri?: string, error?: string}>}
  */
-export const exportAttendanceToCSV = async () => {
+export const exportAttendanceToCSV = async (companyId = null) => {
   try {
-    const records = await getAttendanceRecords();
+    const tenantCid = await resolveExportCompanyId(companyId);
+    const records = await getAttendanceRecords(tenantCid);
     
     if (records.length === 0) {
       return {
@@ -76,10 +100,11 @@ export const shareCSVFile = async (fileUri, fileName) => {
  * Generate comprehensive attendance report
  * @returns {Promise<{success: boolean, fileUri?: string, fileName?: string, error?: string}>}
  */
-export const generateAttendanceReport = async () => {
+export const generateAttendanceReport = async (companyId = null) => {
   try {
-    const records = await getAttendanceRecords();
-    const employees = await getEmployees();
+    const tenantCid = await resolveExportCompanyId(companyId);
+    const records = await getAttendanceRecords(tenantCid);
+    const nameByUsername = await fetchUsernameToNameMap(tenantCid);
     
     if (records.length === 0) {
       return {
@@ -93,8 +118,7 @@ export const generateAttendanceReport = async () => {
     
     // Add records to CSV
     records.forEach(record => {
-      const employee = employees.find(emp => emp.username === record.username);
-      const employeeName = employee ? employee.name : record.username;
+      const employeeName = nameByUsername.get(record.username) || record.username;
       const date = new Date(record.timestamp).toLocaleDateString();
       const time = new Date(record.timestamp).toLocaleTimeString();
       const location = record.location && record.location.address 
@@ -131,11 +155,12 @@ export const generateAttendanceReport = async () => {
  * Generate comprehensive leave report
  * @returns {Promise<{success: boolean, fileUri?: string, fileName?: string, error?: string}>}
  */
-export const generateLeaveReport = async () => {
+export const generateLeaveReport = async (companyId = null) => {
   try {
-    const leaveRequests = await getAllLeaveRequests();
+    const tenantCid = await resolveExportCompanyId(companyId);
+    const leaveRequests = await getAllLeaveRequests(tenantCid);
     const leaveBalances = await getAllEmployeesLeaveBalances();
-    const employees = await getEmployees();
+    const nameByUsername = await fetchUsernameToNameMap(tenantCid);
     
     if (leaveRequests.length === 0 && leaveBalances.length === 0) {
       return {
@@ -149,8 +174,10 @@ export const generateLeaveReport = async () => {
     
     // Add leave requests
     leaveRequests.forEach(request => {
-      const employee = employees.find(emp => emp.id === request.employeeId);
-      const employeeName = employee ? employee.name : request.employeeId;
+      const employeeName =
+        request.employeeName ||
+        nameByUsername.get(request.employeeId) ||
+        request.employeeId;
       const requestedDate = request.requestedAt ? new Date(request.requestedAt).toLocaleDateString() : 'N/A';
       const processedDate = request.processedAt ? new Date(request.processedAt).toLocaleDateString() : 'N/A';
       const processedBy = request.processedBy || 'N/A';
@@ -163,9 +190,8 @@ export const generateLeaveReport = async () => {
     csvContent += '\n\nLeave Balances\n';
     csvContent += 'Employee Name,Employee ID,Annual Leaves (Total),Annual Leaves (Used),Annual Leaves (Remaining),Sick Leaves (Total),Sick Leaves (Used),Sick Leaves (Remaining),Casual Leaves (Total),Casual Leaves (Used),Casual Leaves (Remaining)\n';
     
-    leaveBalances.forEach(balance => {
-      const employee = employees.find(emp => emp.id === balance.employeeId);
-      const employeeName = employee ? employee.name : balance.employeeId;
+    leaveBalances.forEach((balance) => {
+      const employeeName = nameByUsername.get(balance.employeeId) || balance.employeeId;
       const annualRemaining = (balance.annualLeaves || 0) - (balance.usedAnnualLeaves || 0);
       const sickRemaining = (balance.sickLeaves || 0) - (balance.usedSickLeaves || 0);
       const casualRemaining = (balance.casualLeaves || 0) - (balance.usedCasualLeaves || 0);

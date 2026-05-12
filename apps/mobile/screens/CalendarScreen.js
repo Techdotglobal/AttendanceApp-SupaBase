@@ -91,14 +91,14 @@ export default function CalendarScreen({ navigation, route }) {
     try {
       if (user.role === 'employee') {
         // For employees: get their approved leave dates
-        const employee = await getEmployeeByUsername(user.username);
+        const employee = await getEmployeeByUsername(user.username, user.companyId);
         if (employee) {
           const dates = await getApprovedLeaveDates(employee.id);
           setLeaveDates(dates);
         }
       } else {
         // For admin: get all leave dates with employee info
-        const leaveMap = await getAllLeaveDatesWithEmployees();
+        const leaveMap = await getAllLeaveDatesWithEmployees(user.companyId);
         setAllLeaveDatesMap(leaveMap);
         // Also set leaveDates for highlighting
         setLeaveDates(Object.keys(leaveMap));

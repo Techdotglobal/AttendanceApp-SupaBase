@@ -1,4 +1,6 @@
 // Analytics utilities for attendance data
+import { supabase } from '../core/config/supabase';
+import { fetchSessionUserCompanyId, requireValidCompanyId } from '../core/tenant/tenantScope';
 import { getAttendanceRecords, getUserAttendanceRecords } from './storage';
 
 /**
@@ -295,9 +297,10 @@ export const getUserAnalytics = async (username, period = 'monthly') => {
  * @param {string} period - Period type ('daily', 'weekly', 'monthly', 'yearly', 'all')
  * @returns {Promise<Array>} Array of user analytics
  */
-export const getAllUsersAnalytics = async (period = 'monthly') => {
+export const getAllUsersAnalytics = async (period = 'monthly', companyId = null) => {
   try {
-    const records = await getAttendanceRecords();
+    const tenantCid = requireValidCompanyId(companyId, 'analytics') || (await fetchSessionUserCompanyId(supabase));
+    const records = await getAttendanceRecords(tenantCid);
     const { startDate, endDate } = getDateRange(period);
     const filteredRecords = filterByDateRange(records, startDate, endDate);
     

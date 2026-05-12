@@ -189,7 +189,7 @@ export default function EmployeeDashboard({ route }) {
 
   const loadEmployeeData = async () => {
     try {
-      const employeeData = await getEmployeeByUsername(user.username);
+      const employeeData = await getEmployeeByUsername(user.username, user.companyId);
       setEmployee(employeeData);
     } catch (error) {
       console.error('Error loading employee data:', error);

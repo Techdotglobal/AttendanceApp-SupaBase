@@ -101,7 +101,7 @@ export default function TicketManagementScreen({ navigation, route }) {
   const loadEmployees = async () => {
     try {
       // Fetch all managers and super_admins from Supabase
-      const admins = await getAdminUsers();
+      const admins = await getAdminUsers(user.companyId);
       setEmployees(admins);
       console.log(`[TicketManagement] Loaded ${admins.length} eligible assignees (managers + super_admins)`);
     } catch (error) {

@@ -312,7 +312,8 @@ export default function EmployeeManagement({
         requestId, 
         status, 
         user.username,
-        status === 'approved' ? 'Request approved' : 'Request rejected'
+        status === 'approved' ? 'Request approved' : 'Request rejected',
+        user.companyId
       );
       
       if (success) {

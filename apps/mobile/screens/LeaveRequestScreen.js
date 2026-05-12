@@ -86,7 +86,7 @@ export default function LeaveRequestScreen({ navigation, route }) {
 
   const loadEmployee = async () => {
     try {
-      const emp = await getEmployeeByUsername(user.username);
+      const emp = await getEmployeeByUsername(user.username, user.companyId);
       setEmployee(emp);
     } catch (error) {
       console.error('Error loading employee:', error);

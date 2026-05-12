@@ -158,7 +158,7 @@ export default function AdminDashboard({ route }) {
 
   const loadRecords = async () => {
     try {
-      const allRecords = await getAttendanceRecords();
+      const allRecords = await getAttendanceRecords(user?.companyId);
       
       // Sort by timestamp (newest first)
       const sortedRecords = allRecords.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
@@ -224,7 +224,7 @@ export default function AdminDashboard({ route }) {
 
     setIsExporting(true);
     try {
-      const result = await exportAttendanceToCSV();
+      const result = await exportAttendanceToCSV(user?.companyId);
       
       if (result.success) {
         Alert.alert(

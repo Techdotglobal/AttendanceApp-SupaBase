@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../core/config/supabase';
 import { createNotification, createBatchNotifications } from './notifications';
 import { getEmployeeById, getAdminUsers, getSuperAdminUsers, getManagersByDepartment } from './employees';
+import { fetchSessionUserCompanyId, fetchCompanyUserUids, requireValidCompanyId } from '../core/tenant/tenantScope';
 
 const LEAVE_SETTINGS_KEY = 'leave_settings';
 const EMPLOYEE_LEAVES_KEY = 'employee_leaves';
@@ -400,8 +401,16 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
       };
     }
 
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      return {
+        success: false,
+        error: 'Tenant context missing. Please sign in again.',
+      };
+    }
+
     // Get employee data for routing (from Supabase - source of truth)
-    const employee = await getEmployeeById(employeeId);
+    const employee = await getEmployeeById(employeeId, tenantCid);
     
     if (!employee) {
       console.error(`⚠️ Employee not found for ID: ${employeeId}`);
@@ -452,7 +461,7 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
     
     if (department) {
       try {
-        const departmentManagers = await getManagersByDepartment(department);
+        const departmentManagers = await getManagersByDepartment(department, tenantCid);
         console.log(`[Leave Routing] Found ${departmentManagers.length} manager(s) for department: ${department}`);
         
         if (departmentManagers.length > 0) {
@@ -465,7 +474,7 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
           console.warn(`⚠️ No manager found for department: ${department}. Leave request will not be auto-assigned.`);
           // Fallback: Try to assign to a super_admin if no manager found
           try {
-            const superAdmins = await getSuperAdminUsers();
+            const superAdmins = await getSuperAdminUsers(tenantCid);
             if (superAdmins.length > 0) {
               assignedManager = superAdmins[0];
               console.log(`✓ Fallback: Assigning leave request to super_admin: ${assignedManager.username}`);
@@ -478,7 +487,7 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
         console.error('Error finding department manager:', error);
         // Fallback: Try to assign to a super_admin on error
         try {
-          const superAdmins = await getSuperAdminUsers();
+          const superAdmins = await getSuperAdminUsers(tenantCid);
           if (superAdmins.length > 0) {
             assignedManager = superAdmins[0];
             console.log(`✓ Fallback (on error): Assigning leave request to super_admin: ${assignedManager.username}`);
@@ -491,7 +500,7 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
       console.log(`[Leave Routing] No department mapping for category: ${finalCategory}, assigning to super_admin`);
       // For 'other' category, assign to super_admin
       try {
-        const superAdmins = await getSuperAdminUsers();
+        const superAdmins = await getSuperAdminUsers(tenantCid);
         if (superAdmins.length > 0) {
           assignedManager = superAdmins[0];
           console.log(`✓ Assigning leave request to super_admin: ${assignedManager.username}`);
@@ -593,7 +602,7 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
       const notificationBody = `${employee ? employee.name : 'An employee'} has submitted a ${leaveTypeLabels[leaveType]} request for ${daysText}${halfDayText} (${startDate}${startDate !== endDate ? ` to ${endDate}` : ''})${assignedManager ? ` (Assigned to ${assignedManager.name} - ${categoryLabel})` : ` (${categoryLabel})`}`;
       
       // Get super admins (always notified)
-      const superAdmins = await getSuperAdminUsers();
+      const superAdmins = await getSuperAdminUsers(tenantCid);
       
       // Combine recipients (super admins + assigned manager if exists)
       const recipients = [...superAdmins];
@@ -681,11 +690,25 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
  */
 export const getEmployeeLeaveRequests = async (employeeId) => {
   try {
-    // Query from Supabase
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser?.id) return [];
+
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    let resolvedUid = employeeId;
+    if (typeof employeeId === 'string' && employeeId.startsWith('emp_')) {
+      resolvedUid = employeeId.replace('emp_', '');
+    }
+
+    const { data: subj } = await supabase.from('users').select('uid, company_id').eq('uid', resolvedUid).maybeSingle();
+    if (tenantCid && subj?.company_id && String(subj.company_id) !== String(tenantCid)) {
+      if (__DEV__) console.warn('[tenant] getEmployeeLeaveRequests: user not in current tenant');
+      return [];
+    }
+
     const { data: requests, error } = await supabase
       .from('leave_requests')
       .select('*')
-      .eq('employee_id', employeeId)
+      .eq('employee_uid', resolvedUid)
       .order('requested_at', { ascending: false });
 
     if (error) {
@@ -734,11 +757,26 @@ export const getPendingLeaveRequests = async () => {
       console.log(`[Leave Requests] Fetching pending requests for user: ${authUser.user_metadata?.username || authUser.email}, UID: ${authUser.id}`);
     }
 
-    // Query from Supabase - RLS policies will automatically filter
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      console.warn('[tenant] getPendingLeaveRequests: no company_id on session user');
+      return [];
+    }
+    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getPendingLeaveRequests');
+    if (tenantUids.length === 0) {
+      return [];
+    }
+
+    if (__DEV__) {
+      console.log('[tenant] getPendingLeaveRequests', { auth_company_id: tenantCid, tenant_user_count: tenantUids.length });
+    }
+
+    // Query from Supabase — explicit tenant filter (defense in depth vs RLS)
     const { data: requests, error } = await supabase
       .from('leave_requests')
       .select('*')
       .eq('status', 'pending')
+      .in('employee_uid', tenantUids)
       .order('requested_at', { ascending: false });
 
     if (error) {
@@ -747,7 +785,7 @@ export const getPendingLeaveRequests = async () => {
       return [];
     }
 
-    console.log(`[Leave Requests] Found ${requests?.length || 0} pending request(s) for current user`);
+    console.log(`[Leave Requests] Found ${requests?.length || 0} pending request(s) (tenant-scoped)`);
     if (requests && requests.length > 0) {
       console.log(`[Leave Requests] Sample request:`, {
         id: requests[0].id,
@@ -765,7 +803,8 @@ export const getPendingLeaveRequests = async () => {
       const { data: employees, error: empError } = await supabase
         .from('users')
         .select('uid, username, name, email')
-        .in('uid', employeeUids);
+        .in('uid', employeeUids)
+        .eq('company_id', tenantCid);
       
       if (!empError && employees) {
         employees.forEach(emp => {
@@ -810,7 +849,7 @@ export const getPendingLeaveRequests = async () => {
  * RLS policies automatically filter based on user role
  * @returns {Promise<Array>} Array of all leave requests
  */
-export const getAllLeaveRequests = async () => {
+export const getAllLeaveRequests = async (companyId = null) => {
   try {
     // Get current user info for debugging
     const { data: { user: authUser } } = await supabase.auth.getUser();
@@ -818,10 +857,25 @@ export const getAllLeaveRequests = async () => {
       console.log(`[Leave Requests] Fetching all requests for user: ${authUser.user_metadata?.username || authUser.email}`);
     }
 
-    // Query from Supabase - RLS policies will automatically filter
+    const tenantCid = requireValidCompanyId(companyId, 'getAllLeaveRequests') || (await fetchSessionUserCompanyId(supabase));
+    if (!tenantCid) {
+      console.warn('[tenant] getAllLeaveRequests: no company_id');
+      return [];
+    }
+    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getAllLeaveRequests');
+    if (tenantUids.length === 0) {
+      return [];
+    }
+
+    if (__DEV__) {
+      console.log('[tenant] getAllLeaveRequests', { queried_company_id: tenantCid, tenant_user_count: tenantUids.length });
+    }
+
+    // Query from Supabase — explicit tenant filter
     const { data: requests, error } = await supabase
       .from('leave_requests')
       .select('*')
+      .in('employee_uid', tenantUids)
       .order('requested_at', { ascending: false });
 
     if (error) {
@@ -830,7 +884,7 @@ export const getAllLeaveRequests = async () => {
       return [];
     }
 
-    console.log(`[Leave Requests] Found ${requests?.length || 0} total request(s) for current user`);
+    console.log(`[Leave Requests] Found ${requests?.length || 0} total request(s) (tenant-scoped)`);
 
     // Fetch employee names in a single query to avoid N+1
     const employeeUids = [...new Set((requests || []).map(req => req.employee_uid).filter(Boolean))];
@@ -840,7 +894,8 @@ export const getAllLeaveRequests = async () => {
       const { data: employees, error: empError } = await supabase
         .from('users')
         .select('uid, username, name, email')
-        .in('uid', employeeUids);
+        .in('uid', employeeUids)
+        .eq('company_id', tenantCid);
       
       if (!empError && employees) {
         employees.forEach(emp => {
@@ -950,7 +1005,8 @@ export const processLeaveRequest = async (requestId, status, processedBy, adminN
 
     // Send notification to employee
     try {
-      const employee = await getEmployeeById(request.employee_id);
+      const tenantCid = await fetchSessionUserCompanyId(supabase);
+      const employee = await getEmployeeById(request.employee_uid || request.employee_id, tenantCid);
       
       if (employee) {
         const leaveTypeLabels = {
@@ -1047,7 +1103,11 @@ const calculateWorkingDays = (startDate, endDate) => {
  */
 export const getLeaveRequestById = async (requestId) => {
   try {
-    // Query from Supabase
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) return null;
+    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getLeaveRequestById');
+    if (tenantUids.length === 0) return null;
+
     const { data: request, error } = await supabase
       .from('leave_requests')
       .select('*')
@@ -1056,6 +1116,11 @@ export const getLeaveRequestById = async (requestId) => {
 
     if (error || !request) {
       console.error('Error getting leave request by ID from Supabase:', error);
+      return null;
+    }
+
+    if (!tenantUids.includes(request.employee_uid)) {
+      if (__DEV__) console.warn('[tenant] getLeaveRequestById: request belongs to another tenant');
       return null;
     }
 
@@ -1125,9 +1190,10 @@ export const getApprovedLeaveDates = async (employeeId) => {
  * @returns {Promise<Object>} Object with date strings as keys and arrays of leave info as values
  * Format: { 'YYYY-MM-DD': [{ employeeId, employeeName, leaveType, reason, ... }, ...] }
  */
-export const getAllLeaveDatesWithEmployees = async () => {
+export const getAllLeaveDatesWithEmployees = async (companyId = null) => {
   try {
-    const allRequests = await getAllLeaveRequests();
+    const tenantCid = requireValidCompanyId(companyId, 'getAllLeaveDatesWithEmployees') || (await fetchSessionUserCompanyId(supabase));
+    const allRequests = await getAllLeaveRequests(tenantCid);
     const approvedRequests = allRequests.filter(req => req.status === 'approved');
     
     const leaveDatesMap = {};
@@ -1149,7 +1215,7 @@ export const getAllLeaveDatesWithEmployees = async () => {
           }
           
           // Get employee name
-          const employee = await getEmployeeById(request.employeeId);
+          const employee = await getEmployeeById(request.employeeUid || request.employeeId, tenantCid);
           
           leaveDatesMap[dateString].push({
             employeeId: request.employeeId,

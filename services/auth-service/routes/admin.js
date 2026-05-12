@@ -1,5 +1,6 @@
 const express = require('express');
 const { supabase } = require('../config/supabase');
+const { getTenantCompanyId, fetchCompanyUserUids } = require('../lib/tenantScope');
 
 const router = express.Router();
 
@@ -20,13 +21,14 @@ const normalizeDepartmentName = (value) => {
     .join(' ');
 };
 
-const getRequesterDepartment = async (requester) => {
-  if (!requester?.department) return null;
+const getRequesterDepartment = async (requester, companyId) => {
+  if (!requester?.department || !companyId) return null;
   const normalized = normalizeDepartmentName(requester.department);
   const { data, error } = await supabase
     .from('departments')
     .select('id, name')
     .eq('name', normalized)
+    .eq('company_id', companyId)
     .maybeSingle();
   if (error) throw error;
   return data || null;
@@ -63,31 +65,93 @@ const requireSuperAdmin = (requester, res) => {
   return true;
 };
 
-const getUsersBaseQuery = (requester) => {
-  const query = supabase
+/**
+ * Resolves tenant from X-User-Context (company_id) or users row by uid.
+ * @returns {Promise<{ requester: object, companyId: string }|null>}
+ */
+const withTenantContext = async (req, res) => {
+  const requester = requireRequester(req, res);
+  if (!requester) return null;
+  const companyId = await getTenantCompanyId(supabase, requester);
+  if (!companyId) {
+    res.status(403).json({
+      success: false,
+      error: 'Missing tenant scope (company_id). Re-login or update the client.',
+    });
+    return null;
+  }
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[tenant admin]', { path: req.path, companyId, uid: requester.uid, role: requester.role });
+  }
+  return { requester, companyId };
+};
+
+const getUsersBaseQuery = (requester, companyId) => {
+  let query = supabase
     .from('users')
-    .select('uid, username, email, name, role, department, department_id, position, work_mode, is_active, created_at')
+    .select('uid, username, email, name, role, department, department_id, position, work_mode, is_active, created_at, company_id')
+    .eq('company_id', companyId)
     .order('created_at', { ascending: false });
   if (requester.role === ROLES.MANAGER) {
-    return query.eq('department', requester.department);
+    query = query.eq('department', requester.department);
   }
   return query;
 };
 
 router.get('/dashboard/stats', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   try {
-    const usersQuery = requester.role === ROLES.SUPER_ADMIN
-      ? supabase.from('users').select('uid, department, is_active', { count: 'exact' })
-      : supabase.from('users').select('uid, department, is_active', { count: 'exact' }).eq('department', requester.department);
-    const departmentsQuery = supabase.from('departments').select('id', { count: 'exact' });
-    const attendanceQuery = requester.role === ROLES.SUPER_ADMIN
-      ? supabase.from('attendance_records').select('id', { count: 'exact' })
-      : supabase.from('attendance_records').select('id', { count: 'exact' }).in('user_uid', (await supabase.from('users').select('uid').eq('department', requester.department)).data?.map((u) => u.uid) || []);
-    const leaveQuery = requester.role === ROLES.SUPER_ADMIN
-      ? supabase.from('leave_requests').select('id, status', { count: 'exact' })
-      : supabase.from('leave_requests').select('id, status', { count: 'exact' }).eq('category', requester.department?.toLowerCase());
+    let usersQuery = supabase
+      .from('users')
+      .select('uid, department, is_active', { count: 'exact' })
+      .eq('company_id', companyId);
+    if (requester.role === ROLES.MANAGER) {
+      usersQuery = usersQuery.eq('department', requester.department);
+    }
+
+    const departmentsQuery = supabase
+      .from('departments')
+      .select('id', { count: 'exact' })
+      .eq('company_id', companyId);
+
+    const { data: companyUsers } = await supabase.from('users').select('uid').eq('company_id', companyId);
+    const tenantUids = (companyUsers || []).map((u) => u.uid).filter(Boolean);
+
+    let attendanceQuery = supabase
+      .from('attendance_records')
+      .select('id', { count: 'exact' })
+      .in('user_uid', tenantUids.length ? tenantUids : ['00000000-0000-0000-0000-000000000000']);
+    if (requester.role === ROLES.MANAGER) {
+      const { data: deptUsers } = await supabase
+        .from('users')
+        .select('uid')
+        .eq('company_id', companyId)
+        .eq('department', requester.department);
+      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
+      attendanceQuery = supabase
+        .from('attendance_records')
+        .select('id', { count: 'exact' })
+        .in('user_uid', muids.length ? muids : ['00000000-0000-0000-0000-000000000000']);
+    }
+
+    let leaveQuery = supabase
+      .from('leave_requests')
+      .select('id, status', { count: 'exact' })
+      .in('employee_uid', tenantUids.length ? tenantUids : ['00000000-0000-0000-0000-000000000000']);
+    if (requester.role === ROLES.MANAGER) {
+      const { data: deptUsers } = await supabase
+        .from('users')
+        .select('uid')
+        .eq('company_id', companyId)
+        .eq('department', requester.department);
+      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
+      leaveQuery = supabase
+        .from('leave_requests')
+        .select('id, status', { count: 'exact' })
+        .in('employee_uid', muids.length ? muids : ['00000000-0000-0000-0000-000000000000']);
+    }
 
     const [{ data: users }, { count: departments }, { count: attendance }, { data: leaves }] = await Promise.all([
       usersQuery,
@@ -115,10 +179,11 @@ router.get('/dashboard/stats', async (req, res) => {
 });
 
 router.get('/users', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   try {
-    const { data, error } = await getUsersBaseQuery(requester);
+    const { data, error } = await getUsersBaseQuery(requester, companyId);
     if (error) throw error;
     res.status(200).json({ success: true, data: data || [] });
   } catch (error) {
@@ -127,15 +192,17 @@ router.get('/users', async (req, res) => {
 });
 
 router.patch('/users/:uid', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   const { uid } = req.params;
   const { role, department, work_mode, is_active } = req.body;
   try {
     const { data: targetUser, error: targetError } = await supabase
       .from('users')
-      .select('uid, role, department')
+      .select('uid, role, department, company_id')
       .eq('uid', uid)
+      .eq('company_id', companyId)
       .single();
     if (targetError || !targetUser) return res.status(404).json({ success: false, error: 'User not found' });
 
@@ -159,6 +226,7 @@ router.patch('/users/:uid', async (req, res) => {
           .from('departments')
           .select('id')
           .eq('name', normalizedDepartment)
+          .eq('company_id', companyId)
           .maybeSingle();
         if (deptLookupError) throw deptLookupError;
         if (deptRecord?.id) {
@@ -169,7 +237,7 @@ router.patch('/users/:uid', async (req, res) => {
     if (work_mode !== undefined) updates.work_mode = work_mode;
     if (is_active !== undefined) updates.is_active = is_active;
 
-    const { error } = await supabase.from('users').update(updates).eq('uid', uid);
+    const { error } = await supabase.from('users').update(updates).eq('uid', uid).eq('company_id', companyId);
     if (error) throw error;
     res.status(200).json({ success: true });
   } catch (error) {
@@ -178,17 +246,22 @@ router.patch('/users/:uid', async (req, res) => {
 });
 
 router.get('/departments', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   try {
     if (requester.role === ROLES.MANAGER) {
-      const managerDept = await getRequesterDepartment(requester);
+      const managerDept = await getRequesterDepartment(requester, companyId);
       const { data } = managerDept
-        ? await supabase.from('departments').select('*').eq('id', managerDept.id)
+        ? await supabase.from('departments').select('*').eq('id', managerDept.id).eq('company_id', companyId)
         : { data: [] };
       return res.status(200).json({ success: true, data: data || [] });
     }
-    const { data, error } = await supabase.from('departments').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabase
+      .from('departments')
+      .select('*')
+      .eq('company_id', companyId)
+      .order('created_at', { ascending: false });
     if (error) throw error;
     res.status(200).json({ success: true, data: data || [] });
   } catch (error) {
@@ -197,13 +270,18 @@ router.get('/departments', async (req, res) => {
 });
 
 router.post('/departments', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester || !requireSuperAdmin(requester, res)) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const { companyId } = ctx;
   try {
     const { name } = req.body;
     const normalizedName = normalizeDepartmentName(name);
     if (!normalizedName) return res.status(400).json({ success: false, error: 'Department name is required' });
-    const { data, error } = await supabase.from('departments').insert({ name: normalizedName }).select().single();
+    const { data, error } = await supabase
+      .from('departments')
+      .insert({ name: normalizedName, company_id: companyId })
+      .select()
+      .single();
     if (error) throw error;
     res.status(201).json({ success: true, data });
   } catch (error) {
@@ -212,8 +290,9 @@ router.post('/departments', async (req, res) => {
 });
 
 router.patch('/departments/:id', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester || !requireSuperAdmin(requester, res)) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const { companyId } = ctx;
   try {
     const { id } = req.params;
     const { name } = req.body;
@@ -224,16 +303,21 @@ router.patch('/departments/:id', async (req, res) => {
       .from('departments')
       .select('id, name')
       .eq('id', id)
+      .eq('company_id', companyId)
       .single();
     if (deptLookupError || !currentDept) {
       return res.status(404).json({ success: false, error: 'Department not found' });
     }
 
     const oldName = currentDept.name;
-    const { error: deptUpdateError } = await supabase.from('departments').update({ name: normalizedName }).eq('id', id);
+    const { error: deptUpdateError } = await supabase
+      .from('departments')
+      .update({ name: normalizedName })
+      .eq('id', id)
+      .eq('company_id', companyId);
     if (deptUpdateError) throw deptUpdateError;
 
-    // Backward compatibility: keep legacy users.department in sync.
+    // Backward compatibility: keep legacy users.department in sync (tenant-scoped).
     const { error: usersUpdateError } = await supabase
       .from('users')
       .update({
@@ -241,14 +325,18 @@ router.patch('/departments/:id', async (req, res) => {
         department_id: id,
         updated_at: new Date().toISOString(),
       })
-      .eq('department_id', id);
+      .eq('department_id', id)
+      .eq('company_id', companyId);
     if (usersUpdateError) throw usersUpdateError;
 
-    // Best-effort compatibility for legacy leave routing category (if it matches department name).
-    await supabase
-      .from('leave_requests')
-      .update({ category: normalizedName.toLowerCase() })
-      .eq('category', oldName.toLowerCase());
+    const tenantUids = await fetchCompanyUserUids(supabase, companyId);
+    if (tenantUids.length > 0) {
+      await supabase
+        .from('leave_requests')
+        .update({ category: normalizedName.toLowerCase() })
+        .eq('category', oldName.toLowerCase())
+        .in('employee_uid', tenantUids);
+    }
 
     res.status(200).json({ success: true });
   } catch (error) {
@@ -257,14 +345,16 @@ router.patch('/departments/:id', async (req, res) => {
 });
 
 router.delete('/departments/:id', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester || !requireSuperAdmin(requester, res)) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const { companyId } = ctx;
   try {
     const { id } = req.params;
     const { count: activeUsersCount, error: usersCountError } = await supabase
       .from('users')
       .select('uid', { count: 'exact', head: true })
       .eq('department_id', id)
+      .eq('company_id', companyId)
       .eq('is_active', true);
     if (usersCountError) throw usersCountError;
     if ((activeUsersCount || 0) > 0) {
@@ -273,7 +363,7 @@ router.delete('/departments/:id', async (req, res) => {
         error: 'Cannot delete department with active users',
       });
     }
-    const { error } = await supabase.from('departments').delete().eq('id', id);
+    const { error } = await supabase.from('departments').delete().eq('id', id).eq('company_id', companyId);
     if (error) throw error;
     res.status(200).json({ success: true });
   } catch (error) {
@@ -282,17 +372,19 @@ router.delete('/departments/:id', async (req, res) => {
 });
 
 router.get('/departments/overview', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
 
   try {
     let departmentsQuery = supabase
       .from('departments')
       .select('id, name, created_at')
+      .eq('company_id', companyId)
       .order('name', { ascending: true });
 
     if (requester.role === ROLES.MANAGER) {
-      const managerDept = await getRequesterDepartment(requester);
+      const managerDept = await getRequesterDepartment(requester, companyId);
       if (!managerDept) return res.status(200).json({ success: true, data: [] });
       departmentsQuery = departmentsQuery.eq('id', managerDept.id);
     }
@@ -307,6 +399,7 @@ router.get('/departments/overview', async (req, res) => {
       const { data: users, error: usersError } = await supabase
         .from('users')
         .select('uid, name, username, role, position, is_active, department_id, department')
+        .eq('company_id', companyId)
         .in('department_id', departmentIds)
         .order('name', { ascending: true });
       if (usersError) throw usersError;
@@ -353,6 +446,7 @@ router.get('/departments/overview', async (req, res) => {
     let usersFallbackQuery = supabase
       .from('users')
       .select('uid, name, username, role, position, is_active, department')
+      .eq('company_id', companyId)
       .order('name', { ascending: true });
 
     if (requester.role === ROLES.MANAGER) {
@@ -409,14 +503,20 @@ router.get('/departments/overview', async (req, res) => {
 });
 
 router.get('/sites', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   try {
     let query = supabase.from('sites').select('*').order('created_at', { ascending: false });
     if (requester.role === ROLES.MANAGER) {
-      const { data: dept } = await supabase.from('departments').select('id').eq('name', requester.department).single();
-      if (!dept) return res.status(400).json({ success: false, error: 'Manager department not mapped' });
-      query = query.eq('department_id', dept.id);
+      const managerDept = await getRequesterDepartment(requester, companyId);
+      if (!managerDept?.id) return res.status(200).json({ success: true, data: [] });
+      query = query.eq('department_id', managerDept.id);
+    } else {
+      const { data: depts } = await supabase.from('departments').select('id').eq('company_id', companyId);
+      const ids = (depts || []).map((d) => d.id).filter(Boolean);
+      if (ids.length === 0) return res.status(200).json({ success: true, data: [] });
+      query = query.in('department_id', ids);
     }
     const { data, error } = await query;
     if (error) throw error;
@@ -427,15 +527,26 @@ router.get('/sites', async (req, res) => {
 });
 
 router.post('/sites', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   try {
     const payload = { ...req.body };
     if (requester.role === ROLES.MANAGER) {
-      const { data: dept } = await supabase.from('departments').select('id').eq('name', requester.department).single();
-      if (!dept) return res.status(400).json({ success: false, error: 'Manager department not mapped' });
-      if (payload.department_id !== dept.id) {
+      const managerDept = await getRequesterDepartment(requester, companyId);
+      if (!managerDept?.id) return res.status(400).json({ success: false, error: 'Manager department not mapped' });
+      if (payload.department_id !== managerDept.id) {
         return res.status(403).json({ success: false, error: 'Managers can only create sites in their department' });
+      }
+    } else if (payload.department_id != null) {
+      const { data: d } = await supabase
+        .from('departments')
+        .select('id')
+        .eq('id', payload.department_id)
+        .eq('company_id', companyId)
+        .maybeSingle();
+      if (!d) {
+        return res.status(400).json({ success: false, error: 'Department not in this tenant' });
       }
     }
     const { data, error } = await supabase.from('sites').insert(payload).select().single();
@@ -447,13 +558,24 @@ router.post('/sites', async (req, res) => {
 });
 
 router.post('/employee-sites', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   try {
     const { employee_uid, site_id } = req.body;
-    const { data: employee } = await supabase.from('users').select('uid, department').eq('uid', employee_uid).single();
+    const { data: employee } = await supabase
+      .from('users')
+      .select('uid, department, company_id')
+      .eq('uid', employee_uid)
+      .eq('company_id', companyId)
+      .single();
     const { data: site } = await supabase.from('sites').select('id, department_id').eq('id', site_id).single();
-    const { data: department } = await supabase.from('departments').select('id, name').eq('id', site.department_id).single();
+    const { data: department } = await supabase
+      .from('departments')
+      .select('id, name')
+      .eq('id', site?.department_id)
+      .eq('company_id', companyId)
+      .single();
     if (!employee || !site || !department) {
       return res.status(400).json({ success: false, error: 'Invalid employee or site' });
     }
@@ -472,13 +594,22 @@ router.post('/employee-sites', async (req, res) => {
 });
 
 router.get('/attendance', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   try {
-    let query = supabase.from('attendance_records').select('*').order('timestamp', { ascending: false });
+    const tenantUids = await fetchCompanyUserUids(supabase, companyId);
+    const uidFilter = tenantUids.length ? tenantUids : ['00000000-0000-0000-0000-000000000000'];
+    let query = supabase.from('attendance_records').select('*').in('user_uid', uidFilter).order('timestamp', { ascending: false });
     if (requester.role === ROLES.MANAGER) {
-      const { data: deptUsers } = await supabase.from('users').select('uid').eq('department', requester.department);
-      query = query.in('user_uid', (deptUsers || []).map((u) => u.uid));
+      const { data: deptUsers } = await supabase
+        .from('users')
+        .select('uid')
+        .eq('company_id', companyId)
+        .eq('department', requester.department);
+      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
+      const mfilter = muids.length ? muids : ['00000000-0000-0000-0000-000000000000'];
+      query = supabase.from('attendance_records').select('*').in('user_uid', mfilter).order('timestamp', { ascending: false });
     }
     const { data, error } = await query;
     if (error) throw error;
@@ -489,13 +620,30 @@ router.get('/attendance', async (req, res) => {
 });
 
 router.get('/leaves', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   try {
-    let query = supabase.from('leave_requests').select('*').order('requested_at', { ascending: false });
+    const tenantUids = await fetchCompanyUserUids(supabase, companyId);
+    const uidFilter = tenantUids.length ? tenantUids : ['00000000-0000-0000-0000-000000000000'];
+    let query = supabase
+      .from('leave_requests')
+      .select('*')
+      .in('employee_uid', uidFilter)
+      .order('requested_at', { ascending: false });
     if (requester.role === ROLES.MANAGER) {
-      const { data: deptUsers } = await supabase.from('users').select('uid').eq('department', requester.department);
-      query = query.in('employee_uid', (deptUsers || []).map((u) => u.uid));
+      const { data: deptUsers } = await supabase
+        .from('users')
+        .select('uid')
+        .eq('company_id', companyId)
+        .eq('department', requester.department);
+      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
+      const mfilter = muids.length ? muids : ['00000000-0000-0000-0000-000000000000'];
+      query = supabase
+        .from('leave_requests')
+        .select('*')
+        .in('employee_uid', mfilter)
+        .order('requested_at', { ascending: false });
     }
     const { data, error } = await query;
     if (error) throw error;
@@ -506,16 +654,30 @@ router.get('/leaves', async (req, res) => {
 });
 
 router.patch('/leaves/:id', async (req, res) => {
-  const requester = requireRequester(req, res);
-  if (!requester) return;
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
   try {
     const { id } = req.params;
     const { status, admin_notes } = req.body;
-    const { data: requestRow } = await supabase.from('leave_requests').select('id, employee_uid, status').eq('id', id).single();
+    const tenantUids = await fetchCompanyUserUids(supabase, companyId);
+    const { data: requestRow } = await supabase
+      .from('leave_requests')
+      .select('id, employee_uid, status')
+      .eq('id', id)
+      .single();
     if (!requestRow) return res.status(404).json({ success: false, error: 'Leave request not found' });
+    if (!tenantUids.includes(requestRow.employee_uid)) {
+      return res.status(404).json({ success: false, error: 'Leave request not found' });
+    }
     if (requestRow.status !== 'pending') return res.status(400).json({ success: false, error: 'Leave already processed' });
     if (requester.role === ROLES.MANAGER) {
-      const { data: emp } = await supabase.from('users').select('uid, department').eq('uid', requestRow.employee_uid).single();
+      const { data: emp } = await supabase
+        .from('users')
+        .select('uid, department')
+        .eq('uid', requestRow.employee_uid)
+        .eq('company_id', companyId)
+        .single();
       if (!emp || emp.department !== requester.department) {
         return res.status(403).json({ success: false, error: 'Managers can only process department leaves' });
       }

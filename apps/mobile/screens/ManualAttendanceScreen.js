@@ -88,7 +88,7 @@ export default function ManualAttendanceScreen({ navigation, route }) {
 
   const loadAttendanceRecords = async () => {
     try {
-      const records = await getAttendanceRecords();
+      const records = await getAttendanceRecords(user?.companyId);
       // Sort by timestamp (newest first)
       const sorted = records.sort((a, b) => 
         new Date(b.timestamp || b.createdAt) - new Date(a.timestamp || a.createdAt)

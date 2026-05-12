@@ -1,6 +1,7 @@
 // Calendar and Events Management Utilities using Supabase (with AsyncStorage fallback)
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../core/config/supabase';
+import { fetchSessionUserCompanyId, fetchCompanyUserUids } from '../core/tenant/tenantScope';
 import { createNotification, createBatchNotifications } from './notifications';
 import { getEmployees } from './employees';
 
@@ -408,6 +409,21 @@ export const getCalendarEvents = async (employeeId = null, startDate = null, end
 
     // Convert to app format
     let events = data.map(convertCalendarEventFromDb);
+
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    const tenantUids = tenantCid ? await fetchCompanyUserUids(supabase, tenantCid, 'getCalendarEvents') : [];
+    const tenantUidSet = new Set(tenantUids);
+    if (tenantCid) {
+      if (__DEV__) {
+        console.log('[tenant] getCalendarEvents', { queried_company_id: tenantCid, uid_count: tenantUids.length });
+      }
+      events = events.filter((ev) => ev.createdByUid && tenantUidSet.has(ev.createdByUid));
+    } else {
+      if (__DEV__) {
+        console.warn('[tenant] getCalendarEvents: no session company_id — returning no events');
+      }
+      events = [];
+    }
 
     // Filter events based on visibility rules (RLS handles most, but we do additional client-side filtering)
     // Note: currentUserUid and currentUsername are already declared above (lines 367-369)

@@ -2,6 +2,7 @@
 import { supabase } from '../core/config/supabase';
 import { createNotification, createBatchNotifications } from './notifications';
 import { getAdminUsers, getSuperAdminUsers, getManagersByDepartment } from './employees';
+import { fetchSessionUserCompanyId, fetchCompanyUserUids, fetchCompanyUsernames } from '../core/tenant/tenantScope';
 
 // Ticket Categories
 export const TICKET_CATEGORIES = {
@@ -200,6 +201,11 @@ export const createTicket = async (createdBy, category, priority, subject, descr
       };
     }
 
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      return { success: false, error: 'Tenant context missing. Please sign in again.' };
+    }
+
     // Auto-assign to department manager based on category
     let assignedManager = null;
     const department = CATEGORY_TO_DEPARTMENT_MAP[category];
@@ -210,7 +216,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
     if (department) {
       try {
         console.log(`[Ticket Routing] Looking for managers in department: ${department}`);
-        const departmentManagers = await getManagersByDepartment(department);
+        const departmentManagers = await getManagersByDepartment(department, tenantCid);
         console.log(`[Ticket Routing] Found ${departmentManagers.length} manager(s) for ${department}:`, 
           departmentManagers.map(m => m.username));
         
@@ -224,7 +230,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
           console.warn(`⚠️ No manager found for department: ${department}. Ticket will not be auto-assigned.`);
           // Fallback: Try to assign to a super_admin if no manager found
           try {
-            const superAdmins = await getSuperAdminUsers();
+            const superAdmins = await getSuperAdminUsers(tenantCid);
             if (superAdmins.length > 0) {
               assignedManager = superAdmins[0];
               console.log(`✓ Fallback: Assigning ticket to super_admin: ${assignedManager.username}`);
@@ -237,7 +243,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
         console.error('Error finding department manager:', error);
         // Fallback: Try to assign to a super_admin on error
         try {
-          const superAdmins = await getSuperAdminUsers();
+          const superAdmins = await getSuperAdminUsers(tenantCid);
           if (superAdmins.length > 0) {
             assignedManager = superAdmins[0];
             console.log(`✓ Fallback (on error): Assigning ticket to super_admin: ${assignedManager.username}`);
@@ -250,7 +256,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
       console.log(`[Ticket Routing] No department mapping for category: ${category}. Assigning to super_admin.`);
       // For "other" category or unmapped categories, assign to super_admin
       try {
-        const superAdmins = await getSuperAdminUsers();
+        const superAdmins = await getSuperAdminUsers(tenantCid);
         if (superAdmins.length > 0) {
           assignedManager = superAdmins[0];
           console.log(`✓ Assigning ticket to super_admin: ${assignedManager.username}`);
@@ -302,7 +308,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
     
     // 1. Notify super admins (always notified of all tickets)
     try {
-      const superAdmins = await getSuperAdminUsers();
+      const superAdmins = await getSuperAdminUsers(tenantCid);
       if (superAdmins && superAdmins.length > 0) {
         const superAdminUsernames = superAdmins
           .map(admin => admin.username)
@@ -397,7 +403,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
     } else {
       // 3. If no manager found, notify all managers about unassigned ticket
       try {
-        const allManagers = await getAdminUsers();
+        const allManagers = await getAdminUsers(tenantCid);
         const managers = allManagers.filter(admin => admin.role === 'manager' && admin.username);
         
         if (managers && managers.length > 0) {
@@ -459,11 +465,16 @@ export const createTicket = async (createdBy, category, priority, subject, descr
  */
 export const getUserTickets = async (username) => {
   try {
-    // Query from Supabase
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) return [];
+    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getUserTickets');
+    if (tenantUids.length === 0) return [];
+
     const { data: tickets, error } = await supabase
       .from('tickets')
       .select('*')
       .eq('created_by', username)
+      .in('created_by_uid', tenantUids)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -471,7 +482,6 @@ export const getUserTickets = async (username) => {
       return [];
     }
 
-    // Convert database format to app format
     return tickets.map(convertTicketFromDb);
   } catch (error) {
     console.error('Error getting user tickets:', error);
@@ -485,18 +495,52 @@ export const getUserTickets = async (username) => {
  */
 export const getAllTickets = async () => {
   try {
-    // Query from Supabase (RLS policies will filter based on user role)
-    const { data: tickets, error } = await supabase
-      .from('tickets')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Error getting all tickets from Supabase:', error);
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      console.warn('[tenant] getAllTickets: no company_id');
+      return [];
+    }
+    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getAllTickets');
+    const tenantNames = await fetchCompanyUsernames(supabase, tenantCid, 'getAllTickets');
+    if (tenantUids.length === 0) {
       return [];
     }
 
-    // Convert database format to app format
+    if (__DEV__) {
+      console.log('[tenant] getAllTickets', { queried_company_id: tenantCid, uid_count: tenantUids.length });
+    }
+
+    const { data: byCreator, error: e1 } = await supabase
+      .from('tickets')
+      .select('*')
+      .in('created_by_uid', tenantUids)
+      .order('created_at', { ascending: false });
+
+    if (e1) {
+      console.error('Error getting tickets (by creator) from Supabase:', e1);
+    }
+
+    let byAssignee = [];
+    if (tenantNames.length > 0) {
+      const { data: t2, error: e2 } = await supabase
+        .from('tickets')
+        .select('*')
+        .in('assigned_to', tenantNames)
+        .order('created_at', { ascending: false });
+      if (e2) {
+        console.error('Error getting tickets (by assignee) from Supabase:', e2);
+      } else {
+        byAssignee = t2 || [];
+      }
+    }
+
+    const merged = new Map();
+    (byCreator || []).forEach((t) => merged.set(t.id, t));
+    (byAssignee || []).forEach((t) => merged.set(t.id, t));
+    const tickets = Array.from(merged.values()).sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    );
+
     return tickets.map(convertTicketFromDb);
   } catch (error) {
     console.error('Error getting all tickets:', error);
@@ -511,7 +555,11 @@ export const getAllTickets = async () => {
  */
 export const getTicketById = async (ticketId) => {
   try {
-    // Query from Supabase
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) return null;
+    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getTicketById');
+    const tenantNames = await fetchCompanyUsernames(supabase, tenantCid, 'getTicketById');
+
     const { data: ticket, error } = await supabase
       .from('tickets')
       .select('*')
@@ -523,7 +571,15 @@ export const getTicketById = async (ticketId) => {
       return null;
     }
 
-    // Convert database format to app format
+    const inTenant =
+      tenantUids.includes(ticket.created_by_uid) ||
+      (ticket.assigned_to && tenantNames.includes(ticket.assigned_to)) ||
+      (ticket.created_by && tenantNames.includes(ticket.created_by));
+    if (!inTenant) {
+      if (__DEV__) console.warn('[tenant] getTicketById: ticket outside current tenant');
+      return null;
+    }
+
     return convertTicketFromDb(ticket);
   } catch (error) {
     console.error('Error getting ticket by ID:', error);

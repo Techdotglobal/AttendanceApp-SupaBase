@@ -1,19 +1,53 @@
 /**
  * Query Service - Read-only database queries for report generation
- * All queries use Supabase Service Role Key for read-only access
+ * All queries use Supabase Service Role Key for read-only access.
+ * Every aggregate path must pass an explicit company_id (tenant scope).
  */
 const { supabase } = require('../config/supabase');
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeCompanyId(raw) {
+  if (raw == null || String(raw).trim() === '') return null;
+  const id = String(raw).trim();
+  return UUID_RE.test(id) ? id : null;
+}
+
+async function fetchCompanyUserUids(companyId) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) return [];
+  const { data, error } = await supabase.from('users').select('uid').eq('company_id', cid);
+  if (error) {
+    console.error('[queryService] fetchCompanyUserUids:', error.message);
+    return [];
+  }
+  return (data || []).map((r) => r.uid).filter(Boolean);
+}
+
+async function fetchCompanyUsernames(companyId) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) return [];
+  const { data, error } = await supabase.from('users').select('username').eq('company_id', cid);
+  if (error) {
+    console.error('[queryService] fetchCompanyUsernames:', error.message);
+    return [];
+  }
+  return (data || []).map((r) => r.username).filter((u) => u != null && String(u).trim() !== '');
+}
+
 /**
- * Get all active employees
- * @returns {Promise<Array>} Array of employee objects
+ * @param {string} companyId
+ * @returns {Promise<Array>}
  */
-async function getAllEmployees() {
+async function getAllEmployees(companyId) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) throw new Error('company_id is required for getAllEmployees');
   try {
     const { data, error } = await supabase
       .from('users')
-      .select('id, username, name, email, role, department, position, work_mode, is_active')
+      .select('id, uid, username, name, email, role, department, position, work_mode, is_active, company_id')
       .eq('is_active', true)
+      .eq('company_id', cid)
       .order('department', { ascending: true })
       .order('name', { ascending: true });
 
@@ -26,17 +60,19 @@ async function getAllEmployees() {
 }
 
 /**
- * Get employees by department
- * @param {string} department - Department name
- * @returns {Promise<Array>} Array of employee objects
+ * @param {string} department
+ * @param {string} companyId
  */
-async function getEmployeesByDepartment(department) {
+async function getEmployeesByDepartment(department, companyId) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) throw new Error('company_id is required for getEmployeesByDepartment');
   try {
     const { data, error } = await supabase
       .from('users')
-      .select('id, uid, username, name, email, role, department, position, work_mode, is_active')
+      .select('id, uid, username, name, email, role, department, position, work_mode, is_active, company_id')
       .eq('is_active', true)
       .eq('department', department)
+      .eq('company_id', cid)
       .order('name', { ascending: true });
 
     if (error) throw error;
@@ -47,17 +83,23 @@ async function getEmployeesByDepartment(department) {
   }
 }
 
+const EMPTY_UID = '00000000-0000-0000-0000-000000000000';
+
 /**
- * Get attendance records within date range
- * @param {Date} from - Start date
- * @param {Date} to - End date
- * @returns {Promise<Array>} Array of attendance records
+ * @param {Date} from
+ * @param {Date} to
+ * @param {string} companyId
  */
-async function getAttendanceRecords(from, to) {
+async function getAttendanceRecords(from, to, companyId) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) throw new Error('company_id is required for getAttendanceRecords');
   try {
+    const uids = await fetchCompanyUserUids(cid);
+    const uidList = uids.length > 0 ? uids : [EMPTY_UID];
     const { data, error } = await supabase
       .from('attendance_records')
       .select('*')
+      .in('user_uid', uidList)
       .gte('timestamp', from.toISOString())
       .lte('timestamp', to.toISOString())
       .order('timestamp', { ascending: false });
@@ -71,16 +113,20 @@ async function getAttendanceRecords(from, to) {
 }
 
 /**
- * Get leave requests within date range
- * @param {Date} from - Start date
- * @param {Date} to - End date
- * @returns {Promise<Array>} Array of leave requests
+ * @param {Date} from
+ * @param {Date} to
+ * @param {string} companyId
  */
-async function getLeaveRequests(from, to) {
+async function getLeaveRequests(from, to, companyId) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) throw new Error('company_id is required for getLeaveRequests');
   try {
+    const uids = await fetchCompanyUserUids(cid);
+    const uidList = uids.length > 0 ? uids : [EMPTY_UID];
     const { data, error } = await supabase
       .from('leave_requests')
       .select('*')
+      .in('employee_uid', uidList)
       .gte('start_date', formatDate(from))
       .lte('end_date', formatDate(to))
       .order('created_at', { ascending: false });
@@ -94,13 +140,18 @@ async function getLeaveRequests(from, to) {
 }
 
 /**
- * Get tickets within date range
- * @param {Date} from - Start date
- * @param {Date} to - End date
- * @returns {Promise<Array>} Array of tickets
+ * @param {Date} from
+ * @param {Date} to
+ * @param {string} companyId
  */
-async function getTickets(from, to) {
+async function getTickets(from, to, companyId) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) throw new Error('company_id is required for getTickets');
   try {
+    const [uids, usernames] = await Promise.all([fetchCompanyUserUids(cid), fetchCompanyUsernames(cid)]);
+    const uidSet = new Set(uids);
+    const nameSet = new Set(usernames);
+
     const { data, error } = await supabase
       .from('tickets')
       .select('*')
@@ -109,7 +160,12 @@ async function getTickets(from, to) {
       .order('created_at', { ascending: false });
 
     if (error) throw error;
-    return data || [];
+    return (data || []).filter((t) => {
+      if (t.created_by_uid && uidSet.has(t.created_by_uid)) return true;
+      if (t.created_by && nameSet.has(t.created_by)) return true;
+      if (t.assigned_to && nameSet.has(t.assigned_to)) return true;
+      return false;
+    });
   } catch (error) {
     console.error('Error fetching tickets:', error);
     throw error;
@@ -117,27 +173,31 @@ async function getTickets(from, to) {
 }
 
 /**
- * Get super admin email
- * Priority: Environment variable > Database query
- * @returns {Promise<string>} Super admin email address
+ * Super admin email for a tenant (for scheduled / per-tenant reports).
+ * @param {string} companyId
  */
-async function getSuperAdminEmail() {
-  try {
-    // Check environment variable first (allows override without database changes)
-    const envEmail = process.env.REPORT_RECIPIENT_EMAIL || process.env.SUPER_ADMIN_EMAIL;
-    if (envEmail) {
-      console.log('Using email from environment variable:', envEmail);
-      return envEmail;
-    }
+async function getSuperAdminEmail(companyId) {
+  const envEmail = process.env.REPORT_RECIPIENT_EMAIL || process.env.SUPER_ADMIN_EMAIL;
+  if (envEmail) {
+    console.log('Using email from environment variable:', envEmail);
+    return envEmail;
+  }
 
-    // Fallback to database query
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) {
+    console.warn('[queryService] getSuperAdminEmail: company_id required when REPORT_RECIPIENT_EMAIL is unset');
+    return null;
+  }
+
+  try {
     const { data, error } = await supabase
       .from('users')
       .select('email')
       .eq('role', 'super_admin')
       .eq('is_active', true)
+      .eq('company_id', cid)
       .limit(1)
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
     return data?.email || null;
@@ -147,14 +207,14 @@ async function getSuperAdminEmail() {
   }
 }
 
-/**
- * Helper function to format date as YYYY-MM-DD
- */
 function formatDate(date) {
   return date.toISOString().split('T')[0];
 }
 
 module.exports = {
+  normalizeCompanyId,
+  fetchCompanyUserUids,
+  fetchCompanyUsernames,
   getAllEmployees,
   getEmployeesByDepartment,
   getAttendanceRecords,
@@ -162,4 +222,3 @@ module.exports = {
   getTickets,
   getSuperAdminEmail,
 };
-

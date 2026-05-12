@@ -1,9 +1,16 @@
 -- ============================================
--- Companies Table & RLS (Company Logo Customization)
+-- Companies Table & RLS (multi-tenant root)
 -- ============================================
 -- Migration: 020
--- Description: Creates companies table for single-company logo customization.
+-- Description: Creates companies table.
 -- Run this script in Supabase SQL Editor.
+--
+-- IMPORTANT (multi-tenant):
+--   No default/seed row is inserted here. Every tenant MUST be created
+--   through POST /api/auth/onboard-company so a brand-new company row is
+--   inserted alongside its Management department and super_admin.
+--   See migration 026 if you previously ran an older version of this file
+--   that seeded a "Default Company" row.
 -- ============================================
 
 -- ============================================
@@ -19,15 +26,11 @@ CREATE TABLE IF NOT EXISTS companies (
 );
 
 -- ============================================
--- 2. Insert default company record (only if table is empty)
+-- 2. (Removed) Default company seed
 -- ============================================
-
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM companies LIMIT 1) THEN
-    INSERT INTO companies (name) VALUES ('Default Company');
-  END IF;
-END $$;
+-- Intentionally left blank: tenant rows must be inserted by the onboarding
+-- flow (auth-service /api/auth/onboard-company) so each tenant is fully
+-- isolated. There is no implicit/global "default" company.
 
 -- ============================================
 -- 3. updated_at trigger
@@ -100,5 +103,5 @@ WITH CHECK (
 -- Comments
 -- ============================================
 
-COMMENT ON TABLE companies IS 'Single company record for app branding (e.g. logo). One row expected.';
+COMMENT ON TABLE companies IS 'Tenant root. One row per tenant; created by /api/auth/onboard-company. No implicit/default row.';
 COMMENT ON COLUMN companies.logo_url IS 'Public URL of logo image stored in storage bucket company-logos';

@@ -4,13 +4,22 @@
 -- Adds departments.company_id, composite uniqueness (company_id, name),
 -- tenant-scoped RLS on departments, and trigger logic that INSERTs
 -- departments with company_id (no orphan global rows).
+--
+-- IMPORTANT (multi-tenant):
+--   The UPDATE below is a ONE-TIME backfill for pre-existing department
+--   rows from the single-tenant era. It picks the oldest companies row
+--   solely to preserve legacy data; new tenants must NEVER inherit a
+--   department this way. The trigger installed here was later replaced
+--   by migration 025 (and reinstalled strictly in migration 026) to
+--   forbid the "fall back to first company" behaviour entirely.
 -- ============================================
 
 -- 1) Tenant column on departments
 ALTER TABLE departments
 ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies(id) ON DELETE CASCADE;
 
--- 2) Backfill existing rows to oldest company (single-tenant → SaaS bridge)
+-- 2) One-time legacy backfill (single-tenant → SaaS bridge). No-op on a
+--    fresh multi-tenant install.
 UPDATE departments d
 SET company_id = sub.id
 FROM (
@@ -44,7 +53,11 @@ CREATE INDEX IF NOT EXISTS idx_departments_company_id ON departments(company_id)
 
 COMMENT ON COLUMN departments.company_id IS 'Tenant scope; pairs with name for unique department per company.';
 
--- 6) Replace trigger function (tenant-aware INSERT into departments)
+-- 6) Replace trigger function (tenant-aware INSERT into departments).
+--    NOTE: This version is SUPERSEDED by migrations 025 and 026, which
+--    remove the "fall back to oldest company when NEW.company_id is NULL"
+--    branch below. The body is kept here for historical install ordering;
+--    later migrations replace the function definition.
 CREATE OR REPLACE FUNCTION sync_user_department_fields()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -55,6 +68,7 @@ DECLARE
 BEGIN
   v_company := NEW.company_id;
   IF v_company IS NULL THEN
+    -- Legacy fallback; removed in 025/026 to enforce strict tenant isolation.
     SELECT c.id INTO v_company FROM companies c ORDER BY c.created_at ASC NULLS LAST LIMIT 1;
   END IF;
 

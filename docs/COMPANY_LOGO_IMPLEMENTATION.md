@@ -22,7 +22,7 @@ Run the entire script in **Supabase Dashboard → SQL Editor**.
 It:
 
 - Creates `companies` table (`id`, `name`, `logo_url`, `created_at`, `updated_at`)
-- Inserts one row: `name = 'Default Company'` (only if the table is empty)
+- Does **not** seed any rows. Every tenant is created on demand by the auth-service onboarding flow (`POST /api/auth/onboard-company`), which inserts a fresh `companies` row alongside its Management department and super admin
 - Adds `updated_at` trigger
 - Enables RLS
 - Adds policies: authenticated users can `SELECT`; only `super_admin` can `UPDATE` (using `users.uid` and `users.role`)
@@ -112,15 +112,19 @@ Details: `docs/STORAGE_SETUP.md`
 
 ---
 
-## 5. Optional: change default company name
+## 5. Renaming a tenant
 
-After migration, you can update the default company name in Supabase:
+Each tenant has its own `companies` row. To rename one, target it by its
+specific `id` (never by "first row" / `LIMIT 1`, which would touch a
+different tenant in a multi-tenant install):
 
 ```sql
-UPDATE companies SET name = 'Your Company Name' WHERE id = (SELECT id FROM companies LIMIT 1);
+UPDATE companies SET name = 'New Name' WHERE id = '<tenant-uuid>';
 ```
 
-(Or use the first company row by another condition if you add more later.)
+Get the right `<tenant-uuid>` from the super admin profile
+(`SELECT company_id FROM users WHERE username = '<super-admin>';`) or from
+the onboarding response payload.
 
 ---
 

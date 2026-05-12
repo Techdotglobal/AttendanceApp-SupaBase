@@ -24,9 +24,25 @@
  */
 const express = require('express');
 const router = express.Router();
-const { supabase } = require('../config/supabase');
+const { supabase, isServiceRole, tokenRole, assertServiceRoleClient } = require('../config/supabase');
 const { normalizeEmailForAuth } = require('../lib/loginNormalize');
 const { syncAuthMetadataForUid } = require('../lib/authMetadata');
+
+/**
+ * Format a PostgREST error for logs so RLS / permission failures are obvious.
+ * @param {object|null} error
+ */
+function describeDbError(error) {
+  if (!error) return null;
+  return {
+    message: error.message,
+    code: error.code,
+    details: error.details,
+    hint: error.hint,
+    isRlsViolation:
+      typeof error.message === 'string' && /row-level security|RLS/i.test(error.message),
+  };
+}
 
 const USERNAME_RE = /^[a-zA-Z0-9._-]{3,64}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -90,6 +106,10 @@ router.get('/onboarding-status', async (req, res) => {
       success: true,
       bootstrapAvailable: n === 0,
       requiresOnboardingKey: n > 0,
+      // Surface server-side configuration health so the onboarding UI / ops
+      // can detect a misconfigured service role before submitting the form.
+      serviceRoleActive: Boolean(isServiceRole),
+      tokenRole: tokenRole || null,
     });
   } catch (e) {
     console.error('[onboarding] onboarding-status error:', e?.message || e);
@@ -104,12 +124,32 @@ router.post('/onboard-company', async (req, res) => {
   let authUserId = null;
 
   try {
+    // Fail fast with a clean 503 if the env is misconfigured (anon key in
+    // place of service_role). Without this guard the next .insert() returns
+    // a confusing "new row violates row-level security policy" error.
+    try {
+      assertServiceRoleClient();
+    } catch (cfgErr) {
+      console.error(`[${ts}] [onboard-company] aborting: service role key misconfigured`, {
+        token_role: tokenRole,
+        service_role_active: isServiceRole,
+        error: cfgErr.message,
+      });
+      return res.status(cfgErr.statusCode || 503).json({
+        success: false,
+        error: cfgErr.message,
+        code: cfgErr.code || 'SERVICE_ROLE_KEY_MISCONFIGURED',
+      });
+    }
+
     const companyCount = await countCompanies();
     assertOnboardingAuthorized(req, companyCount);
 
     console.log(`[${ts}] [onboard-company] pre-insert snapshot`, {
       existing_company_count: companyCount,
       requires_onboarding_key: companyCount > 0,
+      service_role_active: isServiceRole,
+      token_role: tokenRole,
     });
 
     const {
@@ -176,6 +216,10 @@ router.post('/onboard-company', async (req, res) => {
     }
 
     // STEP 1: Create the NEW company row.
+    console.log(`[${ts}] [onboard-company] inserting companies row`, {
+      name: companyNameTrim,
+      service_role_active: isServiceRole,
+    });
     const { data: companyRow, error: companyErr } = await supabase
       .from('companies')
       .insert({ name: companyNameTrim })
@@ -183,10 +227,23 @@ router.post('/onboard-company', async (req, res) => {
       .single();
 
     if (companyErr || !companyRow?.id) {
-      console.error(`[${ts}] [onboard-company] company insert failed:`, companyErr?.message);
-      return res.status(500).json({ success: false, error: companyErr?.message || 'Failed to create company' });
+      const dbErr = describeDbError(companyErr);
+      console.error(`[${ts}] [onboard-company] company insert failed`, dbErr);
+      // Surface the most actionable hint for the operator.
+      const friendly = dbErr?.isRlsViolation
+        ? 'Onboarding failed: companies insert blocked by RLS. The auth-service must run with SUPABASE_SERVICE_ROLE_KEY (not the anon key).'
+        : companyErr?.message || 'Failed to create company';
+      return res.status(500).json({
+        success: false,
+        error: friendly,
+        code: dbErr?.isRlsViolation ? 'COMPANIES_INSERT_RLS' : undefined,
+      });
     }
     companyId = companyRow.id;
+    console.log(`[${ts}] [onboard-company] companies insert ok`, {
+      inserted_company_id: companyId,
+      service_role_active: isServiceRole,
+    });
 
     if (!UUID_RE.test(String(companyId))) {
       console.error(`[${ts}] [onboard-company] INVARIANT FAILED: company insert returned non-UUID id`, {
@@ -262,10 +319,18 @@ router.post('/onboard-company', async (req, res) => {
       .single();
 
     if (deptErr || !deptRow?.id) {
-      console.error(`[${ts}] [onboard-company] department insert failed:`, deptErr?.message);
+      const dbErr = describeDbError(deptErr);
+      console.error(`[${ts}] [onboard-company] department insert failed`, dbErr);
       await teardownPartialOnboarding({ companyId, authUserId: null, ts });
       companyId = null;
-      return res.status(500).json({ success: false, error: deptErr?.message || 'Failed to create Management department' });
+      const friendly = dbErr?.isRlsViolation
+        ? 'Onboarding failed: departments insert blocked by RLS. Auth-service must use the service-role key.'
+        : deptErr?.message || 'Failed to create Management department';
+      return res.status(500).json({
+        success: false,
+        error: friendly,
+        code: dbErr?.isRlsViolation ? 'DEPARTMENTS_INSERT_RLS' : undefined,
+      });
     }
     departmentId = deptRow.id;
 
@@ -339,15 +404,21 @@ router.post('/onboard-company', async (req, res) => {
       .single();
 
     if (profileErr || !profileRow) {
-      console.error(`[${ts}] [onboard-company] users insert failed:`, profileErr?.message);
+      const dbErr = describeDbError(profileErr);
+      console.error(`[${ts}] [onboard-company] users insert failed`, dbErr);
       await teardownPartialOnboarding({ companyId, authUserId, ts });
       companyId = null;
       authUserId = null;
       const pmsg = profileErr?.message || 'Failed to create user profile';
-      const code = /duplicate|unique/i.test(pmsg) ? 409 : 500;
+      const isDup = /duplicate|unique/i.test(pmsg);
+      const code = isDup ? 409 : 500;
+      const friendly = dbErr?.isRlsViolation
+        ? 'Onboarding failed: users insert blocked by RLS. Auth-service must use the service-role key.'
+        : pmsg;
       return res.status(code).json({
         success: false,
-        error: pmsg,
+        error: friendly,
+        code: dbErr?.isRlsViolation ? 'USERS_INSERT_RLS' : undefined,
       });
     }
 

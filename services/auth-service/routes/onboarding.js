@@ -215,6 +215,33 @@ router.post('/onboard-company', async (req, res) => {
       });
     }
 
+    const normalizeCompanyName = (s) =>
+      String(s ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+
+    const targetNorm = normalizeCompanyName(companyNameTrim);
+    const { data: existingCompanies, error: companiesListErr } = await supabase
+      .from('companies')
+      .select('id, name');
+
+    if (companiesListErr) {
+      console.error(`[${ts}] [onboard-company] companies list error:`, companiesListErr);
+      return res.status(500).json({ success: false, error: 'Could not verify company name availability.' });
+    }
+    const nameTaken = (existingCompanies || []).some(
+      (row) => normalizeCompanyName(row.name) === targetNorm,
+    );
+    if (nameTaken) {
+      return res.status(409).json({
+        success: false,
+        error:
+          'A company with this name already exists. Use the existing tenant or pick a different company name.',
+        code: 'COMPANY_NAME_DUPLICATE',
+      });
+    }
+
     // STEP 1: Create the NEW company row.
     console.log(`[${ts}] [onboard-company] inserting companies row`, {
       name: companyNameTrim,

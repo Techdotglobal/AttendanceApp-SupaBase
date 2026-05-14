@@ -12,7 +12,8 @@
     "db:diff": "supabase db diff",
     "db:reset": "supabase db reset --linked",
     "db:new": "supabase migration new",
-    "db:status": "supabase migration list"
+    "db:status": "supabase migration list",
+    "sync-auth-metadata": "node scripts/sync-all-auth-metadata.js"
   },
   "devDependencies": {
     "@supabase/supabase-js": "^2.89.0",

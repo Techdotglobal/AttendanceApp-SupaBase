@@ -74,8 +74,20 @@ export const authenticateUser = async (usernameOrEmail, password) => {
   }
   // ===== END FIX =====
   
-  // First, try API Gateway (recommended - uses backend service)
-  try {
+  // First, try API Gateway (recommended — auth-service uses service role; client anon cannot SELECT users after RLS)
+  const GATEWAY_LOGIN_ATTEMPTS = 3;
+  const GATEWAY_RETRY_DELAY_MS = 3000;
+
+  /** @type {null | 'http_auth' | 'transport'} */
+  let gatewayFailureKind = null;
+  let gatewayFailureDetail = null;
+
+  for (let attempt = 0; attempt < GATEWAY_LOGIN_ATTEMPTS; attempt++) {
+    gatewayFailureKind = null;
+    gatewayFailureDetail = null;
+    const gatewayLoginT0 = Date.now();
+
+    try {
     // Ensure API_GATEWAY_URL is a string
     const gatewayUrl = typeof API_GATEWAY_URL === 'string' ? API_GATEWAY_URL : String(API_GATEWAY_URL || 'http://localhost:3000');
     const loginUrl = `${gatewayUrl}/api/auth/login`;
@@ -103,62 +115,75 @@ export const authenticateUser = async (usernameOrEmail, password) => {
     
     clearTimeout(timeoutId);
     
-    const data = await response.json();
+    let data = {};
+    try {
+      const raw = await response.text();
+      data = raw ? JSON.parse(raw) : {};
+    } catch (parseErr) {
+      gatewayFailureKind = 'transport';
+      gatewayFailureDetail = {
+        httpStatus: response.status,
+        parseError: parseErr?.message || String(parseErr),
+      };
+    }
+
+    const elapsedMs = Date.now() - gatewayLoginT0;
+    console.log('[AUTH] gateway login', {
+      attempt: attempt + 1,
+      maxAttempts: GATEWAY_LOGIN_ATTEMPTS,
+      requestStartMs: gatewayLoginT0,
+      elapsedMs,
+      apiTimeoutMs: API_TIMEOUT,
+      httpStatus: response.status,
+      backendReachable: true,
+      bodySuccess: data?.success === true,
+      jsonParseFailed: gatewayFailureKind === 'transport' && gatewayFailureDetail?.parseError,
+    });
     
     // If API Gateway returns success, use it
-    if (response.ok && data.success) {
+    if (!gatewayFailureKind && response.ok && data.success) {
       console.log('✓ Authentication successful via API Gateway for:', data.user?.username || ident);
       
-      // IMPORTANT: We need to establish a Supabase session for RLS policies to work
-      // API Gateway authenticates on the backend, but we need client-side session for database operations
-      try {
-        let emailForSession = data.user?.email ? normalizeEmailForAuth(data.user.email) : null;
-
-        if (!emailForSession) {
-          const nameCandidates = usernameEqVariants(data.user?.username || ident);
-          const toTry = nameCandidates.length ? nameCandidates : [data.user?.username || ident].filter(Boolean);
-          for (const u of toTry) {
-            const { data: userData } = await supabase.from('users').select('email').eq('username', u).maybeSingle();
-            if (userData?.email) {
-              emailForSession = normalizeEmailForAuth(userData.email);
-              break;
-            }
-          }
-        }
-
-        if (__DEV__) {
-          console.log('[AUTH] post-gateway signIn', {
-            emailHint: emailForSession ? `${emailForSession.slice(0, 2)}***@${emailForSession.split('@')[1]}` : null,
-          });
-        }
-
-        if (emailForSession) {
-          const { error: sessionError } = await supabase.auth.signInWithPassword({
-            email: emailForSession,
-            password,
-          });
-
-          if (sessionError) {
-            console.warn('⚠️ Could not establish Supabase session after API Gateway login:', sessionError.message);
-            console.warn('⚠️ Database operations requiring RLS may fail. Consider using direct Supabase authentication.');
-          } else {
-            console.log('✓ Supabase session established for RLS policies');
-          }
-        } else {
-          console.warn('⚠️ No resolved email for Supabase session after API Gateway login');
-        }
-      } catch (sessionError) {
-        console.warn('⚠️ Error establishing Supabase session:', sessionError.message);
-        // Continue anyway - user is authenticated via API Gateway
+      // Gateway must return email — it is required for Supabase session establishment.
+      const emailForSession = data.user?.email ? normalizeEmailForAuth(data.user.email) : null;
+      if (!emailForSession) {
+        console.error('[AUTH] Gateway success but no email in response — cannot establish RLS session');
+        return {
+          success: false,
+          error: 'Authentication error: server did not return required session data.',
+          errorKind: 'server_error',
+        };
       }
-      
+
+      if (__DEV__) {
+        console.log('[AUTH] post-gateway signIn', {
+          emailHint: `${emailForSession.slice(0, 2)}***@${emailForSession.split('@')[1]}`,
+        });
+      }
+
+      const { error: sessionError } = await supabase.auth.signInWithPassword({
+        email: emailForSession,
+        password,
+      });
+
+      if (sessionError) {
+        console.error('[AUTH] Supabase session failed after gateway success:', sessionError.message);
+        return {
+          success: false,
+          error: 'Authentication error: could not establish secure session. Please try again.',
+          errorKind: 'session_error',
+        };
+      }
+
+      console.log('✓ Supabase session established for RLS policies');
+
       return {
         success: true,
         user: {
           username: data.user?.username || ident.split('@')[0],
-          role: data.user?.role || 'employee',
+          role: data.user?.role,
           uid: data.user?.uid || '',
-          email: data.user?.email || ident,
+          email: data.user?.email,
           name: data.user?.name,
           department: data.user?.department || '',
           position: data.user?.position || '',
@@ -168,74 +193,95 @@ export const authenticateUser = async (usernameOrEmail, password) => {
         },
       };
     }
-    
-    // If API Gateway returns an error (but not a service error), fallback to Supabase
-    if (response.status !== 503 && response.status !== 504) {
-      console.log('API Gateway returned error, falling back to Supabase:', data.error || 'Unknown error');
-      // Continue to Supabase fallback below
-    } else {
-      // Service unavailable, fallback to Supabase
-      console.log('API Gateway unavailable, falling back to Supabase');
-      // Continue to Supabase fallback below
+
+    if (!gatewayFailureKind) {
+      if (response.status === 401 || response.status === 400) {
+        gatewayFailureKind = 'http_auth';
+        gatewayFailureDetail = { httpStatus: response.status, error: data?.error };
+      } else if (
+        [502, 503, 504, 408].includes(response.status)
+        || response.status >= 500
+        || !response.ok
+      ) {
+        gatewayFailureKind = 'transport';
+        gatewayFailureDetail = { httpStatus: response.status, error: data?.error };
+      } else if (response.ok && !data.success) {
+        gatewayFailureKind = 'http_auth';
+        gatewayFailureDetail = { httpStatus: response.status, error: data?.error };
+      } else {
+        gatewayFailureKind = 'transport';
+        gatewayFailureDetail = { httpStatus: response.status, reason: 'unexpected_gateway_response' };
+      }
     }
   } catch (error) {
-    // API Gateway call failed (network error, timeout, etc.), fallback to Supabase
-    if (error.name === 'AbortError') {
-      console.log('API Gateway request timed out, falling back to Supabase');
-    } else {
-      const errorMessage = error.message || 'Unknown error';
-      const gatewayUrl = typeof API_GATEWAY_URL === 'string' ? API_GATEWAY_URL : String(API_GATEWAY_URL || 'undefined');
-      console.log('API Gateway request failed, falling back to Supabase:', errorMessage);
-      
-      if (__DEV__) {
-        console.log('API Gateway URL attempted:', gatewayUrl);
-        console.log('Full URL:', `${gatewayUrl}/api/auth/login`);
-        console.log('Error details:', {
-          name: error.name,
-          message: error.message,
-          code: error.code,
-        });
-        console.log('💡 Tip: Make sure API Gateway is running and URL is correct for your platform');
-        console.log('   - iOS Simulator: http://localhost:3000');
-        console.log('   - Android Emulator: http://10.0.2.2:3000');
-        console.log('   - Physical Device: http://<your-computer-ip>:3000');
-        console.log('   - Current URL:', gatewayUrl);
-      }
+    const elapsedMs = Date.now() - gatewayLoginT0;
+    const aborted = error?.name === 'AbortError';
+    console.warn('[AUTH] gateway login fetch failed', {
+      attempt: attempt + 1,
+      maxAttempts: GATEWAY_LOGIN_ATTEMPTS,
+      requestStartMs: gatewayLoginT0,
+      elapsedMs,
+      apiTimeoutMs: API_TIMEOUT,
+      backendReachable: false,
+      timeoutTriggered: aborted,
+      errorName: error?.name,
+      errorMessage: error?.message,
+      errorCode: error?.code,
+    });
+    gatewayFailureKind = 'transport';
+    gatewayFailureDetail = { aborted, errorMessage: error?.message, errorCode: error?.code };
+    if (__DEV__ && !aborted) {
+      const gw = typeof API_GATEWAY_URL === 'string' ? API_GATEWAY_URL : String(API_GATEWAY_URL || 'undefined');
+      console.log('API Gateway URL attempted:', gw);
+      console.log('💡 Tip: Make sure API Gateway is running and URL is correct for your platform');
     }
-    // Continue to Supabase fallback below
   }
-  
-  // Fallback to Supabase authentication (direct client-side auth)
-  try {
-    console.log('Attempting authentication via Supabase...');
-    let emailForAuth;
 
-    if (isEmail) {
-      emailForAuth = normalizeEmailForAuth(ident);
-    } else {
-      let userData = null;
-      for (const u of usernameEqVariants(ident)) {
-        const { data: row, error: queryError } = await supabase
-          .from('users')
-          .select('email, username')
-          .eq('username', u)
-          .maybeSingle();
-        if (queryError) {
-          console.warn('[AUTH] username lookup', u, queryError.message);
-        }
-        if (row?.email) {
-          userData = row;
-          break;
-        }
-      }
-
-      if (!userData?.email) {
-        console.log('✗ Authentication failed: User not found');
-        return { success: false, error: 'Invalid username or password' };
-      }
-
-      emailForAuth = normalizeEmailForAuth(userData.email);
+    if (gatewayFailureKind === 'http_auth') {
+      break;
     }
+    if (gatewayFailureKind === 'transport' && attempt < GATEWAY_LOGIN_ATTEMPTS - 1) {
+      console.log(
+        `[AUTH] gateway transport/cold-start issue — retrying in ${GATEWAY_RETRY_DELAY_MS}ms (${attempt + 2}/${GATEWAY_LOGIN_ATTEMPTS})`
+      );
+      if (attempt === 0) {
+        // Surface the cold-start hint to the caller after the first failure so the user
+        // sees feedback before the full 3-attempt timeout completes.
+        console.log('[AUTH] First gateway attempt failed — server may be waking up (cold start)');
+      }
+      await new Promise((r) => setTimeout(r, GATEWAY_RETRY_DELAY_MS));
+    }
+  }
+
+  if (gatewayFailureKind === 'http_auth') {
+    return {
+      success: false,
+      error: gatewayFailureDetail?.error || 'Invalid username or password',
+    };
+  }
+
+  if (gatewayFailureKind === 'transport' && !isEmail) {
+    return {
+      success: false,
+      error:
+        'The login server is waking up or unreachable. Wait 30–60 seconds and try again, or open your backend URL once in a browser to wake the service.',
+    };
+  }
+
+  // Supabase direct auth — only valid for email-based login.
+  // Username→email resolution via anon client is blocked by tenant RLS.
+  // Username login with a dead gateway should have been caught above and returned a cold-start error.
+  if (!isEmail) {
+    return {
+      success: false,
+      error: 'Server is unavailable. Wait 30–60 seconds and try again, or open the backend URL in a browser to wake the service.',
+      errorKind: 'server_unavailable',
+    };
+  }
+
+  try {
+    console.log('[AUTH] Attempting direct Supabase sign-in (email path)...');
+    const emailForAuth = normalizeEmailForAuth(ident);
 
     if (__DEV__) {
       console.log('[AUTH] direct signIn', {
@@ -303,7 +349,7 @@ export const authenticateUser = async (usernameOrEmail, password) => {
       success: true,
       user: {
         username: userData.username || emailForAuth.split('@')[0],
-        role: userData.role || 'employee',
+        role: userData.role,
         uid: authData.user.id,
         email: authData.user.email || emailForAuth,
         name: userData.name,

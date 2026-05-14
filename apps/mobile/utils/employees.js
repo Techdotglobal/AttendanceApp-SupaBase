@@ -3,6 +3,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../core/config/supabase';
 import { WORK_MODES } from './workModes';
 import { resolveCompanyIdFromUser, requireValidCompanyId } from '../core/tenant/tenantScope';
+import {
+  TENANT_RUNTIME_DIAG,
+  tenantDiagLog,
+  diagQueryUsersByCompanyId,
+} from '../core/debug/tenantRuntimeDiag';
 
 const EMPLOYEES_KEY = 'company_employees';
 const WORK_MODE_REQUESTS_KEY = 'work_mode_requests';
@@ -31,16 +36,20 @@ function mapUserRowToEmployee(emp) {
 export const clearLegacyDummyEmployeeCache = async () => {
   try {
     await AsyncStorage.removeItem(EMPLOYEES_KEY);
+    tenantDiagLog('employees.clearLegacyDummyEmployeeCache', {
+      key: EMPLOYEES_KEY,
+      removed: true,
+    });
   } catch (error) {
     console.error('clearLegacyDummyEmployeeCache:', error);
   }
 };
 
 /**
- * Legacy AsyncStorage employee list (offline / old flows). Prefer Supabase via getManageableEmployees.
- * @returns {Promise<Array>} Array of employee objects
+ * @deprecated Internal diagnostic only — do not call from feature code.
+ * Legacy AsyncStorage employee list retained for offline-queue drain only.
  */
-export const getEmployees = async () => {
+const _legacyGetAsyncStorageEmployees = async () => {
   try {
     const employees = await AsyncStorage.getItem(EMPLOYEES_KEY);
     return employees ? JSON.parse(employees) : [];
@@ -346,9 +355,26 @@ export const isHRManager = (user) => {
  */
 export const getManageableEmployees = async (user) => {
   try {
+    tenantDiagLog('getManageableEmployees.incoming', {
+      buildMarker: 'diag_instrumented_getManageableEmployees_v1',
+      user: user
+        ? {
+            uid: user.uid,
+            username: user.username,
+            role: user.role,
+            companyId: user.companyId ?? user.company_id,
+            department: user.department,
+          }
+        : null,
+    });
+
     const companyId = resolveCompanyIdFromUser(user);
     if (!companyId) {
       console.warn('[tenant] getManageableEmployees: missing user.companyId — returning empty list');
+      tenantDiagLog('getManageableEmployees.aborted', {
+        reason: 'resolveCompanyIdFromUser_returned_null',
+        rawCompanyId: user?.companyId ?? user?.company_id,
+      });
       return [];
     }
 
@@ -360,21 +386,31 @@ export const getManageableEmployees = async (user) => {
         .eq('is_active', true)
         .eq('company_id', companyId);
 
+      const queryFilters = {
+        is_active: true,
+        company_id: companyId,
+        viewer_role: user.role,
+        viewer_department: user.department ?? null,
+      };
+
       if (__DEV__) {
         console.log('[tenant] getManageableEmployees', { auth_company_id: companyId, role: user.role });
       }
 
       // Super admins can manage EVERYONE (including other super admins) within tenant
       if (user.role === 'super_admin') {
-        // no extra filter
+        queryFilters.role_branch = 'super_admin_all_in_company';
       } else if (user.role === 'manager' && user.department === 'HR') {
         query = query.neq('role', 'super_admin');
+        queryFilters.role_branch = 'hr_manager_exclude_super_admin';
       } else if (user.role === 'manager') {
         query = query
           .eq('department', user.department)
           .neq('role', 'super_admin')
           .neq('role', 'manager');
+        queryFilters.role_branch = 'manager_same_dept_non_manager_roles';
       } else {
+        tenantDiagLog('getManageableEmployees.aborted', { reason: 'viewer_role_not_manager_or_super_admin' });
         return [];
       }
 
@@ -384,10 +420,66 @@ export const getManageableEmployees = async (user) => {
 
       if (error) {
         console.error('Error fetching manageable employees from Supabase:', error);
+        tenantDiagLog('getManageableEmployees.supabase_error', {
+          message: error.message,
+          code: error.code,
+          queryFilters,
+        });
         throw error;
       }
 
       const formattedEmployees = (employees || []).map(mapUserRowToEmployee);
+
+      tenantDiagLog('getManageableEmployees.supabase_result', {
+        queryFilters,
+        totalRows: formattedEmployees.length,
+        usernames: formattedEmployees.map((e) => e.username),
+        company_ids: [...new Set((employees || []).map((r) => String(r.company_id ?? '')))],
+        is_active_values: [...new Set((employees || []).map((r) => r.is_active))],
+      });
+
+      if (TENANT_RUNTIME_DIAG) {
+        await diagQueryUsersByCompanyId(companyId, 'rls_all_rows_company_id_match');
+
+        const { data: broadActive, error: broadErr } = await supabase
+          .from('users')
+          .select('username, role, is_active, company_id, department')
+          .eq('company_id', companyId)
+          .eq('is_active', true)
+          .order('username', { ascending: true });
+
+        const manageableSet = new Set(formattedEmployees.map((e) => e.username));
+        const broadList = broadActive || [];
+        const excludedFromManageable = broadList.filter((r) => !manageableSet.has(r.username));
+        const inManageableNotBroad = formattedEmployees.filter(
+          (e) => !broadList.some((r) => r.username === e.username)
+        );
+
+        tenantDiagLog('getManageableEmployees.vs_broad_active_same_company', {
+          broadError: broadErr?.message || null,
+          broadCount: broadList.length,
+          broadUsernames: broadList.map((r) => r.username),
+          manageableCount: formattedEmployees.length,
+          excludedFromManageableByRoleOrDept: excludedFromManageable.map((r) => ({
+            username: r.username,
+            role: r.role,
+            department: r.department,
+            is_active: r.is_active,
+          })),
+          inManageableNotInBroad: inManageableNotBroad.map((e) => e.username),
+        });
+
+        try {
+          const legacy = await _legacyGetAsyncStorageEmployees();
+          tenantDiagLog('getManageableEmployees.asyncstorage_company_employees', {
+            key: EMPLOYEES_KEY,
+            count: legacy.length,
+            usernames: legacy.map((e) => e.username).slice(0, 40),
+          });
+        } catch (e) {
+          tenantDiagLog('getManageableEmployees.asyncstorage_read_error', { message: e?.message || String(e) });
+        }
+      }
 
       console.log(
         `✓ Found ${formattedEmployees.length} manageable employee(s) from Supabase for ${user.username} (${user.role}, tenant ${companyId})`
@@ -400,9 +492,11 @@ export const getManageableEmployees = async (user) => {
       console.warn(
         `⚠️ No manageable employees found in Supabase for ${user.username} (${user.role}, ${user.department || 'N/A'})`
       );
+      tenantDiagLog('getManageableEmployees.empty_manageable_list', { queryFilters });
       return [];
     } catch (supabaseError) {
       console.log('Could not get employees from Supabase:', supabaseError.message);
+      tenantDiagLog('getManageableEmployees.catch', { message: supabaseError?.message || String(supabaseError) });
     }
 
     // AsyncStorage fallback is not tenant-isolated; skip when using real multi-tenant auth
@@ -720,20 +814,19 @@ export const processWorkModeRequest = async (requestId, status, processedBy, adm
     
     // If approved, update employee work mode
     if (status === 'approved') {
-      // Get the user who is processing the request (for permission checks)
-      // Note: processedBy is a username, we need to get the full user object
+      // processedBy is a username; request.employeeId is emp_<uid> format.
       const processingUser = await getEmployeeByUsername(processedBy, companyId);
       if (processingUser) {
-        const employee = await getEmployeeByUsername(request.employeeId, companyId);
+        // EMP-3: employeeId is stored as emp_<uid>, not a username — use getEmployeeById.
+        const employee = await getEmployeeById(request.employeeId, companyId);
         if (employee) {
           const result = await updateEmployeeWorkMode(
-            employee.id || employee.uid, 
-            request.requestedMode, 
+            employee.id || employee.uid,
+            request.requestedMode,
             processingUser
           );
           if (!result.success) {
             console.error('Failed to update work mode:', result.error);
-            // Don't fail the request processing, just log the error
           }
         }
       }
@@ -829,30 +922,6 @@ export const createEmployee = async (employeeData) => {
       return { success: false, error: 'Username already exists in system' };
     }
 
-    // Create employee ID
-    const employeeId = `emp_${Date.now()}`;
-
-    // Create employee object
-    const newEmployee = {
-      id: employeeId,
-      username,
-      name,
-      email,
-      role,
-      department,
-      position,
-      workMode,
-      hireDate,
-      isActive: true,
-      createdAt: new Date().toISOString(),
-    };
-
-    // Add to employees list
-    const employees = await getEmployees();
-    employees.push(newEmployee);
-    await AsyncStorage.setItem(EMPLOYEES_KEY, JSON.stringify(employees));
-
-    // Create user in Supabase
     const addUserResult = await addUserToFile({
       username,
       password,
@@ -867,14 +936,12 @@ export const createEmployee = async (employeeData) => {
     });
 
     if (!addUserResult.success) {
-      // Rollback: remove employee if user creation failed
-      const updatedEmployees = employees.filter(emp => emp.id !== employeeId);
-      await AsyncStorage.setItem(EMPLOYEES_KEY, JSON.stringify(updatedEmployees));
       return { success: false, error: addUserResult.error || 'Failed to create user account' };
     }
 
-    console.log('✓ Employee created:', employeeId);
-    return { success: true, id: employeeId };
+    const uid = addUserResult.uid;
+    console.log('✓ Employee created in Supabase:', uid);
+    return { success: true, id: uid ? `emp_${uid}` : undefined, uid };
   } catch (error) {
     console.error('Error creating employee:', error);
     return { success: false, error: error.message || 'Failed to create employee' };
@@ -882,41 +949,46 @@ export const createEmployee = async (employeeData) => {
 };
 
 /**
- * Update employee information (including role)
- * @param {string} employeeId - Employee ID
+ * Update employee information (including role). Source of truth: public.users via gateway.
+ * @param {string} employeeId - Employee ID (may have 'emp_' prefix)
  * @param {Object} updates - Fields to update
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 export const updateEmployee = async (employeeId, updates) => {
   try {
-    const employees = await getEmployees();
-    const employeeIndex = employees.findIndex(emp => emp.id === employeeId);
+    const uid = typeof employeeId === 'string' && employeeId.startsWith('emp_')
+      ? employeeId.slice(4)
+      : employeeId;
 
-    if (employeeIndex === -1) {
+    const { data: userRow, error: lookupError } = await supabase
+      .from('users')
+      .select('username, role')
+      .eq('uid', uid)
+      .maybeSingle();
+
+    if (lookupError || !userRow) {
+      console.error('[employees] updateEmployee: lookup failed', { uid, error: lookupError?.message });
       return { success: false, error: 'Employee not found' };
     }
 
-    const employee = employees[employeeIndex];
-    const updatedEmployee = {
-      ...employee,
-      ...updates,
-      updatedAt: new Date().toISOString(),
-    };
+    const { updateUserRole, updateUserInfo } = await import('./auth');
 
-    // If role is being updated, also update Supabase
-    if (updates.role && updates.role !== employee.role) {
-      const { updateUserRole } = await import('./auth');
-      const updateRoleResult = await updateUserRole(employee.username, updates.role);
-      
-      if (!updateRoleResult.success) {
-        return { success: false, error: updateRoleResult.error || 'Failed to update user role' };
+    if (updates.role !== undefined && updates.role !== userRow.role) {
+      const result = await updateUserRole(userRow.username, updates.role);
+      if (!result.success) {
+        return { success: false, error: result.error || 'Failed to update role' };
       }
     }
 
-    employees[employeeIndex] = updatedEmployee;
-    await AsyncStorage.setItem(EMPLOYEES_KEY, JSON.stringify(employees));
+    const { role: _role, ...nonRoleUpdates } = updates;
+    if (Object.keys(nonRoleUpdates).length > 0) {
+      const result = await updateUserInfo(userRow.username, nonRoleUpdates);
+      if (!result.success) {
+        return { success: false, error: result.error || 'Failed to update employee info' };
+      }
+    }
 
-    console.log('✓ Employee updated:', employeeId);
+    console.log('✓ Employee updated via gateway:', uid, Object.keys(updates));
     return { success: true };
   } catch (error) {
     console.error('Error updating employee:', error);
@@ -925,15 +997,30 @@ export const updateEmployee = async (employeeId, updates) => {
 };
 
 /**
- * Delete employee (soft delete - set isActive to false)
- * @param {string} employeeId - Employee ID
+ * Soft-delete employee — sets is_active = false in public.users.
+ * @param {string} employeeId - Employee ID (may have 'emp_' prefix)
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 export const deleteEmployee = async (employeeId) => {
   try {
-    return await updateEmployee(employeeId, { isActive: false });
+    const uid = typeof employeeId === 'string' && employeeId.startsWith('emp_')
+      ? employeeId.slice(4)
+      : employeeId;
+
+    const { error } = await supabase
+      .from('users')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('uid', uid);
+
+    if (error) {
+      console.error('[employees] deleteEmployee Supabase:', error.message);
+      return { success: false, error: error.message || 'Failed to deactivate employee' };
+    }
+
+    console.log('✓ Employee deactivated:', uid);
+    return { success: true };
   } catch (error) {
-    console.error('Error deleting employee:', error);
-    return { success: false, error: error.message || 'Failed to delete employee' };
+    console.error('Error deactivating employee:', error);
+    return { success: false, error: error.message || 'Failed to deactivate employee' };
   }
 };

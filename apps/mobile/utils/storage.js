@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../core/config/supabase';
 import { getEmployeeByUsername } from './employees';
 import { fetchSessionUserCompanyId, fetchCompanyUserUids, requireValidCompanyId } from '../core/tenant/tenantScope';
+import { TENANT_RUNTIME_DIAG, tenantDiagLog } from '../core/debug/tenantRuntimeDiag';
 
 const ATTENDANCE_RECORDS_KEY = '@attendance_records'; // For fallback only
 
@@ -82,19 +83,21 @@ export const saveAttendanceRecord = async (attendanceRecord) => {
 };
 
 /**
- * Fallback: Save attendance record to AsyncStorage
+ * Fallback: Save attendance record to AsyncStorage with explicit offline status.
+ * These records are offline-queued and must not be treated as live tenant records.
  */
 const saveAttendanceRecordFallback = async (attendanceRecord) => {
   try {
     const records = await getAttendanceRecordsFallback();
     const newRecord = {
-      id: Date.now().toString(),
+      id: `offline_${Date.now()}`,
       ...attendanceRecord,
-      timestamp: attendanceRecord.timestamp || new Date().toISOString()
+      timestamp: attendanceRecord.timestamp || new Date().toISOString(),
+      _recordStatus: 'queued_offline',
     };
     records.push(newRecord);
     await AsyncStorage.setItem(ATTENDANCE_RECORDS_KEY, JSON.stringify(records));
-    console.log('⚠️ Saved attendance record to AsyncStorage (fallback)');
+    console.log('⚠️ Saved attendance record to AsyncStorage as queued_offline (Supabase unavailable)');
     return newRecord;
   } catch (error) {
     console.error('Error saving attendance record to AsyncStorage:', error);
@@ -110,33 +113,47 @@ export const getAttendanceRecords = async (companyId = null) => {
   try {
     const tenantCid = requireValidCompanyId(companyId, 'getAttendanceRecords') || (await fetchSessionUserCompanyId(supabase));
     if (!tenantCid) {
-      console.warn('[tenant] getAttendanceRecords: no company_id');
-      return await getAttendanceRecordsFallback();
-    }
-    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getAttendanceRecords');
-    if (tenantUids.length === 0) {
+      console.warn('[tenant] getAttendanceRecords: no valid company_id — returning empty');
+      tenantDiagLog('storage.getAttendanceRecords.path', { branch: 'no_tenant_empty', tenantCid: null });
       return [];
     }
 
     if (__DEV__) {
-      console.log('[tenant] getAttendanceRecords', { queried_company_id: tenantCid, uid_count: tenantUids.length });
+      console.log('[tenant] getAttendanceRecords', { queried_company_id: tenantCid });
     }
 
+    // DB-6: Direct company_id filter — no UID join needed after migration 20260514210002.
     const { data, error } = await supabase
       .from('attendance_records')
       .select('*')
-      .in('user_uid', tenantUids)
+      .eq('company_id', tenantCid)
       .order('timestamp', { ascending: false });
 
     if (error) {
       console.error('Error getting attendance records from Supabase:', error);
-      return await getAttendanceRecordsFallback();
+      tenantDiagLog('storage.getAttendanceRecords.path', {
+        branch: 'supabase_error_empty',
+        tenantCid,
+        error: error.message,
+      });
+      return [];
     }
+
+    tenantDiagLog('storage.getAttendanceRecords.path', {
+      branch: 'supabase_success',
+      tenantCid,
+      recordCount: data?.length ?? 0,
+      distinctUsernames: [...new Set((data || []).map((r) => r.username).filter(Boolean))].slice(0, 30),
+    });
 
     return data.map(convertAttendanceFromDb);
   } catch (error) {
     console.error('Error getting attendance records:', error);
-    return await getAttendanceRecordsFallback();
+    tenantDiagLog('storage.getAttendanceRecords.path', {
+      branch: 'exception_empty',
+      message: error?.message || String(error),
+    });
+    return [];
   }
 };
 
@@ -146,7 +163,15 @@ export const getAttendanceRecords = async (companyId = null) => {
 const getAttendanceRecordsFallback = async () => {
   try {
     const recordsJson = await AsyncStorage.getItem(ATTENDANCE_RECORDS_KEY);
-    return recordsJson ? JSON.parse(recordsJson) : [];
+    const parsed = recordsJson ? JSON.parse(recordsJson) : [];
+    if (TENANT_RUNTIME_DIAG) {
+      tenantDiagLog('storage.getAttendanceRecordsFallback', {
+        key: ATTENDANCE_RECORDS_KEY,
+        recordCount: parsed.length,
+        sampleUsernames: parsed.slice(0, 15).map((r) => r.username || r.userId || null),
+      });
+    }
+    return parsed;
   } catch (error) {
     console.error('Error getting attendance records from AsyncStorage:', error);
     return [];
@@ -162,13 +187,7 @@ export const getUserAttendanceRecords = async (username) => {
   try {
     const tenantCid = await fetchSessionUserCompanyId(supabase);
     if (!tenantCid) {
-      const allRecords = await getAttendanceRecordsFallback();
-      return allRecords.filter(
-        (record) => record.username === username || record.userId === username
-      );
-    }
-    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getUserAttendanceRecords');
-    if (tenantUids.length === 0) {
+      tenantDiagLog('storage.getUserAttendanceRecords.path', { branch: 'no_tenant_empty', username, tenantCid: null });
       return [];
     }
 
@@ -176,28 +195,41 @@ export const getUserAttendanceRecords = async (username) => {
       console.log('[tenant] getUserAttendanceRecords', { username, queried_company_id: tenantCid });
     }
 
+    // DB-6: Direct company_id + username filter — no UID join after migration 20260514210002.
     const { data, error } = await supabase
       .from('attendance_records')
       .select('*')
+      .eq('company_id', tenantCid)
       .eq('username', username)
-      .in('user_uid', tenantUids)
       .order('timestamp', { ascending: false });
 
     if (error) {
       console.error('Error getting user attendance records from Supabase:', error);
-      const allRecords = await getAttendanceRecordsFallback();
-      return allRecords.filter(
-        (record) => record.username === username || record.userId === username
-      );
+      tenantDiagLog('storage.getUserAttendanceRecords.path', {
+        branch: 'supabase_error_empty',
+        username,
+        tenantCid,
+        error: error.message,
+      });
+      return [];
     }
+
+    tenantDiagLog('storage.getUserAttendanceRecords.path', {
+      branch: 'supabase_success',
+      username,
+      tenantCid,
+      recordCount: data?.length ?? 0,
+    });
 
     return data.map(convertAttendanceFromDb);
   } catch (error) {
     console.error('Error getting user attendance records:', error);
-    const allRecords = await getAttendanceRecordsFallback();
-    return allRecords.filter(
-      (record) => record.username === username || record.userId === username
-    );
+    tenantDiagLog('storage.getUserAttendanceRecords.path', {
+      branch: 'exception_empty',
+      username,
+      message: error?.message || String(error),
+    });
+    return [];
   }
 };
 
@@ -254,30 +286,12 @@ export const updateAttendanceRecord = async (recordId, updates) => {
 };
 
 /**
- * Fallback: Update attendance record in AsyncStorage
+ * Update/delete fallbacks are intentionally non-functional.
+ * Supabase is the only live source; silently mutating the offline queue creates split-brain state.
  */
-const updateAttendanceRecordFallback = async (recordId, updates) => {
-  try {
-    const records = await getAttendanceRecordsFallback();
-    const recordIndex = records.findIndex(r => r.id === recordId);
-    
-    if (recordIndex === -1) {
-      return { success: false, error: 'Record not found' };
-    }
-    
-    records[recordIndex] = {
-      ...records[recordIndex],
-      ...updates,
-      updatedAt: new Date().toISOString(),
-      updatedBy: updates.updatedBy || 'system'
-    };
-    
-    await AsyncStorage.setItem(ATTENDANCE_RECORDS_KEY, JSON.stringify(records));
-    return { success: true };
-  } catch (error) {
-    console.error('Error updating attendance record in AsyncStorage:', error);
-    return { success: false, error: error.message || 'Failed to update record' };
-  }
+const updateAttendanceRecordFallback = async (_recordId, _updates) => {
+  console.error('[storage] updateAttendanceRecord: Supabase unavailable — refusing to mutate offline queue');
+  return { success: false, error: 'Server unavailable. Please try again when online.' };
 };
 
 /**
@@ -320,24 +334,9 @@ export const deleteAttendanceRecord = async (recordId) => {
   }
 };
 
-/**
- * Fallback: Delete attendance record from AsyncStorage
- */
-const deleteAttendanceRecordFallback = async (recordId) => {
-  try {
-    const records = await getAttendanceRecordsFallback();
-    const filteredRecords = records.filter(r => r.id !== recordId);
-    
-    if (filteredRecords.length === records.length) {
-      return { success: false, error: 'Record not found' };
-    }
-    
-    await AsyncStorage.setItem(ATTENDANCE_RECORDS_KEY, JSON.stringify(filteredRecords));
-    return { success: true };
-  } catch (error) {
-    console.error('Error deleting attendance record from AsyncStorage:', error);
-    return { success: false, error: error.message || 'Failed to delete record' };
-  }
+const deleteAttendanceRecordFallback = async (_recordId) => {
+  console.error('[storage] deleteAttendanceRecord: Supabase unavailable — refusing to mutate offline queue');
+  return { success: false, error: 'Server unavailable. Please try again when online.' };
 };
 
 /**
@@ -394,6 +393,72 @@ export const createManualAttendanceRecord = async (attendanceData, createdBy) =>
 };
 
 /**
+ * ATT-3: Drain queued_offline attendance records into Supabase.
+ * Called on app foreground when a session is active. Stops on first permanent error
+ * (bad data) but continues past transient network failures.
+ * @param {string|null} companyId - tenant scope for the insert policy
+ * @returns {Promise<{synced: number, failed: number}>}
+ */
+export const syncOfflineAttendanceQueue = async (companyId = null) => {
+  let synced = 0;
+  let failed = 0;
+  try {
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser) return { synced, failed };
+
+    const tenantCid = requireValidCompanyId(companyId, 'syncOfflineAttendanceQueue')
+      || (await fetchSessionUserCompanyId(supabase));
+    if (!tenantCid) return { synced, failed };
+
+    const raw = await AsyncStorage.getItem(ATTENDANCE_RECORDS_KEY);
+    const all = raw ? JSON.parse(raw) : [];
+    const queued = all.filter((r) => r._recordStatus === 'queued_offline');
+    if (queued.length === 0) return { synced, failed };
+
+    console.log(`[ATT_SYNC] Draining ${queued.length} queued_offline records`);
+
+    const remaining = [...all];
+    for (const record of queued) {
+      try {
+        const { error } = await supabase
+          .from('attendance_records')
+          .insert({
+            user_uid: authUser.id,
+            company_id: tenantCid,
+            username: record.username,
+            employee_name: record.employeeName || record.employee_name || record.username,
+            type: record.type,
+            timestamp: record.timestamp || new Date().toISOString(),
+            location: record.location || null,
+            photo: record.photo || null,
+            auth_method: record.authMethod || record.auth_method || null,
+            is_manual: record.isManual || record.is_manual || false,
+            created_by: record.createdBy || record.created_by || null,
+          });
+        if (error) {
+          console.warn('[ATT_SYNC] Insert failed for record', record.id, error.message);
+          failed++;
+        } else {
+          // Remove synced record from remaining list
+          const idx = remaining.findIndex((r) => r.id === record.id);
+          if (idx !== -1) remaining.splice(idx, 1);
+          synced++;
+        }
+      } catch (insertErr) {
+        console.warn('[ATT_SYNC] Insert exception for record', record.id, insertErr?.message);
+        failed++;
+      }
+    }
+
+    await AsyncStorage.setItem(ATTENDANCE_RECORDS_KEY, JSON.stringify(remaining));
+    console.log(`[ATT_SYNC] Done: synced=${synced} failed=${failed} remaining=${remaining.length}`);
+  } catch (err) {
+    console.error('[ATT_SYNC] syncOfflineAttendanceQueue error:', err?.message || err);
+  }
+  return { synced, failed };
+};
+
+/**
  * Clear all attendance records (for testing/admin use)
  */
 export const clearAllAttendanceRecords = async () => {
@@ -406,31 +471,3 @@ export const clearAllAttendanceRecords = async () => {
   }
 };
 
-// Session management using AsyncStorage
-const USER_SESSION_KEY = '@user_session';
-
-export const saveUserSession = async (user) => {
-  try {
-    await AsyncStorage.setItem(USER_SESSION_KEY, JSON.stringify(user));
-  } catch (error) {
-    console.error('Error saving user session:', error);
-  }
-};
-
-export const getUserSession = async () => {
-  try {
-    const sessionData = await AsyncStorage.getItem(USER_SESSION_KEY);
-    return sessionData ? JSON.parse(sessionData) : null;
-  } catch (error) {
-    console.error('Error getting user session:', error);
-    return null;
-  }
-};
-
-export const clearUserSession = async () => {
-  try {
-    await AsyncStorage.removeItem(USER_SESSION_KEY);
-  } catch (error) {
-    console.error('Error clearing user session:', error);
-  }
-};

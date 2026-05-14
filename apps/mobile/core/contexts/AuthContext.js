@@ -1,12 +1,17 @@
 /**
- * AuthProvider loads the signed-in user from public.users, keeps JWT user_metadata
- * aligned (company_id, role, department_id) via the API Gateway sync-metadata endpoint,
- * and exposes tenant fields on context `user` (companyId, departmentId, role). The
- * database row is authoritative for display; JWT is refreshed for Supabase RLS.
+ * AuthProvider loads the signed-in user from public.users (canonical profile + tenant),
+ * keeps JWT user_metadata aligned with that row via gateway sync, and exposes one `user`
+ * object on context. In-memory profile is preserved on transient read failures so roles
+ * are never silently downgraded.
  */
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../config/supabase';
-import { getEmployeeByUsername } from '../../utils/employees';
+import { getTenantClaimsFromSession } from '../auth/tenantClaims';
+import { normalizeEmailForAuth } from '../auth/normalizeLogin';
+import { requireValidCompanyId } from '../tenant/tenantScope';
+import { tenantDiagLog } from '../debug/tenantRuntimeDiag';
 import { subscribeToNotifications } from '../../features/notifications/services/realtimeNotifications';
 import { subscribeToAttendance } from '../../features/attendance/services/realtimeAttendance';
 import { subscribeToWorkModeChanges } from '../../features/employees/services/realtimeEmployees';
@@ -15,18 +20,33 @@ import { startLocationMonitoring, stopLocationMonitoring } from '../../features/
 const AuthContext = createContext();
 
 /**
- * When public.users cannot be read transiently (e.g. TOKEN_REFRESHED race), avoid
- * downgrading to role "employee" if we still have a good in-memory profile or JWT claims.
+ * Emergency hydration when public.users row is temporarily unreadable.
+ * Never invent role "employee" or tenant — that caused super_admin downgrades after backgrounding.
+ * Sources: (1) last good profile same uid (2) JWT user_metadata with valid UUID company_id + role.
  */
 function resolveSessionFallbackUser(authUser, lastGood) {
   if (!authUser) return null;
   const id = authUser.id;
   if (lastGood && String(lastGood.uid) === String(id)) {
-    return { ...lastGood, email: authUser.email ?? lastGood.email };
+    // AUTH-2: Discard lastGood if JWT company_id has drifted (tenant switch / re-assignment).
+    // Trusting a stale company_id would scope subsequent DB queries to the wrong tenant.
+    const jwtCompanyId = authUser.user_metadata?.company_id != null
+      ? String(authUser.user_metadata.company_id)
+      : null;
+    if (jwtCompanyId && jwtCompanyId !== lastGood.companyId) {
+      console.warn('[AUTH_CONTEXT] resolveSessionFallbackUser: JWT company_id drifted — discarding lastGood', {
+        lastGood: lastGood.companyId,
+        jwt: jwtCompanyId,
+      });
+      // Fall through to JWT-only hydration below
+    } else {
+      return { ...lastGood, email: authUser.email ?? lastGood.email };
+    }
   }
   const meta = authUser.user_metadata || {};
-  const role = meta.role != null ? String(meta.role) : null;
-  const companyId = meta.company_id != null ? String(meta.company_id) : null;
+  const role = meta.role != null ? String(meta.role).trim() : '';
+  const companyRaw = meta.company_id != null ? String(meta.company_id) : null;
+  const companyId = requireValidCompanyId(companyRaw, 'jwt_fallback');
   const username =
     meta.username != null ? String(meta.username) : authUser.email?.split('@')[0] || 'user';
   if (role && companyId) {
@@ -41,23 +61,17 @@ function resolveSessionFallbackUser(authUser, lastGood) {
       department: typeof meta.department === 'string' ? meta.department : '',
       position: typeof meta.position === 'string' ? meta.position : '',
       workMode: meta.work_mode || 'in_office',
-      id: id,
+      id,
     };
   }
-  return {
-    uid: id,
-    email: authUser.email,
-    username,
-    role: 'employee',
-    companyId: companyId || null,
-    departmentId: meta.department_id != null ? String(meta.department_id) : null,
-  };
+  return null;
 }
 
 export function AuthProvider({ children }) {
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState(null);
-  const loadUserDataRef = useRef(null); // Track active loadUserData call to prevent race conditions
+  /** Monotonic id: only the latest loadUserData may commit to React state (avoids stale overwrites). */
+  const loadUserDataSeqRef = useRef(0);
   const lastGoodProfileRef = useRef(null); // Last successful profile (same uid) for resilient refresh
   const realtimeSubscriptionsRef = useRef({
     notifications: null,
@@ -66,35 +80,35 @@ export function AuthProvider({ children }) {
   });
 
   useEffect(() => {
-    // Get initial session with error handling
+    // Eagerly catch stale/invalid refresh tokens before INITIAL_SESSION fires.
+    // loadUserData is NOT called here — INITIAL_SESSION handles all initial hydration.
     supabase.auth.getSession()
-      .then(({ data: { session }, error }) => {
-        if (error) {
-          console.error('Error getting session:', error);
-          // If refresh token error, clear session
-          if (error.message?.includes('Refresh Token') || error.message?.includes('refresh_token')) {
-            console.log('Invalid refresh token detected, clearing session...');
-            supabase.auth.signOut().catch(console.error);
-          }
-          setIsLoading(false);
-          return;
-        }
-        
-        if (session) {
-          loadUserData(session.user.id);
-        } else {
+      .then(({ error }) => {
+        if (error?.message?.includes('Refresh Token') || error?.message?.includes('refresh_token')) {
+          console.log('[AUTH_CONTEXT] Stale refresh token detected, clearing session...');
+          supabase.auth.signOut().catch(console.error);
           setIsLoading(false);
         }
       })
-      .catch((error) => {
-        console.error('Error in getSession:', error);
+      .catch((err) => {
+        console.error('[AUTH_CONTEXT] getSession check error:', err);
         setIsLoading(false);
       });
 
     // Listen to Supabase auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('Auth state changed:', event, session ? 'has session' : 'no session');
-      
+
+      if (event === 'INITIAL_SESSION') {
+        if (session?.user) {
+          await loadUserData(session.user.id);
+        } else {
+          setUser(null);
+          setIsLoading(false);
+        }
+        return;
+      }
+
       // Handle token refresh errors
       if (event === 'TOKEN_REFRESHED') {
         console.log('Token refreshed successfully');
@@ -241,85 +255,90 @@ export function AuthProvider({ children }) {
     };
   }, [user]); // Re-run when user changes
 
-  const loadUserData = async (userId) => {
-    // Same-user refresh (e.g. TOKEN_REFRESHED): do not cancel an in-flight load — a failed
-    // follow-up load used to overwrite super_admin with the JWT-only "employee" fallback.
-    if (loadUserDataRef.current && !loadUserDataRef.current.cancelled) {
-      if (loadUserDataRef.current.userId === userId) {
-        console.log('[AUTH_CONTEXT] loadUserData skipped — already loading same user');
-        return;
+  // ATT-3: Drain offline attendance queue when app comes back to foreground.
+  useEffect(() => {
+    if (!user?.companyId) return;
+    const handleAppStateChange = (nextState) => {
+      if (nextState === 'active') {
+        import('../../utils/storage').then(({ syncOfflineAttendanceQueue }) => {
+          syncOfflineAttendanceQueue(user.companyId).catch((err) => {
+            console.warn('[AUTH_CONTEXT] syncOfflineAttendanceQueue error:', err?.message || err);
+          });
+        });
       }
-      console.log('[AUTH_CONTEXT] Cancelling previous loadUserData (different user)');
-      loadUserDataRef.current.cancelled = true;
-    }
+    };
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
+  }, [user?.companyId]);
 
-    const currentCall = { cancelled: false, userId };
-    loadUserDataRef.current = currentCall;
-    
+  const loadUserData = async (userId) => {
+    const seq = ++loadUserDataSeqRef.current;
+    const isStale = () => seq !== loadUserDataSeqRef.current;
+
     try {
-      // First verify the session is still valid
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      
-      // Check if this call was cancelled
-      if (currentCall.cancelled) {
-        console.log('[AUTH_CONTEXT] loadUserData cancelled');
+
+      if (isStale()) {
         return;
       }
       if (sessionError) {
         console.error('Session error in loadUserData:', sessionError);
-        // If refresh token error, sign out
         if (sessionError.message?.includes('Refresh Token') || sessionError.message?.includes('refresh_token')) {
           console.log('Invalid refresh token, signing out...');
           await supabase.auth.signOut();
           lastGoodProfileRef.current = null;
-          setUser(null);
-          setIsLoading(false);
+          if (!isStale()) {
+            setUser(null);
+            setIsLoading(false);
+          }
           return;
         }
       }
-      
+
       if (!session) {
         console.log('No active session');
-        if (!currentCall.cancelled) {
+        if (!isStale()) {
           lastGoodProfileRef.current = null;
           setUser(null);
           setIsLoading(false);
         }
         return;
       }
-      
-      // CRITICAL: Verify session.user.id matches userId to prevent loading wrong user data
+
       if (session.user.id !== userId) {
         console.warn('[AUTH_CONTEXT] Session userId mismatch:', {
           expected: userId,
           actual: session.user.id,
         });
-        // Don't load data - session changed (user switched)
+        if (!isStale()) {
+          setIsLoading(false);
+        }
         return;
       }
 
-      // Use session.user directly instead of calling getUser() again
-      // This prevents AuthSessionMissingError when session exists but getUser() fails
       const authUser = session.user;
 
-      // Try to get user data from Supabase database
-      // First try by uid (should match Supabase Auth user ID)
+      tenantDiagLog('AuthContext.loadUserData.start', {
+        sessionUid: authUser?.id,
+        jwtSnapshot: getTenantClaimsFromSession(session),
+      });
+
       let { data: userData, error: userError } = await supabase
         .from('users')
         .select('*')
         .eq('uid', userId)
         .maybeSingle();
-      
-      // If uid query fails, try by email as fallback
+
       if (userError || !userData) {
         console.log('Query by uid failed, trying by email...', userError?.message);
         if (authUser?.email) {
+          const canonEmail = normalizeEmailForAuth(authUser.email);
           const { data: userDataByEmail, error: emailError } = await supabase
             .from('users')
             .select('*')
-            .eq('email', authUser.email)
+            .eq('email', canonEmail)
             .maybeSingle();
-          
+
           if (!emailError && userDataByEmail) {
             console.log('Found user by email:', userDataByEmail.username);
             userData = userDataByEmail;
@@ -329,35 +348,70 @@ export function AuthProvider({ children }) {
           }
         }
       }
-      
+
       if (userError || !userData) {
         console.error('Error loading user data:', userError);
-        // Check if cancelled
-        if (currentCall.cancelled) return;
+        if (isStale()) {
+          return;
+        }
 
         if (authUser) {
           const fallback = resolveSessionFallbackUser(authUser, lastGoodProfileRef.current);
           if (fallback) {
             console.warn(
-              '[AUTH_CONTEXT] No users row from DB for uid; using last good profile or JWT metadata (not defaulting blindly to employee)'
+              '[AUTH_CONTEXT] No public.users row; using last good profile or complete JWT tenant claims only'
             );
+            const meta = authUser.user_metadata || {};
+            const companyIdSource =
+              lastGoodProfileRef.current &&
+              String(lastGoodProfileRef.current.uid) === String(authUser.id)
+                ? 'lastGoodProfileRef_same_uid'
+                : meta.role && meta.company_id
+                  ? 'jwt_user_metadata'
+                  : 'unknown';
+            tenantDiagLog('AuthContext.loadUserData.fallback_no_users_row', {
+              sessionUid: authUser.id,
+              companyIdSource,
+              resolvedRole: fallback.role,
+              resolvedCompanyId: fallback.companyId,
+              jwtSnapshot: getTenantClaimsFromSession(session),
+              mergedUser: fallback,
+            });
             lastGoodProfileRef.current = fallback;
             setUser(fallback);
+            tenantDiagLog('AuthContext.loadUserData.setUser_applied', {
+              branch: 'fallback_no_db_row',
+              mergedUser: fallback,
+            });
+          } else {
+            console.error(
+              '[AUTH_CONTEXT] Cannot hydrate profile: no public.users row and JWT missing role/company_id. Preserving last in-memory profile if same uid.'
+            );
+            const keep =
+              lastGoodProfileRef.current && String(lastGoodProfileRef.current.uid) === String(authUser.id)
+                ? lastGoodProfileRef.current
+                : null;
+            if (keep) {
+              tenantDiagLog('AuthContext.loadUserData.preserve_lastGood_no_fallback', {
+                sessionUid: authUser.id,
+                mergedUser: keep,
+              });
+              setUser({ ...keep, email: authUser.email ?? keep.email });
+            } else {
+              setUser(null);
+            }
           }
         }
-        setIsLoading(false);
-        return;
-      }
-      
-      // Check if cancelled before setting user
-      if (currentCall.cancelled) {
+        if (!isStale()) {
+          setIsLoading(false);
+        }
         return;
       }
 
-      /**
-       * Multi-tenant: keep Supabase JWT user_metadata aligned with public.users
-       * (company_id, role, department_id) via trusted auth-service + refreshSession.
-       */
+      if (isStale()) {
+        return;
+      }
+
       try {
         const { shouldSyncTenantMetadata, getTenantClaimsFromSession, tenantClaimsMatchUserRow } = await import(
           '../auth/tenantClaims'
@@ -394,51 +448,83 @@ export function AuthProvider({ children }) {
       } catch (syncBlockError) {
         console.error('[AUTH_CONTEXT] Tenant metadata sync block error:', syncBlockError?.message || syncBlockError);
       }
-      
-      // Try to get employee data for additional info
-      let employee = null;
-      if (userData.username) {
-        try {
-          employee = await getEmployeeByUsername(
-            userData.username,
-            userData.company_id != null ? String(userData.company_id) : null
-          );
-        } catch (error) {
-          console.log('Employee not found, using database data only');
-        }
+
+      if (isStale()) {
+        return;
       }
-      
-      // Combine Supabase user with database data and employee data
-      // Note: authUser is already available from line 91
+
+      if (isStale()) {
+        return;
+      }
+
+      const dbRole = userData.role != null ? String(userData.role).trim() : '';
+      if (!dbRole) {
+        console.error('[AUTH_CONTEXT] public.users row has empty role — refusing to fabricate role', userId);
+        const keep =
+          lastGoodProfileRef.current && String(lastGoodProfileRef.current.uid) === String(userId)
+            ? lastGoodProfileRef.current
+            : null;
+        if (keep) {
+          setUser({ ...keep, email: authUser?.email ?? keep.email });
+        }
+        setIsLoading(false);
+        return;
+      }
+
+      const companyIdStr = userData.company_id != null ? String(userData.company_id) : null;
+      if (!requireValidCompanyId(companyIdStr, 'loadUserData')) {
+        console.error('[AUTH_CONTEXT] public.users row has invalid company_id — check tenant data', userId);
+      }
+
       const combinedUser = {
         uid: userId,
         email: authUser?.email || userData.email,
         username: userData.username || authUser?.email?.split('@')[0],
-        role: userData.role || 'employee',
-        companyId: userData.company_id != null ? String(userData.company_id) : null,
+        role: dbRole,
+        companyId: companyIdStr,
         departmentId: userData.department_id != null ? String(userData.department_id) : null,
-        name: userData.name || employee?.name || authUser?.user_metadata?.name,
-        department: userData.department || employee?.department || '',
-        position: userData.position || employee?.position || '',
-        workMode: userData.work_mode || employee?.workMode || 'in_office',
-        hireDate: userData.hire_date || employee?.hireDate,
-        id: employee?.id || userId,
+        name: userData.name || authUser?.user_metadata?.name,
+        department: userData.department || '',
+        position: userData.position || '',
+        workMode: userData.work_mode || 'in_office',
+        hireDate: userData.hire_date,
+        id: userId,
       };
 
-      // Final check before setting user
-      if (!currentCall.cancelled) {
+      {
+        const { data: { session: sessDiag } } = await supabase.auth.getSession();
+        const jwtSnap = getTenantClaimsFromSession(sessDiag);
+        tenantDiagLog('AuthContext.loadUserData.success', {
+          sessionUid: userId,
+          companyIdSource: 'public.users_row',
+          dbRow: {
+            username: userData.username,
+            role: userData.role,
+            company_id: userData.company_id != null ? String(userData.company_id) : null,
+            is_active: userData.is_active,
+            department: userData.department,
+          },
+          jwtSnapshot: jwtSnap,
+          resolvedRole: combinedUser.role,
+          resolvedCompanyId: combinedUser.companyId,
+          mergedUser: combinedUser,
+        });
+      }
+
+      if (!isStale()) {
         lastGoodProfileRef.current = combinedUser;
         setUser(combinedUser);
-        // Realtime subscriptions will be set up in useEffect when user changes
+        tenantDiagLog('AuthContext.loadUserData.setUser_applied', {
+          branch: 'public_users_merge',
+          mergedUser: combinedUser,
+        });
       }
     } catch (error) {
-      // Check if cancelled
-      if (currentCall.cancelled) {
+      if (isStale()) {
         return;
       }
       console.error('Error loading user data:', error);
-      
-      // Check if it's a refresh token error
+
       if (error.message?.includes('Refresh Token') || error.message?.includes('refresh_token') || error.message?.includes('Invalid Refresh Token')) {
         console.log('Refresh token error detected, signing out...');
         try {
@@ -446,60 +532,92 @@ export function AuthProvider({ children }) {
         } catch (signOutError) {
           console.error('Error signing out:', signOutError);
         }
-        if (!currentCall.cancelled) {
+        if (!isStale()) {
           lastGoodProfileRef.current = null;
           setUser(null);
           setIsLoading(false);
         }
         return;
       }
-      
-      // Fallback to basic user info from session
-      if (!currentCall.cancelled) {
-        try {
-          // Try to get session first, then use session.user instead of getUser()
-          const { data: { session: fallbackSession }, error: sessionError } = await supabase.auth.getSession();
-          if (sessionError || !fallbackSession || !fallbackSession.user) {
-            console.error('Error getting session in catch:', sessionError);
-            if (sessionError?.message?.includes('Refresh Token') || sessionError?.message?.includes('refresh_token')) {
-              await supabase.auth.signOut();
-            }
+
+      try {
+        const { data: { session: fallbackSession }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError || !fallbackSession || !fallbackSession.user) {
+          console.error('Error getting session in catch:', sessionError);
+          if (sessionError?.message?.includes('Refresh Token') || sessionError?.message?.includes('refresh_token')) {
+            await supabase.auth.signOut();
+          }
+          if (!isStale()) {
             lastGoodProfileRef.current = null;
             setUser(null);
-          } else if (fallbackSession.user) {
-            const fb = resolveSessionFallbackUser(
-              fallbackSession.user,
-              lastGoodProfileRef.current
-            );
-            if (fb) {
-              lastGoodProfileRef.current = fb;
-              setUser(fb);
+          }
+        } else if (!isStale()) {
+          const fb = resolveSessionFallbackUser(fallbackSession.user, lastGoodProfileRef.current);
+          if (fb) {
+            const meta = fallbackSession.user.user_metadata || {};
+            const companyIdSource =
+              lastGoodProfileRef.current &&
+              String(lastGoodProfileRef.current.uid) === String(fallbackSession.user.id)
+                ? 'lastGoodProfileRef_same_uid'
+                : meta.role && meta.company_id
+                  ? 'jwt_user_metadata'
+                  : 'unknown';
+            tenantDiagLog('AuthContext.loadUserData.catch_fallback', {
+              sessionUid: fallbackSession.user.id,
+              companyIdSource,
+              jwtSnapshot: getTenantClaimsFromSession(fallbackSession),
+              resolvedRole: fb.role,
+              resolvedCompanyId: fb.companyId,
+              mergedUser: fb,
+            });
+            lastGoodProfileRef.current = fb;
+            setUser(fb);
+            tenantDiagLog('AuthContext.loadUserData.setUser_applied', {
+              branch: 'catch_resolveSessionFallback',
+              mergedUser: fb,
+            });
+          } else {
+            const keep =
+              lastGoodProfileRef.current &&
+              String(lastGoodProfileRef.current.uid) === String(fallbackSession.user.id)
+                ? lastGoodProfileRef.current
+                : null;
+            if (keep) {
+              tenantDiagLog('AuthContext.loadUserData.catch_preserve_lastGood', { sessionUid: fallbackSession.user.id });
+              setUser({ ...keep, email: fallbackSession.user.email ?? keep.email });
+            } else {
+              setUser(null);
             }
           }
-        } catch (getSessionError) {
-          console.error('Error in getSession fallback:', getSessionError);
+        }
+      } catch (getSessionError) {
+        console.error('Error in getSession fallback:', getSessionError);
+        if (!isStale()) {
           lastGoodProfileRef.current = null;
           setUser(null);
         }
       }
     } finally {
-      // Only update loading state if this call is still active
-      if (loadUserDataRef.current === currentCall) {
-        loadUserDataRef.current = null;
-      }
-      if (!currentCall.cancelled) {
+      if (!isStale()) {
         setIsLoading(false);
       }
     }
   };
 
   const handleLogin = async (userData) => {
-    // Login is handled by Supabase Auth, this is just for compatibility
-    // The actual login happens in LoginScreen using Supabase
     if (userData?.uid) {
       lastGoodProfileRef.current = { ...userData };
     }
+    tenantDiagLog('AuthContext.handleLogin', {
+      uid: userData?.uid,
+      role: userData?.role,
+      companyId: userData?.companyId ?? userData?.company_id,
+      username: userData?.username,
+    });
     setUser(userData);
+    if (userData?.uid) {
+      await loadUserData(userData.uid);
+    }
   };
 
   const handleLogout = async () => {
@@ -541,7 +659,21 @@ export function AuthProvider({ children }) {
       } catch (clearError) {
         console.warn('[AUTH_CONTEXT] Error clearing storage:', clearError);
       }
-      
+
+      // CACHE-3: Clear tenant-scoped cache keys so next user never sees prior tenant's data.
+      try {
+        await AsyncStorage.multiRemove([
+          'work_mode_requests',
+          'work_mode_history',
+          'leave_settings',
+          'employee_leaves',
+          'company_employees',
+        ]);
+        console.log('[AUTH_CONTEXT] ✓ Tenant cache keys cleared');
+      } catch (cacheError) {
+        console.warn('[AUTH_CONTEXT] Error clearing tenant cache:', cacheError);
+      }
+
       // 5. Reset loading state
       setIsLoading(false);
       console.log('[AUTH_CONTEXT] ✓ Logout complete');
@@ -574,6 +706,15 @@ export function AuthProvider({ children }) {
       } catch (clearError) {
         console.error('[AUTH_CONTEXT] Failed to clear storage:', clearError);
       }
+      try {
+        await AsyncStorage.multiRemove([
+          'work_mode_requests',
+          'work_mode_history',
+          'leave_settings',
+          'employee_leaves',
+          'company_employees',
+        ]);
+      } catch (_) { /* non-fatal */ }
     }
   };
 

@@ -22,9 +22,11 @@ import {
 import { getManageableEmployees, canManageEmployee } from '../utils/employees';
 import DatePickerCalendar from '../components/DatePickerCalendar';
 import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTablet } from '../shared/utils/responsive';
+import { useAuth } from '../contexts/AuthContext';
 
-export default function ManualAttendanceScreen({ navigation, route }) {
-  const { user } = route.params;
+export default function ManualAttendanceScreen({ navigation }) {
+  const { user: authUser } = useAuth();
+  const user = authUser;
   const { colors } = useTheme();
   const tablet = isTablet();
   const [employees, setEmployees] = useState([]);
@@ -68,9 +70,14 @@ export default function ManualAttendanceScreen({ navigation, route }) {
         }
       }
     };
-  }, [navigation]);
+  }, [navigation, user?.uid]);
 
   const loadData = async () => {
+    if (!user?.uid) {
+      setEmployees([]);
+      setAttendanceRecords([]);
+      return;
+    }
     await Promise.all([
       loadEmployees(),
       loadAttendanceRecords()

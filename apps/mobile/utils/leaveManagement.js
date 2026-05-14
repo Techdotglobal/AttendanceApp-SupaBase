@@ -46,77 +46,156 @@ export const getCategoryLabel = (category) => {
   return labels[category] || category;
 };
 
+const LEAVE_SETTINGS_DEFAULTS = {
+  defaultAnnualLeaves: 20,
+  defaultSickLeaves: 10,
+  defaultCasualLeaves: 5,
+  leaveYearStart: '01-01',
+  leaveYearEnd: '12-31',
+};
+
+function _dbRowToLeaveSettings(row) {
+  return {
+    defaultAnnualLeaves: row.default_annual_leaves,
+    defaultSickLeaves: row.default_sick_leaves,
+    defaultCasualLeaves: row.default_casual_leaves,
+    leaveYearStart: row.leave_year_start,
+    leaveYearEnd: row.leave_year_end,
+    updatedAt: row.updated_at,
+  };
+}
+
 /**
- * Get default leave settings
+ * Get default leave settings for the current user's company from Supabase.
  * @returns {Promise<Object>} Default leave settings
  */
 export const getDefaultLeaveSettings = async () => {
   try {
-    const settingsJson = await AsyncStorage.getItem(LEAVE_SETTINGS_KEY);
-    
-    if (settingsJson) {
-      return JSON.parse(settingsJson);
+    const companyId = await fetchSessionUserCompanyId();
+    if (!companyId) {
+      console.warn('[leave] getDefaultLeaveSettings: no company_id in session — returning defaults');
+      return { ...LEAVE_SETTINGS_DEFAULTS, updatedAt: null };
     }
-    
-    // Return default values if not set
-    return {
-      defaultAnnualLeaves: 20,
-      defaultSickLeaves: 10,
-      defaultCasualLeaves: 5,
-      leaveYearStart: '01-01', // MM-DD format
-      leaveYearEnd: '12-31',
-      updatedAt: null
-    };
+    const { data, error } = await supabase
+      .from('leave_settings')
+      .select('default_annual_leaves, default_sick_leaves, default_casual_leaves, leave_year_start, leave_year_end, updated_at')
+      .eq('company_id', companyId)
+      .maybeSingle();
+    if (error) {
+      console.error('[leave] getDefaultLeaveSettings Supabase error:', error.message);
+      return { ...LEAVE_SETTINGS_DEFAULTS, updatedAt: null };
+    }
+    if (!data) return { ...LEAVE_SETTINGS_DEFAULTS, updatedAt: null };
+    return _dbRowToLeaveSettings(data);
   } catch (error) {
-    console.error('Error getting default leave settings:', error);
-    return {
-      defaultAnnualLeaves: 20,
-      defaultSickLeaves: 10,
-      defaultCasualLeaves: 5,
-      leaveYearStart: '01-01',
-      leaveYearEnd: '12-31'
-    };
+    console.error('[leave] getDefaultLeaveSettings:', error);
+    return { ...LEAVE_SETTINGS_DEFAULTS, updatedAt: null };
   }
 };
 
 /**
- * Update default leave settings
+ * Update (upsert) default leave settings for the current user's company.
  * @param {Object} settings - Leave settings object
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 export const updateDefaultLeaveSettings = async (settings) => {
   try {
-    const settingsData = {
-      ...settings,
-      updatedAt: new Date().toISOString()
-    };
-    
-    await AsyncStorage.setItem(LEAVE_SETTINGS_KEY, JSON.stringify(settingsData));
-    
+    const companyId = await fetchSessionUserCompanyId();
+    if (!companyId) {
+      return { success: false, error: 'No active company session.' };
+    }
+    const { error } = await supabase
+      .from('leave_settings')
+      .upsert(
+        {
+          company_id: companyId,
+          default_annual_leaves: settings.defaultAnnualLeaves ?? LEAVE_SETTINGS_DEFAULTS.defaultAnnualLeaves,
+          default_sick_leaves: settings.defaultSickLeaves ?? LEAVE_SETTINGS_DEFAULTS.defaultSickLeaves,
+          default_casual_leaves: settings.defaultCasualLeaves ?? LEAVE_SETTINGS_DEFAULTS.defaultCasualLeaves,
+          leave_year_start: settings.leaveYearStart ?? LEAVE_SETTINGS_DEFAULTS.leaveYearStart,
+          leave_year_end: settings.leaveYearEnd ?? LEAVE_SETTINGS_DEFAULTS.leaveYearEnd,
+        },
+        { onConflict: 'company_id' }
+      );
+    if (error) {
+      console.error('[leave] updateDefaultLeaveSettings Supabase error:', error.message);
+      return { success: false, error: error.message };
+    }
     return { success: true };
   } catch (error) {
-    console.error('Error updating default leave settings:', error);
-    return {
-      success: false,
-      error: error.message || 'Failed to update default leave settings'
-    };
+    console.error('[leave] updateDefaultLeaveSettings:', error);
+    return { success: false, error: error.message || 'Failed to update default leave settings' };
   }
 };
 
 /**
- * Get employee leave balance
- * Calculates used leaves from approved requests in Supabase (source of truth)
- * @param {string} employeeId - Employee ID
+ * Get employee leave balance from Supabase leave_balances table.
+ * Falls back to company defaults when no custom row exists.
+ * Used leaves are always computed from approved leave_requests (source of truth).
+ * @param {string} employeeId - emp_<uid> or raw uid
  * @returns {Promise<Object>} Employee leave balance
  */
 export const getEmployeeLeaveBalance = async (employeeId) => {
+  const uid = typeof employeeId === 'string' && employeeId.startsWith('emp_')
+    ? employeeId.slice(4)
+    : employeeId;
   try {
-    // Get base leave balance from AsyncStorage (or defaults)
-    const leavesJson = await AsyncStorage.getItem(EMPLOYEE_LEAVES_KEY);
-    const allLeaves = leavesJson ? JSON.parse(leavesJson) : {};
-    
     const defaultSettings = await getDefaultLeaveSettings();
-    const baseBalance = allLeaves[employeeId] || {
+
+    // Read allocation from leave_balances (may not exist → use company defaults)
+    const { data: balanceRow, error: balanceError } = await supabase
+      .from('leave_balances')
+      .select('annual_leaves, sick_leaves, casual_leaves, is_custom, company_id, created_at, updated_at')
+      .eq('user_uid', uid)
+      .maybeSingle();
+
+    if (balanceError) {
+      console.error('[leave] getEmployeeLeaveBalance balances query:', balanceError.message);
+    }
+
+    const baseBalance = {
+      employeeId,
+      annualLeaves: balanceRow?.annual_leaves ?? defaultSettings.defaultAnnualLeaves,
+      sickLeaves: balanceRow?.sick_leaves ?? defaultSettings.defaultSickLeaves,
+      casualLeaves: balanceRow?.casual_leaves ?? defaultSettings.defaultCasualLeaves,
+      usedAnnualLeaves: 0,
+      usedSickLeaves: 0,
+      usedCasualLeaves: 0,
+      isCustom: balanceRow?.is_custom ?? false,
+      createdAt: balanceRow?.created_at ?? new Date().toISOString(),
+      updatedAt: balanceRow?.updated_at ?? null,
+    };
+
+    // Calculate used leaves from approved leave_requests (authoritative)
+    const { data: approvedRequests, error: reqError } = await supabase
+      .from('leave_requests')
+      .select('leave_type, days')
+      .eq('employee_uid', uid)
+      .eq('status', 'approved');
+
+    if (reqError) {
+      console.error('[leave] getEmployeeLeaveBalance requests query:', reqError.message);
+      return baseBalance;
+    }
+
+    let usedAnnual = 0, usedSick = 0, usedCasual = 0;
+    (approvedRequests || []).forEach((req) => {
+      const days = parseFloat(req.days) || 0;
+      if (req.leave_type === 'annual') usedAnnual += days;
+      else if (req.leave_type === 'sick') usedSick += days;
+      else if (req.leave_type === 'casual') usedCasual += days;
+    });
+
+    return {
+      ...baseBalance,
+      usedAnnualLeaves: usedAnnual,
+      usedSickLeaves: usedSick,
+      usedCasualLeaves: usedCasual,
+    };
+  } catch (error) {
+    console.error('[leave] getEmployeeLeaveBalance:', error);
+    const defaultSettings = await getDefaultLeaveSettings();
+    return {
       employeeId,
       annualLeaves: defaultSettings.defaultAnnualLeaves,
       sickLeaves: defaultSettings.defaultSickLeaves,
@@ -125,107 +204,46 @@ export const getEmployeeLeaveBalance = async (employeeId) => {
       usedSickLeaves: 0,
       usedCasualLeaves: 0,
       isCustom: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: null
-    };
-
-    // Calculate used leaves from approved requests in Supabase (source of truth)
-    try {
-      const { data: approvedRequests, error } = await supabase
-        .from('leave_requests')
-        .select('leave_type, days, status')
-        .eq('employee_id', employeeId)
-        .eq('status', 'approved');
-
-      if (!error && approvedRequests && approvedRequests.length > 0) {
-        // Calculate used leaves from approved requests
-        let usedAnnual = 0;
-        let usedSick = 0;
-        let usedCasual = 0;
-
-        approvedRequests.forEach(request => {
-          const days = parseFloat(request.days) || 0;
-          if (request.leave_type === 'annual') {
-            usedAnnual += days;
-          } else if (request.leave_type === 'sick') {
-            usedSick += days;
-          } else if (request.leave_type === 'casual') {
-            usedCasual += days;
-          }
-        });
-
-        // Use calculated values from Supabase (source of truth)
-        return {
-          ...baseBalance,
-          usedAnnualLeaves: usedAnnual,
-          usedSickLeaves: usedSick,
-          usedCasualLeaves: usedCasual,
-          updatedAt: new Date().toISOString()
-        };
-      }
-    } catch (supabaseError) {
-      console.error('Error calculating used leaves from Supabase:', supabaseError);
-      // Fall back to AsyncStorage values if Supabase query fails
-    }
-
-    // Return base balance (from AsyncStorage or defaults)
-    return baseBalance;
-  } catch (error) {
-    console.error('Error getting employee leave balance:', error);
-    const defaultSettings = await getDefaultLeaveSettings();
-    return {
-      employeeId,
-      annualLeaves: defaultSettings.defaultAnnualLeaves,
-      sickLeaves: defaultSettings.defaultSickLeaves,
-      casualLeaves: defaultSettings.defaultCasualLeaves,
-      usedAnnualLeaves: 0,
-      usedSickLeaves: 0,
-      usedCasualLeaves: 0,
-      isCustom: false
     };
   }
 };
 
 /**
- * Update employee leave balance
- * @param {string} employeeId - Employee ID
+ * Upsert employee leave balance into Supabase leave_balances table.
+ * @param {string} employeeId - emp_<uid> or raw uid
  * @param {Object} leaveData - Leave balance data
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 export const updateEmployeeLeaveBalance = async (employeeId, leaveData) => {
+  const uid = typeof employeeId === 'string' && employeeId.startsWith('emp_')
+    ? employeeId.slice(4)
+    : employeeId;
   try {
-    // Get existing data to preserve used leaves if not provided
-    const existingData = await getEmployeeLeaveBalance(employeeId);
-    
-    const updatedData = {
-      employeeId,
-      annualLeaves: leaveData.annualLeaves ?? existingData.annualLeaves,
-      sickLeaves: leaveData.sickLeaves ?? existingData.sickLeaves,
-      casualLeaves: leaveData.casualLeaves ?? existingData.casualLeaves,
-      usedAnnualLeaves: leaveData.usedAnnualLeaves ?? existingData.usedAnnualLeaves ?? 0,
-      usedSickLeaves: leaveData.usedSickLeaves ?? existingData.usedSickLeaves ?? 0,
-      usedCasualLeaves: leaveData.usedCasualLeaves ?? existingData.usedCasualLeaves ?? 0,
-      isCustom: true,
-      updatedAt: new Date().toISOString()
-    };
-    
-    // Preserve createdAt if it exists
-    if (existingData.createdAt) {
-      updatedData.createdAt = existingData.createdAt;
-    } else {
-      updatedData.createdAt = new Date().toISOString();
+    const companyId = await fetchSessionUserCompanyId();
+    if (!companyId) {
+      return { success: false, error: 'No active company session.' };
     }
-    
-    // Get all leaves and update the specific employee
-    const leavesJson = await AsyncStorage.getItem(EMPLOYEE_LEAVES_KEY);
-    const allLeaves = leavesJson ? JSON.parse(leavesJson) : {};
-    allLeaves[employeeId] = updatedData;
-    
-    await AsyncStorage.setItem(EMPLOYEE_LEAVES_KEY, JSON.stringify(allLeaves));
-    
+    const existing = await getEmployeeLeaveBalance(employeeId);
+    const { error } = await supabase
+      .from('leave_balances')
+      .upsert(
+        {
+          user_uid: uid,
+          company_id: companyId,
+          annual_leaves: leaveData.annualLeaves ?? existing.annualLeaves,
+          sick_leaves: leaveData.sickLeaves ?? existing.sickLeaves,
+          casual_leaves: leaveData.casualLeaves ?? existing.casualLeaves,
+          is_custom: true,
+        },
+        { onConflict: 'user_uid' }
+      );
+    if (error) {
+      console.error('[leave] updateEmployeeLeaveBalance Supabase error:', error.message);
+      return { success: false, error: error.message };
+    }
     return { success: true };
   } catch (error) {
-    console.error('Error updating employee leave balance:', error);
+    console.error('[leave] updateEmployeeLeaveBalance:', error);
     return {
       success: false,
       error: error.message || 'Failed to update employee leave balance'
@@ -234,73 +252,75 @@ export const updateEmployeeLeaveBalance = async (employeeId, leaveData) => {
 };
 
 /**
- * Reset employee leave balance to default
- * @param {string} employeeId - Employee ID
+ * Reset employee leave balance to company defaults (sets is_custom=false).
+ * @param {string} employeeId - emp_<uid> or raw uid
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 export const resetEmployeeLeaveToDefault = async (employeeId) => {
+  const uid = typeof employeeId === 'string' && employeeId.startsWith('emp_')
+    ? employeeId.slice(4)
+    : employeeId;
   try {
-    const defaultSettings = await getDefaultLeaveSettings();
-    
-    // Get existing used leaves to preserve them
-    const existingData = await getEmployeeLeaveBalance(employeeId);
-    
-    const resetData = {
-      employeeId,
-      annualLeaves: defaultSettings.defaultAnnualLeaves,
-      sickLeaves: defaultSettings.defaultSickLeaves,
-      casualLeaves: defaultSettings.defaultCasualLeaves,
-      usedAnnualLeaves: existingData.usedAnnualLeaves ?? 0,
-      usedSickLeaves: existingData.usedSickLeaves ?? 0,
-      usedCasualLeaves: existingData.usedCasualLeaves ?? 0,
-      isCustom: false,
-      updatedAt: new Date().toISOString()
-    };
-    
-    // Preserve createdAt if it exists
-    if (existingData.createdAt) {
-      resetData.createdAt = existingData.createdAt;
-    } else {
-      resetData.createdAt = new Date().toISOString();
+    const companyId = await fetchSessionUserCompanyId();
+    if (!companyId) {
+      return { success: false, error: 'No active company session.' };
     }
-    
-    // Get all leaves and update the specific employee
-    const leavesJson = await AsyncStorage.getItem(EMPLOYEE_LEAVES_KEY);
-    const allLeaves = leavesJson ? JSON.parse(leavesJson) : {};
-    allLeaves[employeeId] = resetData;
-    
-    await AsyncStorage.setItem(EMPLOYEE_LEAVES_KEY, JSON.stringify(allLeaves));
-    
+    const defaultSettings = await getDefaultLeaveSettings();
+    const { error } = await supabase
+      .from('leave_balances')
+      .upsert(
+        {
+          user_uid: uid,
+          company_id: companyId,
+          annual_leaves: defaultSettings.defaultAnnualLeaves,
+          sick_leaves: defaultSettings.defaultSickLeaves,
+          casual_leaves: defaultSettings.defaultCasualLeaves,
+          is_custom: false,
+        },
+        { onConflict: 'user_uid' }
+      );
+    if (error) {
+      console.error('[leave] resetEmployeeLeaveToDefault Supabase error:', error.message);
+      return { success: false, error: error.message };
+    }
     return { success: true };
   } catch (error) {
-    console.error('Error resetting employee leave balance:', error);
-    return {
-      success: false,
-      error: error.message || 'Failed to reset employee leave balance'
-    };
+    console.error('[leave] resetEmployeeLeaveToDefault:', error);
+    return { success: false, error: error.message || 'Failed to reset employee leave balance' };
   }
 };
 
 /**
- * Get all employees' leave balances
+ * Get all employees' leave balances for the current user's company from Supabase.
  * @returns {Promise<Array>} Array of employee leave balances
  */
 export const getAllEmployeesLeaveBalances = async () => {
   try {
-    const leavesJson = await AsyncStorage.getItem(EMPLOYEE_LEAVES_KEY);
-    const allLeaves = leavesJson ? JSON.parse(leavesJson) : {};
-    
-    const leaves = [];
-    for (const [employeeId, leaveData] of Object.entries(allLeaves)) {
-      leaves.push({
-        id: employeeId,
-        ...leaveData
-      });
+    const companyId = await fetchSessionUserCompanyId();
+    if (!companyId) {
+      console.warn('[leave] getAllEmployeesLeaveBalances: no company_id in session');
+      return [];
     }
-    
-    return leaves;
+    const { data, error } = await supabase
+      .from('leave_balances')
+      .select('user_uid, annual_leaves, sick_leaves, casual_leaves, is_custom, created_at, updated_at')
+      .eq('company_id', companyId);
+    if (error) {
+      console.error('[leave] getAllEmployeesLeaveBalances Supabase error:', error.message);
+      return [];
+    }
+    return (data || []).map((row) => ({
+      id: `emp_${row.user_uid}`,
+      employeeId: `emp_${row.user_uid}`,
+      annualLeaves: row.annual_leaves,
+      sickLeaves: row.sick_leaves,
+      casualLeaves: row.casual_leaves,
+      isCustom: row.is_custom,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
   } catch (error) {
-    console.error('Error getting all employees leave balances:', error);
+    console.error('[leave] getAllEmployeesLeaveBalances:', error);
     return [];
   }
 };

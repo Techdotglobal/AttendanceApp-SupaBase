@@ -52,6 +52,8 @@ import {
 import { spacing, responsivePadding, responsiveFont, isTablet, getTabletGridColumns, SCREEN_WIDTH } from '../shared/utils/responsive';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+import { tenantDiagLog, diagQueryUsersByCompanyId, TENANT_RUNTIME_DIAG } from '../core/debug/tenantRuntimeDiag';
+import { resolveCompanyIdFromUser } from '../core/tenant/tenantScope';
 
 export default function EmployeeManagement({
   route,
@@ -61,8 +63,9 @@ export default function EmployeeManagement({
   onRefresh,
 }) {
   const { user: routeUser, openLeaveRequests } = route.params || {};
-  const { user: authUser } = useAuth();
-  const user = authUser || routeUser;
+  const { user: authUser, isLoading: authContextLoading } = useAuth();
+  /** Single source of truth for identity and tenant — never use stale navigation params. */
+  const user = authUser;
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const tablet = isTablet();
@@ -104,7 +107,7 @@ export default function EmployeeManagement({
 
   useEffect(() => {
     loadData();
-  }, [user?.uid, user?.companyId, user?.role]);
+  }, [user?.uid, user?.companyId, user?.role, authContextLoading]);
 
   // Trigger full reload from parent (used by AdminDashboard pull-to-refresh).
   useEffect(() => {
@@ -133,6 +136,9 @@ export default function EmployeeManagement({
   }, [employees]);
 
   const loadData = async () => {
+    if (authContextLoading) {
+      return;
+    }
     if (!user?.uid) {
       setEmployees([]);
       setFilteredEmployees([]);
@@ -184,7 +190,44 @@ export default function EmployeeManagement({
       }
       // Get employees based on user's role
       // Super admins see everyone, managers see only their department
+      tenantDiagLog('EmployeeManagement.before_getManageableEmployees', {
+        authUser: authUser
+          ? {
+              uid: authUser.uid,
+              username: authUser.username,
+              role: authUser.role,
+              companyId: authUser.companyId ?? authUser.company_id,
+            }
+          : null,
+        routeUser: routeUser
+          ? {
+              uid: routeUser.uid,
+              username: routeUser.username,
+              role: routeUser.role,
+              companyId: routeUser.companyId ?? routeUser.company_id,
+            }
+          : null,
+        effectiveUser: user
+          ? {
+              uid: user.uid,
+              username: user.username,
+              role: user.role,
+              companyId: user.companyId ?? user.company_id,
+              department: user.department,
+            }
+          : null,
+      });
+      if (TENANT_RUNTIME_DIAG) {
+        const cid = resolveCompanyIdFromUser(user);
+        if (cid) {
+          await diagQueryUsersByCompanyId(cid, 'EmployeeManagement_screen');
+        }
+      }
       const employeeList = await getManageableEmployees(user);
+      tenantDiagLog('EmployeeManagement.after_getManageableEmployees', {
+        count: employeeList.length,
+        usernames: employeeList.map((e) => e.username),
+      });
       setEmployees(employeeList);
       setFilteredEmployees(employeeList);
     } catch (error) {

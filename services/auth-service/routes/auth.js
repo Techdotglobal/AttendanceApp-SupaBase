@@ -211,7 +211,7 @@ router.post('/login', async (req, res) => {
           uid: userId,
           username: userData.username || emailForAuth.split('@')[0],
           email: userData.email || emailForAuth,
-          role: userData.role || 'employee',
+          role: userData.role,
           name: userData.name,
           department: userData.department || '',
           position: userData.position || '',
@@ -427,6 +427,7 @@ router.post('/users', async (req, res) => {
       .from('users')
       .select('id')
       .eq('username', username)
+      .eq('company_id', companyId)
       .maybeSingle();
     if (dupUsername) {
       return res.status(409).json({ success: false, error: 'Username already taken.' });

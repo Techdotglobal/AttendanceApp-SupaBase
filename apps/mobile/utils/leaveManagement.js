@@ -71,7 +71,7 @@ function _dbRowToLeaveSettings(row) {
  */
 export const getDefaultLeaveSettings = async () => {
   try {
-    const companyId = await fetchSessionUserCompanyId();
+    const companyId = await fetchSessionUserCompanyId(supabase);
     if (!companyId) {
       console.warn('[leave] getDefaultLeaveSettings: no company_id in session — returning defaults');
       return { ...LEAVE_SETTINGS_DEFAULTS, updatedAt: null };
@@ -100,7 +100,7 @@ export const getDefaultLeaveSettings = async () => {
  */
 export const updateDefaultLeaveSettings = async (settings) => {
   try {
-    const companyId = await fetchSessionUserCompanyId();
+    const companyId = await fetchSessionUserCompanyId(supabase);
     if (!companyId) {
       return { success: false, error: 'No active company session.' };
     }
@@ -219,7 +219,7 @@ export const updateEmployeeLeaveBalance = async (employeeId, leaveData) => {
     ? employeeId.slice(4)
     : employeeId;
   try {
-    const companyId = await fetchSessionUserCompanyId();
+    const companyId = await fetchSessionUserCompanyId(supabase);
     if (!companyId) {
       return { success: false, error: 'No active company session.' };
     }
@@ -261,7 +261,7 @@ export const resetEmployeeLeaveToDefault = async (employeeId) => {
     ? employeeId.slice(4)
     : employeeId;
   try {
-    const companyId = await fetchSessionUserCompanyId();
+    const companyId = await fetchSessionUserCompanyId(supabase);
     if (!companyId) {
       return { success: false, error: 'No active company session.' };
     }
@@ -296,7 +296,7 @@ export const resetEmployeeLeaveToDefault = async (employeeId) => {
  */
 export const getAllEmployeesLeaveBalances = async () => {
   try {
-    const companyId = await fetchSessionUserCompanyId();
+    const companyId = await fetchSessionUserCompanyId(supabase);
     if (!companyId) {
       console.warn('[leave] getAllEmployeesLeaveBalances: no company_id in session');
       return [];

@@ -4,7 +4,8 @@
 -- Picks one KEEPER per logical tenant (Netkom / TDG / TechDotGlobal) using:
 --   highest user count, then oldest created_at.
 -- Merges loser departments (remap sites + users, or move department row),
--- moves users to keeper company_id, deletes loser company rows.
+-- reassigns every other FK column that points at companies(id), verifies
+-- nothing still references the loser UUID, then deletes the loser company row.
 -- Removes orphan "misc" companies with no users and no departments.
 -- Adds a unique index on normalized name to prevent future duplicates.
 --
@@ -21,11 +22,14 @@ AS $$
 DECLARE
   d RECORD;
   k_dept UUID;
+  fk RECORD;
+  n_left BIGINT;
 BEGIN
   IF p_loser IS NULL OR p_keeper IS NULL OR p_loser = p_keeper THEN
     RETURN;
   END IF;
 
+  -- 1) Departments under the loser tenant: merge into keeper (respect UNIQUE (company_id, name)).
   FOR d IN
     SELECT id, name FROM public.departments WHERE company_id = p_loser
   LOOP
@@ -43,7 +47,60 @@ BEGIN
     END IF;
   END LOOP;
 
-  UPDATE public.users SET company_id = p_keeper WHERE company_id = p_loser;
+  IF EXISTS (SELECT 1 FROM public.departments WHERE company_id = p_loser) THEN
+    RAISE EXCEPTION
+      'merge_company_loser_into_keeper: % row(s) in departments still have company_id=% after merge — aborting delete',
+      (SELECT COUNT(*)::INT FROM public.departments WHERE company_id = p_loser),
+      p_loser;
+  END IF;
+
+  -- 2) Any other table column that FK-references public.companies(id): point to keeper.
+  --    (Skips departments.company_id — already cleared above; single-column FKs only.)
+  FOR fk IN
+    SELECT n.nspname AS ns, c.relname AS tbl, a.attname AS col
+    FROM pg_constraint co
+    JOIN pg_class c ON c.oid = co.conrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute a ON a.attrelid = co.conrelid AND a.attnum = co.conkey[1]
+    WHERE co.confrelid = 'public.companies'::regclass
+      AND co.contype = 'f'
+      AND (co.conparentid IS NULL OR co.conparentid = 0)
+      AND co.conkey IS NOT NULL
+      AND array_length(co.conkey, 1) = 1
+      AND n.nspname = 'public'
+      AND NOT (c.relname = 'departments' AND a.attname = 'company_id')
+  LOOP
+    EXECUTE format(
+      'UPDATE %I.%I SET %I = $1 WHERE %I = $2',
+      fk.ns, fk.tbl, fk.col, fk.col
+    ) USING p_keeper, p_loser;
+  END LOOP;
+
+  -- 3) Refuse to delete the company row if anything still references the loser id.
+  FOR fk IN
+    SELECT n.nspname AS ns, c.relname AS tbl, a.attname AS col
+    FROM pg_constraint co
+    JOIN pg_class c ON c.oid = co.conrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute a ON a.attrelid = co.conrelid AND a.attnum = co.conkey[1]
+    WHERE co.confrelid = 'public.companies'::regclass
+      AND co.contype = 'f'
+      AND (co.conparentid IS NULL OR co.conparentid = 0)
+      AND co.conkey IS NOT NULL
+      AND array_length(co.conkey, 1) = 1
+      AND n.nspname = 'public'
+  LOOP
+    EXECUTE format(
+      'SELECT COUNT(*) FROM %I.%I WHERE %I = $1',
+      fk.ns, fk.tbl, fk.col
+    ) USING p_loser INTO n_left;
+    IF n_left > 0 THEN
+      RAISE EXCEPTION
+        'merge_company_loser_into_keeper: %.% still has % row(s) referencing company id % — refusing DELETE',
+        fk.ns, fk.tbl, n_left, p_loser;
+    END IF;
+  END LOOP;
+
   DELETE FROM public.companies WHERE id = p_loser;
 END;
 $$;
@@ -51,6 +108,9 @@ $$;
 DO $$
 DECLARE
   r RECORD;
+  misc_rec RECORD;
+  fk2 RECORD;
+  nb BIGINT;
 BEGIN
   CREATE TEMP TABLE _classified AS
   SELECT
@@ -102,14 +162,39 @@ BEGIN
   JOIN _keepers k ON k.family = v.family
   WHERE c.id = k.keeper_id;
 
-  DELETE FROM public.companies c
-  WHERE c.id IN (
-    SELECT t.id
+  -- Remove misc tenant roots only when nothing in public.* still FK-references the company id.
+  FOR misc_rec IN
+    SELECT t.id AS mid
     FROM _classified t
     WHERE t.family = 'misc'
       AND NOT EXISTS (SELECT 1 FROM public.users u WHERE u.company_id = t.id)
       AND NOT EXISTS (SELECT 1 FROM public.departments d WHERE d.company_id = t.id)
-  );
+  LOOP
+    FOR fk2 IN
+      SELECT n.nspname AS ns, c.relname AS tbl, a.attname AS col
+      FROM pg_constraint co
+      JOIN pg_class c ON c.oid = co.conrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_attribute a ON a.attrelid = co.conrelid AND a.attnum = co.conkey[1]
+      WHERE co.confrelid = 'public.companies'::regclass
+        AND co.contype = 'f'
+        AND (co.conparentid IS NULL OR co.conparentid = 0)
+        AND co.conkey IS NOT NULL
+        AND array_length(co.conkey, 1) = 1
+        AND n.nspname = 'public'
+    LOOP
+      EXECUTE format(
+        'SELECT COUNT(*) FROM %I.%I WHERE %I = $1',
+        fk2.ns, fk2.tbl, fk2.col
+      ) USING misc_rec.mid INTO nb;
+      IF nb > 0 THEN
+        RAISE EXCEPTION
+          'Refusing to delete misc company id %: %.% still has % referencing row(s)',
+          misc_rec.mid, fk2.ns, fk2.tbl, nb;
+      END IF;
+    END LOOP;
+    DELETE FROM public.companies WHERE id = misc_rec.mid;
+  END LOOP;
 
   DROP TABLE IF EXISTS _losers;
   DROP TABLE IF EXISTS _keepers;

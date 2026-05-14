@@ -9,7 +9,7 @@
 
 ## Duplicate companies (merge + prevent)
 
-If onboarding was run multiple times with the same display name, you can end up with several `companies` rows that differ only by `id`. Migration **`supabase/migrations/20260514120000_merge_duplicate_companies.sql`** collapses rows into three canonical tenants (**Netkom Communications KSA**, **TDG**, **TechDotGlobal**) by name pattern, merges `departments` / `users` / `sites`, deletes empty junk tenants, and adds a **unique index** on the normalized name so Postgres rejects future duplicates.
+If onboarding was run multiple times with the same display name, you can end up with several `companies` rows that differ only by `id`. Migration `supabase/migrations/20260514120000_merge_duplicate_companies.sql` collapses rows into three canonical tenants (**Netkom Communications KSA**, **TDG**, **TechDotGlobal**) by name pattern, merges `departments` (and `sites` / `users.department_id`), then **reassigns every other `public.*` column that foreign-keys to `companies(id)`** (discovered from `pg_constraint`, so future tables are covered), verifies **zero** remaining references to each merged-away company id, deletes duplicate `companies` rows, removes empty misc tenants only when **no FK** still points at them, and adds a **unique index** on the normalized name.
 
 After `db push` (or running that SQL in the dashboard), refresh JWT claims so mobile/web see the new `company_id`:
 

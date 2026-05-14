@@ -305,7 +305,7 @@ secrets/
 # ============================================
 
 # Migration data (contains sensitive user data and passwords)
-migrations/data/
+supabase/legacy_migrations/data/
 *.sql.backup
 *.sql.bak
 

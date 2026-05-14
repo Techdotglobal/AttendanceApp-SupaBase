@@ -450,7 +450,7 @@ CREATE TABLE calendar_events (
 **Important Notes:**
 - **UID Field**: The `uid` column must match the Supabase Auth User ID (`auth.uid()`)
 - If `uid` values don't match, the system falls back to email-based lookup
-- Use migration script `migrations/011_update_uid_to_match_auth.sql` to update UIDs if needed
+- Use migration script `supabase/legacy_migrations/011_update_uid_to_match_auth.sql` to update UIDs if needed
 - **Calendar Events**: Stored in Supabase (not AsyncStorage), supports visibility settings (`all`, `none`, `selected`)
 - Calendar events refresh on screen focus for data consistency
 

@@ -15,7 +15,7 @@ This document summarizes the company logo feature. **Run the SQL scripts manuall
 
 ## 1. SQL migration (run first)
 
-**File:** `migrations/020_create_companies_table.sql`
+**File:** `supabase/legacy_migrations/020_create_companies_table.sql`
 
 Run the entire script in **Supabase Dashboard → SQL Editor**.
 
@@ -41,7 +41,7 @@ It:
 
 ### 2.2 Storage policies (SQL)
 
-**File:** `migrations/021_company_logos_storage_policies.sql`
+**File:** `supabase/legacy_migrations/021_company_logos_storage_policies.sql`
 
 Run in **Supabase SQL Editor** after the bucket exists.
 
@@ -56,7 +56,7 @@ Details: `docs/STORAGE_SETUP.md`
 
 - Bucket **name** must be exactly `company-logos`.
 - Bucket must be **public** (Dashboard → Storage → bucket → Public bucket: Yes).
-- Policy `"Public read access for company logos"` on `storage.objects` must allow `SELECT` for `bucket_id = 'company-logos'` so the app can render the image from the public URL. If the logo does not render, run `migrations/021_company_logos_storage_policies.sql` and ensure no other RLS blocks public read for this bucket.
+- Policy `"Public read access for company logos"` on `storage.objects` must allow `SELECT` for `bucket_id = 'company-logos'` so the app can render the image from the public URL. If the logo does not render, run `supabase/legacy_migrations/021_company_logos_storage_policies.sql` and ensure no other RLS blocks public read for this bucket.
 
 ---
 
@@ -105,9 +105,9 @@ Details: `docs/STORAGE_SETUP.md`
 
 ## 4. Order of operations
 
-1. Run **`migrations/020_create_companies_table.sql`** in Supabase SQL Editor.
+1. Run **`supabase/legacy_migrations/020_create_companies_table.sql`** in Supabase SQL Editor.
 2. Create bucket **`company-logos`** (public) in Storage.
-3. Run **`migrations/021_company_logos_storage_policies.sql`** in SQL Editor.
+3. Run **`supabase/legacy_migrations/021_company_logos_storage_policies.sql`** in SQL Editor.
 4. Use the app: log in as **super_admin** → drawer → **Company Logo** → pick image → upload. Logo appears everywhere `<Logo />` is used.
 
 ---

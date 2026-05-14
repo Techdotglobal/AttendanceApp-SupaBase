@@ -15,7 +15,7 @@ Create the storage bucket **before** running the storage policies SQL.
 
 ## After creating the bucket
 
-Run the SQL in **migrations/021_company_logos_storage_policies.sql** in the Supabase **SQL Editor** to apply RLS policies:
+Run the SQL in **supabase/legacy_migrations/021_company_logos_storage_policies.sql** in the Supabase **SQL Editor** to apply RLS policies:
 
 - Public read for `company-logos` objects
 - Only `super_admin` can INSERT/UPDATE/DELETE in `company-logos`

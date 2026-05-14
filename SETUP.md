@@ -183,7 +183,7 @@ If the database is already configured, skip to step 5.
 #### Option B: Create Database Schema
 
 1. Go to Supabase Dashboard → **SQL Editor**
-2. Run the migration script: `migrations/manual-create-users.sql`
+2. Apply schema from the SQL files under `supabase/legacy_migrations/` in dependency order (see `supabase/README.md`), or use `npm run db:push` after linking the project for CLI-managed migrations under `supabase/migrations/`.
 3. Or use the Node.js script to create users:
 
 ```bash
@@ -344,8 +344,10 @@ AttendanceApp-SupaBase/
 ├── scripts/
 │   └── create-users-supabase.js  # User creation script
 │
-├── migrations/
-│   └── manual-create-users.sql   # SQL migration script
+├── supabase/
+│   ├── migrations/               # CLI-managed (db push)
+│   ├── legacy_migrations/      # Historical SQL
+│   └── config.toml
 │
 └── start-services.ps1        # Start script (Windows)
 ```

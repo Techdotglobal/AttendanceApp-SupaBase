@@ -55,6 +55,10 @@ AttendanceApp/
 │   ├── leave-service/       # Placeholder
 │   └── ticket-service/      # Placeholder
 │
+├── supabase/                # Supabase CLI + SQL (see supabase/README.md)
+│   ├── migrations/          # Applied by `supabase db push`
+│   └── legacy_migrations/   # Historical scripts (reference)
+│
 └── docs/                    # Documentation
 ```
 

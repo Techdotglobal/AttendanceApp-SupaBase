@@ -318,13 +318,11 @@ AttendanceApp-SupaBase/
 │   ├── create-new-users-automated.js     # Automated user creation script
 │   └── README_AUTOMATED_USER_CREATION.md # User creation documentation
 │
-├── migrations/                    # Database migration scripts
-│   ├── 004_create_leave_requests_table.sql
-│   ├── 005_create_tickets_table.sql
-│   ├── 006_create_attendance_records_table.sql
-│   ├── 008_create_calendar_events_table.sql
-│   ├── 019_add_calendar_event_visibility.sql
-│   └── ... (additional migration files)
+├── supabase/                # Supabase CLI + database SQL
+│   ├── migrations/          # Timestamped migrations applied by `npm run db:push`
+│   ├── legacy_migrations/   # Historical numbered SQL (reference / manual runs)
+│   ├── config.toml
+│   └── README.md
 │
 ├── docs/                    # Documentation
 │   ├── SYSTEM_ARCHITECTURE.md

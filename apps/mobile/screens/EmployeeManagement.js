@@ -17,9 +17,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { 
-  getEmployees, 
   updateEmployeeWorkMode, 
-  getWorkModeStatistics,
   getPendingWorkModeRequests,
   processWorkModeRequest,
   getManageableEmployees,
@@ -53,6 +51,7 @@ import {
 } from '../utils/hrRoles';
 import { spacing, responsivePadding, responsiveFont, isTablet, getTabletGridColumns, SCREEN_WIDTH } from '../shared/utils/responsive';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../contexts/AuthContext';
 
 export default function EmployeeManagement({
   route,
@@ -61,7 +60,9 @@ export default function EmployeeManagement({
   refreshing = false,
   onRefresh,
 }) {
-  const { user, openLeaveRequests } = route.params || {};
+  const { user: routeUser, openLeaveRequests } = route.params || {};
+  const { user: authUser } = useAuth();
+  const user = authUser || routeUser;
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const tablet = isTablet();
@@ -103,7 +104,7 @@ export default function EmployeeManagement({
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [user?.uid, user?.companyId, user?.role]);
 
   // Trigger full reload from parent (used by AdminDashboard pull-to-refresh).
   useEffect(() => {
@@ -132,6 +133,11 @@ export default function EmployeeManagement({
   }, [employees]);
 
   const loadData = async () => {
+    if (!user?.uid) {
+      setEmployees([]);
+      setFilteredEmployees([]);
+      return;
+    }
     // Load employees first, then other data
     await loadEmployees();
     // Statistics will be loaded via useEffect when employees state updates
@@ -171,6 +177,11 @@ export default function EmployeeManagement({
 
   const loadEmployees = async () => {
     try {
+      if (!user) {
+        setEmployees([]);
+        setFilteredEmployees([]);
+        return;
+      }
       // Get employees based on user's role
       // Super admins see everyone, managers see only their department
       const employeeList = await getManageableEmployees(user);

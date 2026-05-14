@@ -14,10 +14,51 @@ import { startLocationMonitoring, stopLocationMonitoring } from '../../features/
 
 const AuthContext = createContext();
 
+/**
+ * When public.users cannot be read transiently (e.g. TOKEN_REFRESHED race), avoid
+ * downgrading to role "employee" if we still have a good in-memory profile or JWT claims.
+ */
+function resolveSessionFallbackUser(authUser, lastGood) {
+  if (!authUser) return null;
+  const id = authUser.id;
+  if (lastGood && String(lastGood.uid) === String(id)) {
+    return { ...lastGood, email: authUser.email ?? lastGood.email };
+  }
+  const meta = authUser.user_metadata || {};
+  const role = meta.role != null ? String(meta.role) : null;
+  const companyId = meta.company_id != null ? String(meta.company_id) : null;
+  const username =
+    meta.username != null ? String(meta.username) : authUser.email?.split('@')[0] || 'user';
+  if (role && companyId) {
+    return {
+      uid: id,
+      email: authUser.email,
+      username,
+      role,
+      companyId,
+      departmentId: meta.department_id != null ? String(meta.department_id) : null,
+      name: meta.name || username,
+      department: typeof meta.department === 'string' ? meta.department : '',
+      position: typeof meta.position === 'string' ? meta.position : '',
+      workMode: meta.work_mode || 'in_office',
+      id: id,
+    };
+  }
+  return {
+    uid: id,
+    email: authUser.email,
+    username,
+    role: 'employee',
+    companyId: companyId || null,
+    departmentId: meta.department_id != null ? String(meta.department_id) : null,
+  };
+}
+
 export function AuthProvider({ children }) {
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState(null);
   const loadUserDataRef = useRef(null); // Track active loadUserData call to prevent race conditions
+  const lastGoodProfileRef = useRef(null); // Last successful profile (same uid) for resilient refresh
   const realtimeSubscriptionsRef = useRef({
     notifications: null,
     attendance: null,
@@ -201,13 +242,18 @@ export function AuthProvider({ children }) {
   }, [user]); // Re-run when user changes
 
   const loadUserData = async (userId) => {
-    // Cancel any previous loadUserData call to prevent race conditions
-    if (loadUserDataRef.current) {
-      console.log('[AUTH_CONTEXT] Cancelling previous loadUserData');
+    // Same-user refresh (e.g. TOKEN_REFRESHED): do not cancel an in-flight load — a failed
+    // follow-up load used to overwrite super_admin with the JWT-only "employee" fallback.
+    if (loadUserDataRef.current && !loadUserDataRef.current.cancelled) {
+      if (loadUserDataRef.current.userId === userId) {
+        console.log('[AUTH_CONTEXT] loadUserData skipped — already loading same user');
+        return;
+      }
+      console.log('[AUTH_CONTEXT] Cancelling previous loadUserData (different user)');
       loadUserDataRef.current.cancelled = true;
     }
-    
-    const currentCall = { cancelled: false };
+
+    const currentCall = { cancelled: false, userId };
     loadUserDataRef.current = currentCall;
     
     try {
@@ -225,6 +271,7 @@ export function AuthProvider({ children }) {
         if (sessionError.message?.includes('Refresh Token') || sessionError.message?.includes('refresh_token')) {
           console.log('Invalid refresh token, signing out...');
           await supabase.auth.signOut();
+          lastGoodProfileRef.current = null;
           setUser(null);
           setIsLoading(false);
           return;
@@ -234,6 +281,7 @@ export function AuthProvider({ children }) {
       if (!session) {
         console.log('No active session');
         if (!currentCall.cancelled) {
+          lastGoodProfileRef.current = null;
           setUser(null);
           setIsLoading(false);
         }
@@ -260,7 +308,7 @@ export function AuthProvider({ children }) {
         .from('users')
         .select('*')
         .eq('uid', userId)
-        .single();
+        .maybeSingle();
       
       // If uid query fails, try by email as fallback
       if (userError || !userData) {
@@ -270,7 +318,7 @@ export function AuthProvider({ children }) {
             .from('users')
             .select('*')
             .eq('email', authUser.email)
-            .single();
+            .maybeSingle();
           
           if (!emailError && userDataByEmail) {
             console.log('Found user by email:', userDataByEmail.username);
@@ -286,18 +334,16 @@ export function AuthProvider({ children }) {
         console.error('Error loading user data:', userError);
         // Check if cancelled
         if (currentCall.cancelled) return;
-        
-        // Fallback to basic user info from auth (no DB row — tenant unknown)
+
         if (authUser) {
-          console.warn('[AUTH_CONTEXT] No users row for uid; JWT-only fallback (RLS may fail until profile exists)');
-          setUser({
-            uid: authUser.id,
-            email: authUser.email,
-            username: authUser.email?.split('@')[0],
-            role: 'employee',
-            companyId: null,
-            departmentId: null,
-          });
+          const fallback = resolveSessionFallbackUser(authUser, lastGoodProfileRef.current);
+          if (fallback) {
+            console.warn(
+              '[AUTH_CONTEXT] No users row from DB for uid; using last good profile or JWT metadata (not defaulting blindly to employee)'
+            );
+            lastGoodProfileRef.current = fallback;
+            setUser(fallback);
+          }
         }
         setIsLoading(false);
         return;
@@ -378,9 +424,10 @@ export function AuthProvider({ children }) {
         hireDate: userData.hire_date || employee?.hireDate,
         id: employee?.id || userId,
       };
-      
+
       // Final check before setting user
       if (!currentCall.cancelled) {
+        lastGoodProfileRef.current = combinedUser;
         setUser(combinedUser);
         // Realtime subscriptions will be set up in useEffect when user changes
       }
@@ -400,6 +447,7 @@ export function AuthProvider({ children }) {
           console.error('Error signing out:', signOutError);
         }
         if (!currentCall.cancelled) {
+          lastGoodProfileRef.current = null;
           setUser(null);
           setIsLoading(false);
         }
@@ -416,19 +464,21 @@ export function AuthProvider({ children }) {
             if (sessionError?.message?.includes('Refresh Token') || sessionError?.message?.includes('refresh_token')) {
               await supabase.auth.signOut();
             }
+            lastGoodProfileRef.current = null;
             setUser(null);
           } else if (fallbackSession.user) {
-            setUser({
-              uid: fallbackSession.user.id,
-              email: fallbackSession.user.email,
-              username: fallbackSession.user.email?.split('@')[0],
-              role: 'employee',
-              companyId: null,
-              departmentId: null,
-            });
+            const fb = resolveSessionFallbackUser(
+              fallbackSession.user,
+              lastGoodProfileRef.current
+            );
+            if (fb) {
+              lastGoodProfileRef.current = fb;
+              setUser(fb);
+            }
           }
         } catch (getSessionError) {
           console.error('Error in getSession fallback:', getSessionError);
+          lastGoodProfileRef.current = null;
           setUser(null);
         }
       }
@@ -446,6 +496,9 @@ export function AuthProvider({ children }) {
   const handleLogin = async (userData) => {
     // Login is handled by Supabase Auth, this is just for compatibility
     // The actual login happens in LoginScreen using Supabase
+    if (userData?.uid) {
+      lastGoodProfileRef.current = { ...userData };
+    }
     setUser(userData);
   };
 
@@ -472,6 +525,7 @@ export function AuthProvider({ children }) {
       console.log('[AUTH_CONTEXT] ✓ Realtime subscriptions cleaned up');
       
       // 2. Clear user state to prevent UI from rendering with stale data
+      lastGoodProfileRef.current = null;
       setUser(null);
       setIsLoading(true);
       
@@ -509,6 +563,7 @@ export function AuthProvider({ children }) {
       }
       // Stop location monitoring
       stopLocationMonitoring();
+      lastGoodProfileRef.current = null;
       setUser(null);
       setIsLoading(false);
       

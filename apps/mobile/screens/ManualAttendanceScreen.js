@@ -19,7 +19,7 @@ import {
   updateAttendanceRecord,
   deleteAttendanceRecord
 } from '../utils/storage';
-import { getEmployees, getManageableEmployees, canManageEmployee } from '../utils/employees';
+import { getManageableEmployees, canManageEmployee } from '../utils/employees';
 import DatePickerCalendar from '../components/DatePickerCalendar';
 import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTablet } from '../shared/utils/responsive';
 

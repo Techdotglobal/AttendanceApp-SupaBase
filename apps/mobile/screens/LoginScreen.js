@@ -104,9 +104,9 @@ export default function LoginScreen() {
           setHasSavedCredentials(false);
         }
 
-        // Ensure employees are initialized first
-        const { initializeDefaultEmployees, getEmployeeByUsername } = await import('../utils/employees');
-        await initializeDefaultEmployees();
+        // Drop legacy demo AsyncStorage employees so lists match Supabase for this tenant
+        const { clearLegacyDummyEmployeeCache, getEmployeeByUsername } = await import('../utils/employees');
+        await clearLegacyDummyEmployeeCache();
         
         // Fetch full employee data including department
         const employee = await getEmployeeByUsername(result.user.username, result.user.companyId);

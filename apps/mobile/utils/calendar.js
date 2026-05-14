@@ -1,9 +1,8 @@
 // Calendar and Events Management Utilities using Supabase (with AsyncStorage fallback)
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../core/config/supabase';
-import { fetchSessionUserCompanyId, fetchCompanyUserUids } from '../core/tenant/tenantScope';
+import { fetchSessionUserCompanyId, fetchCompanyUserUids, fetchCompanyUsernames } from '../core/tenant/tenantScope';
 import { createNotification, createBatchNotifications } from './notifications';
-import { getEmployees } from './employees';
 
 const CALENDAR_EVENTS_KEY = 'calendar_events'; // For fallback only
 
@@ -97,11 +96,11 @@ const sendCalendarEventNotifications = async (eventInfo) => {
     let recipients = [];
 
     if (visibility === 'all') {
-      // Notify all employees
-      const allEmployees = await getEmployees();
-      recipients = allEmployees
-        .filter(emp => emp.username && emp.isActive !== false && emp.username !== createdBy)
-        .map(emp => emp.username);
+      const companyId = await fetchSessionUserCompanyId(supabase);
+      if (companyId) {
+        const usernames = await fetchCompanyUsernames(supabase, companyId, 'calendarNotify');
+        recipients = usernames.filter((u) => u && u !== createdBy);
+      }
     } else if (visibility === 'selected') {
       // Notify only selected employees (exclude creator)
       recipients = visibleTo.filter(username => username && username !== createdBy);

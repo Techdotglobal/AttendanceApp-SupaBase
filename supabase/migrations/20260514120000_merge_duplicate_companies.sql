@@ -107,7 +107,9 @@ $$;
 
 DO $$
 DECLARE
-  r RECORD;
+  -- Do not use name "r" here: SQL aliases like `FROM _ranked r` are resolved as this
+  -- PL/pgSQL variable and trigger "record r is not assigned yet" (SQLSTATE 55000).
+  merge_pair RECORD;
   misc_rec RECORD;
   fk2 RECORD;
   nb BIGINT;
@@ -140,15 +142,15 @@ BEGIN
   ORDER BY family, user_cnt DESC, created_at ASC;
 
   CREATE TEMP TABLE _losers AS
-  SELECT r.id AS loser_id, k.keeper_id
-  FROM _ranked r
-  JOIN _keepers k ON k.family = r.family
-  WHERE r.family IN ('netkom', 'tdg', 'techdotglobal')
-    AND r.id <> k.keeper_id;
+  SELECT rn.id AS loser_id, k.keeper_id
+  FROM _ranked rn
+  JOIN _keepers k ON k.family = rn.family
+  WHERE rn.family IN ('netkom', 'tdg', 'techdotglobal')
+    AND rn.id <> k.keeper_id;
 
-  FOR r IN SELECT loser_id, keeper_id FROM _losers
+  FOR merge_pair IN SELECT loser_id, keeper_id FROM _losers
   LOOP
-    PERFORM public._merge_company_loser_into_keeper(r.loser_id, r.keeper_id);
+    PERFORM public._merge_company_loser_into_keeper(merge_pair.loser_id, merge_pair.keeper_id);
   END LOOP;
 
   UPDATE public.companies c

@@ -13,8 +13,7 @@ import { CompanyProvider } from './core/contexts/CompanyContext';
 // Navigation
 import AppNavigator from './core/navigation/AppNavigator';
 
-// Import employee initialization
-import { initializeDefaultEmployees } from './utils/employees';
+import { clearLegacyDummyEmployeeCache } from './utils/employees';
 
 /**
  * Main App Component
@@ -29,10 +28,10 @@ import { initializeDefaultEmployees } from './utils/employees';
  */
 export default function App() {
   useEffect(() => {
-    // Initialize default employees when app starts
+    // Initialize app when app starts
     // Supabase handles authentication automatically - no file initialization needed
     const initializeApp = async () => {
-      await initializeDefaultEmployees();
+      await clearLegacyDummyEmployeeCache();
     };
     initializeApp();
   }, []);

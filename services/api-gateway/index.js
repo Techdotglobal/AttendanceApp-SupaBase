@@ -39,6 +39,11 @@ app.get('/health', (req, res) => {
     status: 'ok',
     message: 'API Gateway is running',
     timestamp: new Date().toISOString(),
+    build:
+      process.env.RENDER_GIT_COMMIT ||
+      process.env.GIT_COMMIT_SHA ||
+      'local-dev',
+    authServiceUrl: (process.env.AUTH_SERVICE_URL || 'http://localhost:3001').replace(/\/+$/, ''),
   });
 });
 

@@ -38,6 +38,11 @@ app.get('/health', (req, res) => {
     status: 'ok',
     message: 'Auth Service is running',
     timestamp: new Date().toISOString(),
+    build:
+      process.env.RENDER_GIT_COMMIT ||
+      process.env.GIT_COMMIT_SHA ||
+      'local-dev',
+    createUserFix: 'department-text-only-ae84bba',
   });
 });
 

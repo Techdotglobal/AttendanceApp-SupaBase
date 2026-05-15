@@ -1,6 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const { supabase } = require('../config/supabase');
+const { supabase, isServiceRole, assertServiceRoleClient } = require('../config/supabase');
+
+const CREATE_USER_BUILD =
+  process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT_SHA || 'local-dev';
+
+/** Structured trace for POST /api/auth/users (no passwords). */
+function traceCreateUser(step, fields = {}) {
+  console.log(
+    `[create-user][${CREATE_USER_BUILD}] ${step}`,
+    JSON.stringify(fields, (_, v) => (v instanceof Error ? v.message : v))
+  );
+}
 const { syncAuthMetadataForUid } = require('../lib/authMetadata');
 const {
   normalizeEmailForAuth,
@@ -437,9 +448,53 @@ router.post('/users', async (req, res) => {
       return res.status(409).json({ success: false, error: 'Username already taken.' });
     }
 
-    const resolvedDepartmentName = await resolveDepartmentForUserCreate(companyId, department);
+    try {
+      assertServiceRoleClient();
+    } catch (roleErr) {
+      traceCreateUser('service_role_check_failed', {
+        code: roleErr.code,
+        message: roleErr.message,
+      });
+      return res.status(roleErr.statusCode || 503).json({
+        success: false,
+        error: roleErr.message,
+        code: roleErr.code || 'SERVICE_ROLE_KEY_MISCONFIGURED',
+      });
+    }
+
+    traceCreateUser('start', {
+      username,
+      role,
+      companyId,
+      isServiceRole,
+      departmentInput: department != null ? String(department).slice(0, 80) : '',
+    });
+
+    let resolvedDepartmentName = '';
+    try {
+      resolvedDepartmentName = await resolveDepartmentForUserCreate(companyId, department);
+      traceCreateUser('department_ensured', {
+        companyId,
+        resolvedDepartmentName,
+        hadInput: Boolean(department && String(department).trim()),
+      });
+    } catch (deptErr) {
+      traceCreateUser('department_ensure_failed', {
+        message: deptErr.message,
+        code: deptErr.code,
+        details: deptErr.details,
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to resolve department',
+        message: deptErr.message,
+        code: deptErr.code,
+      });
+    }
+
     const normalizedPosition = position ? normalizePosition(position) : '';
 
+    traceCreateUser('auth_create_start', { email: canonicalEmail, username, role });
     const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
       email: canonicalEmail,
       password: password,
@@ -469,7 +524,11 @@ router.post('/users', async (req, res) => {
         });
       }
 
-      console.error('Create user auth error:', authError);
+      traceCreateUser('auth_create_failed', {
+        message: authError.message,
+        status: authError.status,
+        code: authError.code,
+      });
       return res.status(500).json({
         success: false,
         error: 'Failed to create user',
@@ -477,38 +536,77 @@ router.post('/users', async (req, res) => {
       });
     }
 
+    traceCreateUser('auth_created', { uid: authUser.user.id });
+
+    const usersInsertPayload = {
+      uid: authUser.user.id,
+      username: username,
+      email: canonicalEmail,
+      name: name || username,
+      role: role,
+      company_id: companyId,
+      department: resolvedDepartmentName || '',
+      position: normalizedPosition || '',
+      work_mode: workMode || 'in_office',
+      hire_date: hireDate || new Date().toISOString().split('T')[0],
+      is_active: true,
+    };
+
+    traceCreateUser('users_insert_start', { payload: usersInsertPayload });
+
     const { data: userData, error: dbError } = await supabase
       .from('users')
-      .insert({
-        uid: authUser.user.id,
-        username: username,
-        email: canonicalEmail,
-        name: name || username,
-        role: role,
-        company_id: companyId,
-        department: resolvedDepartmentName || '',
-        position: normalizedPosition || '',
-        work_mode: workMode || 'in_office',
-        hire_date: hireDate || new Date().toISOString().split('T')[0],
-        is_active: true,
-      })
+      .insert(usersInsertPayload)
       .select()
       .single();
 
     if (dbError) {
+      traceCreateUser('users_insert_failed', {
+        code: dbError.code,
+        message: dbError.message,
+        details: dbError.details,
+        hint: dbError.hint,
+        payload: usersInsertPayload,
+        likelyRls:
+          dbError.code === '42501' ||
+          (dbError.message && /row-level security/i.test(dbError.message)),
+        likelyTrigger:
+          dbError.message &&
+          (/sync_user_department_fields/i.test(dbError.message) ||
+            /normalized_name/i.test(dbError.message) ||
+            /department_id/i.test(dbError.message)),
+      });
+
+      traceCreateUser('rollback_auth_user', { uid: authUser.user.id });
       await supabase.auth.admin.deleteUser(authUser.user.id);
 
-      console.error('Create user database error:', dbError);
+      const clientMessage =
+        dbError.code === '42501' || /row-level security/i.test(dbError.message || '')
+          ? 'User profile insert blocked by RLS — auth-service must use the service_role key.'
+          : dbError.message;
+
       return res.status(500).json({
         success: false,
         error: 'Failed to create user profile',
-        message: dbError.message,
+        message: clientMessage,
+        code: dbError.code,
+        details: dbError.details,
+        hint: dbError.hint,
+        build: CREATE_USER_BUILD,
       });
     }
 
+    traceCreateUser('users_insert_ok', {
+      uid: userData.uid,
+      department: userData.department,
+      company_id: userData.company_id,
+    });
+
     const metaSync = await syncAuthMetadataForUid(supabase, authUser.user.id);
     if (!metaSync.ok) {
-      console.error(`[${timestamp}] Auth Service: JWT metadata sync failed after create:`, metaSync.error);
+      traceCreateUser('metadata_sync_failed', { error: metaSync.error, uid: authUser.user.id });
+    } else {
+      traceCreateUser('metadata_sync_ok', { uid: authUser.user.id });
     }
 
     console.log(`[${timestamp}] Auth Service: ✓ User created:`, username, 'company:', companyId, 'role:', role);

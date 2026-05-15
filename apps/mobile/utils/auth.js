@@ -486,9 +486,11 @@ export const addUserToFile = async (userData) => {
       return { success: true, uid: data.user?.uid };
     }
 
+    const detail = [data.message, data.code, data.details].filter(Boolean).join(' — ');
     return {
       success: false,
-      error: data.error || data.message || 'Failed to create user',
+      error: data.error || 'Failed to create user',
+      message: detail || data.message,
     };
   } catch (error) {
     console.error('Error adding user:', error);

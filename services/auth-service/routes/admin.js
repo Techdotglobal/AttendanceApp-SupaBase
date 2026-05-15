@@ -1,6 +1,7 @@
 const express = require('express');
 const { supabase } = require('../config/supabase');
 const { getTenantCompanyId, fetchCompanyUserUids } = require('../lib/tenantScope');
+const { normalizeDepartmentName, toLookupKey } = require('../lib/orgNormalize');
 
 const router = express.Router();
 
@@ -8,17 +9,6 @@ const ROLES = {
   SUPER_ADMIN: 'super_admin',
   MANAGER: 'manager',
   EMPLOYEE: 'employee',
-};
-
-const normalizeDepartmentName = (value) => {
-  if (!value || typeof value !== 'string') return null;
-  const compact = value.replace(/\s+/g, ' ').trim();
-  if (!compact) return null;
-  return compact
-    .toLowerCase()
-    .split(' ')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
 };
 
 const getRequesterDepartment = async (requester, companyId) => {
@@ -277,9 +267,14 @@ router.post('/departments', async (req, res) => {
     const { name } = req.body;
     const normalizedName = normalizeDepartmentName(name);
     if (!normalizedName) return res.status(400).json({ success: false, error: 'Department name is required' });
+    const lookupKey = toLookupKey(normalizedName);
     const { data, error } = await supabase
       .from('departments')
-      .insert({ name: normalizedName, company_id: companyId })
+      .insert({
+        name: normalizedName,
+        normalized_name: lookupKey,
+        company_id: companyId,
+      })
       .select()
       .single();
     if (error) throw error;
@@ -312,7 +307,7 @@ router.patch('/departments/:id', async (req, res) => {
     const oldName = currentDept.name;
     const { error: deptUpdateError } = await supabase
       .from('departments')
-      .update({ name: normalizedName })
+      .update({ name: normalizedName, normalized_name: toLookupKey(normalizedName) })
       .eq('id', id)
       .eq('company_id', companyId);
     if (deptUpdateError) throw deptUpdateError;

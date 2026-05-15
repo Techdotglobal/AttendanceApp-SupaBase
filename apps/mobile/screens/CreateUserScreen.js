@@ -17,6 +17,10 @@ import { useAuth } from '../core/contexts/AuthContext';
 import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp } from '../utils/responsive';
 import Logo from '../components/Logo';
 import Trademark from '../components/Trademark';
+import DepartmentPositionFields, {
+  normalizeDepartmentDisplay,
+  normalizePositionDisplay,
+} from '../components/DepartmentPositionFields';
 
 const ROLES = [
   { value: 'employee', label: 'Employee' },
@@ -105,8 +109,8 @@ export default function CreateUserScreen({ navigation }) {
         name: formData.name.trim(),
         email: formData.email.trim(),
         role: formData.role,
-        department: formData.department.trim(),
-        position: formData.position.trim(),
+        department: normalizeDepartmentDisplay(formData.department),
+        position: normalizePositionDisplay(formData.position),
         workMode: formData.workMode,
         hireDate: formData.hireDate,
         requester: user,
@@ -311,41 +315,14 @@ export default function CreateUserScreen({ navigation }) {
             </View>
           </View>
 
-          {/* Department */}
-          <View style={{ marginBottom: spacing.md }}>
-            <Text className="font-medium" style={{ color: colors.text, fontSize: responsiveFont(14), marginBottom: spacing.xs }}>
-              Department
-            </Text>
-            <View className="flex-row items-center rounded-xl" style={{ backgroundColor: colors.borderLight, paddingHorizontal: responsivePadding(16), paddingVertical: spacing.md }}>
-              <Ionicons name="business-outline" size={iconSize.md} color={colors.textSecondary} />
-              <TextInput
-                className="flex-1"
-                placeholder="Enter department"
-                value={formData.department}
-                onChangeText={(value) => handleInputChange('department', value)}
-                style={{ color: colors.text, fontSize: responsiveFont(14), marginLeft: spacing.md }}
-                placeholderTextColor={colors.textTertiary}
-              />
-            </View>
-          </View>
-
-          {/* Position */}
-          <View style={{ marginBottom: spacing.md }}>
-            <Text className="font-medium" style={{ color: colors.text, fontSize: responsiveFont(14), marginBottom: spacing.xs }}>
-              Position
-            </Text>
-            <View className="flex-row items-center rounded-xl" style={{ backgroundColor: colors.borderLight, paddingHorizontal: responsivePadding(16), paddingVertical: spacing.md }}>
-              <Ionicons name="briefcase-outline" size={iconSize.md} color={colors.textSecondary} />
-              <TextInput
-                className="flex-1"
-                placeholder="Enter position"
-                value={formData.position}
-                onChangeText={(value) => handleInputChange('position', value)}
-                style={{ color: colors.text, fontSize: responsiveFont(14), marginLeft: spacing.md }}
-                placeholderTextColor={colors.textTertiary}
-              />
-            </View>
-          </View>
+          <DepartmentPositionFields
+            requester={user}
+            department={formData.department}
+            position={formData.position}
+            onDepartmentChange={(value) => handleInputChange('department', value)}
+            onPositionChange={(value) => handleInputChange('position', value)}
+            colors={colors}
+          />
 
           {/* Work Mode */}
           <View style={{ marginBottom: spacing.md }}>

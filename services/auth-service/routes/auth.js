@@ -7,6 +7,11 @@ const {
   parseLoginIdentifier,
   usernameEqVariants,
 } = require('../lib/loginNormalize');
+const { normalizePosition } = require('../lib/orgNormalize');
+const {
+  listDepartmentsForCompany,
+  ensureDepartmentForCompany,
+} = require('../lib/departmentService');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PRIVILEGED_ROLES = new Set(['super_admin', 'manager']);
@@ -50,20 +55,19 @@ async function resolveRequesterCompanyId(requester) {
 }
 
 /**
- * Look up department_id within the requester's tenant for a given name.
- * Returns null if not found or the input is empty.
+ * Resolve department for employee creation: find or create within tenant.
+ * @returns {Promise<{ departmentId: string|null, departmentName: string }>}
  */
-async function resolveDepartmentIdByName(companyId, departmentName) {
-  if (!departmentName || !companyId) return null;
-  const trimmed = String(departmentName).trim();
-  if (!trimmed) return null;
-  const { data } = await supabase
-    .from('departments')
-    .select('id')
-    .eq('company_id', companyId)
-    .eq('name', trimmed)
-    .maybeSingle();
-  return data?.id ?? null;
+async function resolveDepartmentForUserCreate(companyId, departmentName) {
+  const trimmed = departmentName != null ? String(departmentName).trim() : '';
+  if (!trimmed || !companyId) {
+    return { departmentId: null, departmentName: '' };
+  }
+  const ensured = await ensureDepartmentForCompany(companyId, trimmed);
+  if (!ensured) {
+    return { departmentId: null, departmentName: '' };
+  }
+  return { departmentId: ensured.id, departmentName: ensured.name };
 }
 
 /**
@@ -433,14 +437,9 @@ router.post('/users', async (req, res) => {
       return res.status(409).json({ success: false, error: 'Username already taken.' });
     }
 
-    // Resolve department_id within the caller's tenant (if name provided).
-    const departmentId = await resolveDepartmentIdByName(companyId, department);
-    if (department && !departmentId) {
-      return res.status(400).json({
-        success: false,
-        error: `Department "${department}" does not exist in your tenant. Create it first.`,
-      });
-    }
+    const { departmentId, departmentName: resolvedDepartmentName } =
+      await resolveDepartmentForUserCreate(companyId, department);
+    const normalizedPosition = position ? normalizePosition(position) : '';
 
     const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
       email: canonicalEmail,
@@ -489,8 +488,8 @@ router.post('/users', async (req, res) => {
         role: role,
         company_id: companyId,
         department_id: departmentId,
-        department: department || '',
-        position: position || '',
+        department: resolvedDepartmentName || '',
+        position: normalizedPosition || '',
         work_mode: workMode || 'in_office',
         hire_date: hireDate || new Date().toISOString().split('T')[0],
         is_active: true,
@@ -925,6 +924,105 @@ router.patch('/users/:username', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Internal server error',
+    });
+  }
+});
+
+/**
+ * GET /api/auth/departments
+ * Tenant-scoped department list for employee creation UI.
+ */
+router.get('/departments', async (req, res) => {
+  const requester = parseRequester(req);
+  if (!requester || !requester.role) {
+    return res.status(401).json({
+      success: false,
+      error: 'Missing requester identity (X-User-Context).',
+    });
+  }
+  if (!PRIVILEGED_ROLES.has(String(requester.role))) {
+    return res.status(403).json({
+      success: false,
+      error: 'Only super admins or managers can list departments.',
+    });
+  }
+  const companyId = await resolveRequesterCompanyId(requester);
+  if (!companyId) {
+    return res.status(403).json({
+      success: false,
+      error: 'Caller is not bound to a tenant (company_id missing).',
+    });
+  }
+  try {
+    let departments = await listDepartmentsForCompany(companyId);
+    if (requester.role === 'manager' && requester.department) {
+      const mgrDept = String(requester.department).trim().toLowerCase();
+      departments = departments.filter(
+        (d) => String(d.name).trim().toLowerCase() === mgrDept
+      );
+    }
+    return res.status(200).json({ success: true, data: departments });
+  } catch (error) {
+    console.error('List departments error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to list departments',
+    });
+  }
+});
+
+/**
+ * GET /api/auth/position-suggestions
+ * Distinct normalized positions already used in this tenant (for autocomplete).
+ */
+router.get('/position-suggestions', async (req, res) => {
+  const requester = parseRequester(req);
+  if (!requester || !requester.role) {
+    return res.status(401).json({
+      success: false,
+      error: 'Missing requester identity (X-User-Context).',
+    });
+  }
+  if (!PRIVILEGED_ROLES.has(String(requester.role))) {
+    return res.status(403).json({
+      success: false,
+      error: 'Only super admins or managers can list position suggestions.',
+    });
+  }
+  const companyId = await resolveRequesterCompanyId(requester);
+  if (!companyId) {
+    return res.status(403).json({
+      success: false,
+      error: 'Caller is not bound to a tenant (company_id missing).',
+    });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('position')
+      .eq('company_id', companyId)
+      .not('position', 'is', null);
+
+    if (error) throw error;
+
+    const seen = new Set();
+    const suggestions = [];
+    for (const row of data || []) {
+      const normalized = normalizePosition(row.position);
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      suggestions.push(normalized);
+    }
+    suggestions.sort((a, b) => a.localeCompare(b));
+
+    return res.status(200).json({ success: true, data: suggestions });
+  } catch (error) {
+    console.error('Position suggestions error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to load position suggestions',
     });
   }
 });

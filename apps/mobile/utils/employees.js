@@ -922,14 +922,16 @@ export const createEmployee = async (employeeData) => {
       return { success: false, error: 'Username already exists in system' };
     }
 
+    const { normalizeDepartmentDisplay, normalizePositionDisplay } = await import('./orgNormalize');
+
     const addUserResult = await addUserToFile({
       username,
       password,
       email,
       name,
       role,
-      department,
-      position,
+      department: normalizeDepartmentDisplay(department),
+      position: normalizePositionDisplay(position),
       workMode,
       hireDate,
       requester,

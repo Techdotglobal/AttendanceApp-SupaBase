@@ -149,6 +149,47 @@ router.post('/sync-metadata', async (req, res) => {
   }
 });
 
+const forwardWithUserContext = async (req, res, method, path) => {
+  const timestamp = new Date().toISOString();
+  try {
+    const response = await axios({
+      method,
+      url: `${AUTH_SERVICE_URL}${path}`,
+      data: req.body,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
+      },
+      timeout: 10000,
+      params: req.query,
+    });
+    console.log(`[${timestamp}] API Gateway: ${method.toUpperCase()} ${path} -> ${response.status}`);
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    console.error(`[${timestamp}] API Gateway - ${method} ${path} error:`, error.message);
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else if (error.request) {
+      res.status(503).json({
+        success: false,
+        error: 'Auth service unavailable',
+        message: 'Unable to connect to authentication service',
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: error.message,
+      });
+    }
+  }
+};
+
+router.get('/departments', (req, res) => forwardWithUserContext(req, res, 'get', '/api/auth/departments'));
+router.get('/position-suggestions', (req, res) =>
+  forwardWithUserContext(req, res, 'get', '/api/auth/position-suggestions')
+);
+
 /**
  * Forward username check request to auth-service
  * GET /api/auth/check-username/:username

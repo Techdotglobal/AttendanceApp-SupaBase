@@ -128,7 +128,10 @@ export default function CreateUserScreen({ navigation }) {
           ]
         );
       } else {
-        Alert.alert('Error', result.error || 'Failed to create user');
+        Alert.alert(
+          'Error',
+          result.message || result.error || 'Failed to create user'
+        );
       }
     } catch (error) {
       console.error('Create user error:', error);

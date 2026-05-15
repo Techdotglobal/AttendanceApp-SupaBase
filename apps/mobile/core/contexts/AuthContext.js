@@ -56,7 +56,12 @@ function resolveSessionFallbackUser(authUser, lastGood) {
       username,
       role,
       companyId,
-      departmentId: meta.department_id != null ? String(meta.department_id) : null,
+      departmentId:
+        typeof meta.department === 'string' && meta.department.trim()
+          ? meta.department.trim()
+          : meta.department_id != null
+            ? String(meta.department_id)
+            : null,
       name: meta.name || username,
       department: typeof meta.department === 'string' ? meta.department : '',
       position: typeof meta.position === 'string' ? meta.position : '',
@@ -441,7 +446,7 @@ export function AuthProvider({ children }) {
             db: {
               company_id: userData.company_id,
               role: userData.role,
-              department_id: userData.department_id,
+              department: userData.department,
             },
           });
         }
@@ -482,7 +487,7 @@ export function AuthProvider({ children }) {
         username: userData.username || authUser?.email?.split('@')[0],
         role: dbRole,
         companyId: companyIdStr,
-        departmentId: userData.department_id != null ? String(userData.department_id) : null,
+        departmentId: userData.department ? String(userData.department).trim() : null,
         name: userData.name || authUser?.user_metadata?.name,
         department: userData.department || '',
         position: userData.position || '',

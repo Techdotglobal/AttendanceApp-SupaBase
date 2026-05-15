@@ -1,7 +1,7 @@
 /**
  * Multi-tenant JWT user_metadata (Supabase Auth).
  *
- * Tenant fields (company_id, role, department_id) are written only from trusted
+ * Tenant fields (company_id, role, department) are written only from trusted
  * server code using the service role, after reading public.users — not from
  * arbitrary client payloads — so RLS can safely align claims with the database.
  */
@@ -17,7 +17,7 @@ function buildUserMetadataFromUserRow(row) {
     name: row.name != null ? String(row.name) : row.username != null ? String(row.username) : null,
     company_id: row.company_id != null ? String(row.company_id) : null,
     role: row.role != null ? String(row.role) : null,
-    department_id: row.department_id != null ? String(row.department_id) : null,
+    department: row.department != null ? String(row.department) : null,
   };
 }
 
@@ -41,10 +41,14 @@ function mergeTenantUserMetadata(existing, row) {
 function tenantMetadataMatchesRow(meta, row) {
   if (!row) return false;
   const expected = buildUserMetadataFromUserRow(row);
-  const keys = ['company_id', 'role', 'department_id'];
-  for (const k of keys) {
-    const a = meta?.[k] != null ? String(meta[k]) : null;
-    const b = expected[k] != null ? String(expected[k]) : null;
+  const pairs = [
+    ['company_id', 'company_id'],
+    ['role', 'role'],
+    ['department', 'department'],
+  ];
+  for (const [metaKey, rowKey] of pairs) {
+    const a = meta?.[metaKey] != null ? String(meta[metaKey]).trim() : '';
+    const b = row[rowKey] != null ? String(row[rowKey]).trim() : '';
     if (a !== b) return false;
   }
   return true;

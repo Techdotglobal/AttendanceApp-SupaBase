@@ -39,7 +39,7 @@ export const useAuthStore = create((set) => ({
               department: data.department,
               companyId: data.company_id != null ? String(data.company_id) : null,
               company_id: data.company_id != null ? String(data.company_id) : null,
-              departmentId: data.department_id != null ? String(data.department_id) : null,
+              departmentId: data.department ? String(data.department).trim() : null,
             }
           : null,
       });
@@ -71,9 +71,9 @@ export const useAuthStore = create((set) => ({
         department: data.user.department,
         companyId: data.user.company_id != null ? String(data.user.company_id) : null,
         company_id: data.user.company_id != null ? String(data.user.company_id) : null,
-        departmentId: data.user.department_id != null ? String(data.user.department_id) : null,
+        departmentId: data.user.department ? String(data.user.department).trim() : null,
       };
-      if (session && shouldSyncTenantMetadata(session, { ...profile, company_id: profile.companyId, department_id: profile.departmentId, role: profile.role })) {
+      if (session && shouldSyncTenantMetadata(session, { ...profile, company_id: profile.companyId, department: profile.department, role: profile.role })) {
         const syncRes = await syncTenantMetadataViaGateway();
         if (!syncRes.success) {
           console.warn('[authStore] login tenant sync:', syncRes.error);
@@ -154,14 +154,14 @@ export const useAuthStore = create((set) => ({
                 department: profile.department,
                 companyId: profile.company_id != null ? String(profile.company_id) : null,
                 company_id: profile.company_id != null ? String(profile.company_id) : null,
-                departmentId: profile.department_id != null ? String(profile.department_id) : null,
+                departmentId: profile.department ? String(profile.department).trim() : null,
               }
             : null;
 
           if (normalizedUser && authData?.session) {
             const row = {
               company_id: normalizedUser.companyId,
-              department_id: normalizedUser.departmentId,
+              department: normalizedUser.department,
               role: normalizedUser.role,
             };
             if (shouldSyncTenantMetadata(authData.session, row)) {

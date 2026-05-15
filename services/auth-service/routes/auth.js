@@ -55,19 +55,20 @@ async function resolveRequesterCompanyId(requester) {
 }
 
 /**
- * Resolve department for employee creation: find or create within tenant.
- * @returns {Promise<{ departmentId: string|null, departmentName: string }>}
+ * Ensure tenant department catalog row exists; return display name for users.department (TEXT).
+ * Does not write users.department_id — schema uses department TEXT only for now.
+ * @returns {Promise<string>} normalized department display name or ''
  */
 async function resolveDepartmentForUserCreate(companyId, departmentName) {
   const trimmed = departmentName != null ? String(departmentName).trim() : '';
   if (!trimmed || !companyId) {
-    return { departmentId: null, departmentName: '' };
+    return '';
   }
   const ensured = await ensureDepartmentForCompany(companyId, trimmed);
   if (!ensured) {
-    return { departmentId: null, departmentName: '' };
+    return '';
   }
-  return { departmentId: ensured.id, departmentName: ensured.name };
+  return ensured.name;
 }
 
 /**
@@ -221,7 +222,6 @@ router.post('/login', async (req, res) => {
           position: userData.position || '',
           workMode: userData.work_mode || 'in_office',
           company_id: userData.company_id != null ? String(userData.company_id) : null,
-          department_id: userData.department_id != null ? String(userData.department_id) : null,
         },
       });
     } catch (authError) {
@@ -437,8 +437,7 @@ router.post('/users', async (req, res) => {
       return res.status(409).json({ success: false, error: 'Username already taken.' });
     }
 
-    const { departmentId, departmentName: resolvedDepartmentName } =
-      await resolveDepartmentForUserCreate(companyId, department);
+    const resolvedDepartmentName = await resolveDepartmentForUserCreate(companyId, department);
     const normalizedPosition = position ? normalizePosition(position) : '';
 
     const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
@@ -450,7 +449,7 @@ router.post('/users', async (req, res) => {
         name: name || username,
         company_id: companyId,
         role,
-        department_id: departmentId,
+        department: resolvedDepartmentName || '',
       },
     });
 
@@ -487,7 +486,6 @@ router.post('/users', async (req, res) => {
         name: name || username,
         role: role,
         company_id: companyId,
-        department_id: departmentId,
         department: resolvedDepartmentName || '',
         position: normalizedPosition || '',
         work_mode: workMode || 'in_office',
@@ -524,10 +522,9 @@ router.post('/users', async (req, res) => {
         role: role,
         name: name || username,
         department: userData.department || '',
-        position: position || '',
+        position: normalizedPosition || userData.position || '',
         workMode: workMode || 'in_office',
         company_id: userData.company_id != null ? String(userData.company_id) : String(companyId),
-        department_id: userData.department_id != null ? String(userData.department_id) : null,
       },
     });
   } catch (error) {

@@ -1,5 +1,5 @@
 /**
- * Refresh Supabase Auth user_metadata (company_id, role, department_id) from
+ * Refresh Supabase Auth user_metadata (company_id, role, department) from
  * public.users for every profile. Run once after DB maintenance that changes
  * company_id (e.g. merge_duplicate_companies migration).
  *

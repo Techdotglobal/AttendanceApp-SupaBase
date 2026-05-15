@@ -29,10 +29,8 @@ const WORK_MODE_OPTIONS = [
   { value: WORK_MODES.FULLY_REMOTE, label: 'Fully Remote' },
 ];
 
-export default function CreateUserScreen({ navigation, route }) {
-  const { user: routeUser } = route.params || {};
-  const { user: authUser } = useAuth();
-  const user = authUser || routeUser || {};
+export default function CreateUserScreen({ navigation }) {
+  const { user } = useAuth();
   const { colors } = useTheme();
   const [formData, setFormData] = useState({
     username: '',
@@ -96,6 +94,11 @@ export default function CreateUserScreen({ navigation, route }) {
 
     setIsLoading(true);
     try {
+      if (!user?.uid || !user?.role) {
+        Alert.alert('Error', 'Your session is not ready. Please wait a moment and try again.');
+        return;
+      }
+
       const result = await createEmployee({
         username: formData.username.trim(),
         password: formData.password,
@@ -106,7 +109,7 @@ export default function CreateUserScreen({ navigation, route }) {
         position: formData.position.trim(),
         workMode: formData.workMode,
         hireDate: formData.hireDate,
-        companyId: user?.companyId ?? null,
+        requester: user,
       });
 
       if (result.success) {

@@ -901,6 +901,7 @@ export const createEmployee = async (employeeData) => {
       hireDate = new Date().toISOString().split('T')[0],
       companyId,
       company_id,
+      requester,
     } = employeeData;
 
     // Validate required fields
@@ -908,8 +909,7 @@ export const createEmployee = async (employeeData) => {
       return { success: false, error: 'Username, password, name, and email are required' };
     }
 
-    // Check if username already exists
-    const tenantId = companyId ?? company_id;
+    const tenantId = companyId ?? company_id ?? requester?.companyId ?? requester?.company_id;
     const existingEmployee = await getEmployeeByUsername(username, tenantId);
     if (existingEmployee) {
       return { success: false, error: 'Username already exists' };
@@ -932,7 +932,7 @@ export const createEmployee = async (employeeData) => {
       position,
       workMode,
       hireDate,
-      companyId: companyId ?? company_id,
+      requester,
     });
 
     if (!addUserResult.success) {

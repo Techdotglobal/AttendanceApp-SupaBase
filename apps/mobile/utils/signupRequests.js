@@ -242,15 +242,14 @@ export const approveSignupRequest = async (requestId, approvedBy) => {
 
     const { data: approverRow } = await supabase
       .from('users')
-      .select('company_id')
+      .select('uid, username, role, company_id, department')
       .eq('username', approvedBy)
       .maybeSingle();
 
-    const companyId = approverRow?.company_id;
-    if (!companyId) {
+    if (!approverRow?.uid || !approverRow?.role || !approverRow?.company_id) {
       return {
         success: false,
-        error: 'Approver has no company_id; cannot assign tenant for approved signup.',
+        error: 'Approver profile is incomplete; cannot create user for this tenant.',
       };
     }
 
@@ -266,7 +265,13 @@ export const approveSignupRequest = async (requestId, approvedBy) => {
       position: request.position || '',
       workMode: request.workMode || 'in_office',
       hireDate: request.hireDate || new Date().toISOString().split('T')[0],
-      companyId,
+      requester: {
+        uid: approverRow.uid,
+        username: approverRow.username,
+        role: approverRow.role,
+        companyId: approverRow.company_id,
+        department: approverRow.department,
+      },
     });
     
     if (!addResult.success) {

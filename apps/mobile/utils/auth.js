@@ -1,5 +1,10 @@
 // Supabase Authentication
 import { API_GATEWAY_URL, API_TIMEOUT } from '../core/config/api';
+import {
+  buildGatewayAuthHeaders,
+  resolveCurrentRequester,
+  toRequesterContext,
+} from '../core/api/gatewayRequest';
 import { supabase } from '../core/config/supabase';
 import {
   normalizeEmailForAuth,
@@ -427,24 +432,23 @@ export const addUserToFile = async (userData) => {
       position = '',
       workMode = 'in_office',
       hireDate = new Date().toISOString().split('T')[0],
-      companyId: companyIdInput,
-      company_id: company_id_snake,
+      requester: requesterInput,
     } = userData;
 
-    const companyId = companyIdInput ?? company_id_snake;
-    if (!companyId) {
-      return {
-        success: false,
-        error: 'company_id is required for this tenant (no default company fallback)',
-      };
-    }
-    
     if (!username || !password || !role) {
       return { success: false, error: 'Username, password, and role are required' };
     }
     
     if (!email) {
       return { success: false, error: 'Email is required' };
+    }
+
+    const requester = toRequesterContext(requesterInput) || (await resolveCurrentRequester());
+    if (!requester) {
+      return {
+        success: false,
+        error: 'You must be signed in as a super admin or manager to create users.',
+      };
     }
     
     // Check if username already exists
@@ -453,103 +457,39 @@ export const addUserToFile = async (userData) => {
       return { success: false, error: 'Username already exists' };
     }
     
-    // Create user via API Gateway (recommended)
+    const gatewayUrl = typeof API_GATEWAY_URL === 'string' ? API_GATEWAY_URL : String(API_GATEWAY_URL || 'http://localhost:3000');
+    const response = await fetch(`${gatewayUrl}/api/auth/users`, {
+      method: 'POST',
+      headers: buildGatewayAuthHeaders(requester),
+      body: JSON.stringify({
+        username,
+        password,
+        email,
+        name,
+        role,
+        department,
+        position,
+        workMode,
+        hireDate,
+      }),
+    });
+    
+    let data = {};
     try {
-      const gatewayUrl = typeof API_GATEWAY_URL === 'string' ? API_GATEWAY_URL : String(API_GATEWAY_URL || 'http://localhost:3000');
-      const response = await fetch(`${gatewayUrl}/api/auth/users`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          username,
-          password,
-          email,
-          name,
-          role,
-          department,
-          position,
-          workMode,
-          hireDate,
-          company_id: companyId,
-        }),
-      });
-      
-      const data = await response.json();
-      
-      if (response.ok && data.success) {
-        console.log('✓ User created via API Gateway:', username, `(${role}, ${department || 'No dept'})`);
-        return { success: true, uid: data.user?.uid };
-      } else {
-        return { success: false, error: data.error || 'Failed to create user' };
-      }
-    } catch (apiError) {
-      console.log('API Gateway create failed, using Supabase directly');
-      
-      // Fallback: Create user directly in Supabase
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: email,
-        password: password,
-        options: {
-          data: {
-            username: username,
-            name: name || username,
-            company_id: String(companyId),
-            role,
-            department_id: null,
-          },
-        },
-      });
-      
-      if (authError || !authData.user) {
-        let errorMessage = 'Failed to create user';
-        if (authError?.message?.includes('already registered')) {
-          errorMessage = 'Email already exists';
-        } else if (authError?.message?.includes('Invalid email')) {
-          errorMessage = 'Invalid email address';
-        }
-        return { success: false, error: errorMessage };
-      }
-      
-      // Create user document in Supabase database
-      const { error: dbError } = await supabase
-        .from('users')
-        .insert({
-          uid: authData.user.id,
-          username: username,
-          email: email,
-          name: name || username,
-          role: role,
-          company_id: companyId,
-          department: department || '',
-          position: position || '',
-          work_mode: workMode || 'in_office',
-          hire_date: hireDate || new Date().toISOString().split('T')[0],
-          is_active: true,
-        });
-      
-      if (dbError) {
-        // Try to delete the auth user if database insert fails
-        await supabase.auth.admin.deleteUser(authData.user.id).catch(() => {});
-        return { success: false, error: 'Failed to create user profile' };
-      }
-
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user?.id === authData.user.id) {
-          const { syncTenantMetadataViaGateway } = await import('../core/auth/syncTenantMetadata');
-          const syncRes = await syncTenantMetadataViaGateway();
-          if (!syncRes.success) {
-            console.warn('[AUTH] Post-signup tenant metadata sync:', syncRes.error);
-          }
-        }
-      } catch (syncErr) {
-        console.warn('[AUTH] Post-signup sync skipped:', syncErr?.message || syncErr);
-      }
-      
-      console.log('✓ User created in Supabase:', username, `(${role}, ${department || 'No dept'})`);
-      return { success: true, uid: authData.user.id };
+      data = await response.json();
+    } catch {
+      data = {};
     }
+    
+    if (response.ok && data.success) {
+      console.log('✓ User created via API Gateway:', username, `(${role}, ${department || 'No dept'})`);
+      return { success: true, uid: data.user?.uid };
+    }
+
+    return {
+      success: false,
+      error: data.error || data.message || 'Failed to create user',
+    };
   } catch (error) {
     console.error('Error adding user:', error);
     return { success: false, error: error.message || 'Failed to add user' };
@@ -564,14 +504,16 @@ export const addUserToFile = async (userData) => {
  */
 export const updateUserRole = async (username, newRole) => {
   try {
+    const requester = await resolveCurrentRequester();
+    if (!requester) {
+      return { success: false, error: 'You must be signed in to update user roles.' };
+    }
     // Use API Gateway (recommended)
     try {
       const gatewayUrl = typeof API_GATEWAY_URL === 'string' ? API_GATEWAY_URL : String(API_GATEWAY_URL || 'http://localhost:3000');
       const response = await fetch(`${gatewayUrl}/api/auth/users/${username}/role`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: buildGatewayAuthHeaders(requester),
         body: JSON.stringify({ role: newRole }),
       });
       
@@ -618,6 +560,10 @@ export const updateUserRole = async (username, newRole) => {
  */
 export const updateUserInfo = async (username, updates) => {
   try {
+    const requester = await resolveCurrentRequester();
+    if (!requester) {
+      return { success: false, error: 'You must be signed in to update user information.' };
+    }
     // Convert camelCase to snake_case for database
     const dbUpdates = {};
     if (updates.workMode !== undefined) {
@@ -642,9 +588,7 @@ export const updateUserInfo = async (username, updates) => {
       const gatewayUrl = typeof API_GATEWAY_URL === 'string' ? API_GATEWAY_URL : String(API_GATEWAY_URL || 'http://localhost:3000');
       const response = await fetch(`${gatewayUrl}/api/auth/users/${username}`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: buildGatewayAuthHeaders(requester),
         body: JSON.stringify(updates), // API Gateway handles conversion
       });
       
@@ -692,7 +636,8 @@ export const deleteUserAccount = async (uid, requester) => {
     if (!uid) {
       return { success: false, error: 'User uid is required' };
     }
-    if (!requester || !requester.uid || !requester.role) {
+    const ctx = toRequesterContext(requester) || (await resolveCurrentRequester());
+    if (!ctx) {
       return { success: false, error: 'Requester context is required' };
     }
 
@@ -702,14 +647,12 @@ export const deleteUserAccount = async (uid, requester) => {
 
     const response = await fetch(`${gatewayUrl}/api/auth/users/${uid}`, {
       method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: buildGatewayAuthHeaders(ctx),
       body: JSON.stringify({
         requester: {
-          uid: requester.uid,
-          role: requester.role,
-          department: requester.department || '',
+          uid: ctx.uid,
+          role: ctx.role,
+          department: ctx.department || '',
         },
       }),
     });

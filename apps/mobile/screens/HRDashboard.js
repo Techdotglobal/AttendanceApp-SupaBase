@@ -27,7 +27,7 @@ import {
   getTicketById,
 } from '../utils/ticketManagement';
 import { getManageableEmployees, canManageEmployee } from '../utils/employees';
-import { generateAttendanceReport, generateLeaveReport } from '../utils/export';
+import { generateAttendanceReport, generateLeaveReport, shareCSVFile } from '../utils/export';
 import { ROUTES } from '../shared/constants/routes';
 import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTablet } from '../shared/utils/responsive';
 import { isHRAdmin } from '../shared/constants/roles';
@@ -271,11 +271,7 @@ export default function HRDashboard({ navigation, route }) {
       const result = await generateAttendanceReport(user?.companyId);
       
       if (result.success) {
-        Alert.alert(
-          'Report Generated',
-          `Attendance report has been saved:\n${result.fileName}\n\nLocation: ${result.fileUri}`,
-          [{ text: 'OK' }]
-        );
+        await shareCSVFile(result.fileUri, result.fileName);
       } else {
         Alert.alert('Error', result.error || 'Failed to generate attendance report');
       }
@@ -291,11 +287,7 @@ export default function HRDashboard({ navigation, route }) {
       const result = await generateLeaveReport(user?.companyId);
       
       if (result.success) {
-        Alert.alert(
-          'Report Generated',
-          `Leave report has been saved:\n${result.fileName}\n\nLocation: ${result.fileUri}`,
-          [{ text: 'OK' }]
-        );
+        await shareCSVFile(result.fileUri, result.fileName);
       } else {
         Alert.alert('Error', result.error || 'Failed to generate leave report');
       }

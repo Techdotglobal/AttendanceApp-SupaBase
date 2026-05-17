@@ -459,6 +459,20 @@ export const syncOfflineAttendanceQueue = async (companyId = null) => {
 };
 
 /**
+ * Get offline-queued attendance records for a specific user.
+ * Used by the dashboard to determine check-in/check-out state when Supabase was unreachable.
+ */
+export const getOfflineQueuedRecordsForUser = async (username) => {
+  try {
+    const raw = await AsyncStorage.getItem(ATTENDANCE_RECORDS_KEY);
+    const all = raw ? JSON.parse(raw) : [];
+    return all.filter((r) => r._recordStatus === 'queued_offline' && r.username === username);
+  } catch {
+    return [];
+  }
+};
+
+/**
  * Clear all attendance records (for testing/admin use)
  */
 export const clearAllAttendanceRecords = async () => {

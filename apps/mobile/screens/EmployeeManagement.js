@@ -345,9 +345,6 @@ export default function EmployeeManagement({
             )
           );
         }
-        
-        // Reload data from Supabase to get fresh state (ensures consistency)
-        await loadData();
       } else {
         Alert.alert('Error', result.error || 'Failed to update work mode');
       }

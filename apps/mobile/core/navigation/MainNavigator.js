@@ -57,6 +57,7 @@ export default function MainNavigator({ user }) {
       fontWeight: 'bold',
     },
     headerLeft: () => <HamburgerMenu navigation={navigation} />,
+    animationEnabled: false,
   });
 
   if (user.role === ROLES.EMPLOYEE) {

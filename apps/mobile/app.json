@@ -2,7 +2,7 @@
   "expo": {
     "name": "hadir.ai",
     "slug": "attendance-app",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -17,7 +17,7 @@
     ],
     "ios": {
       "bundleIdentifier": "com.techdotglobal.hadirai",
-      "buildNumber": "6",
+      "buildNumber": "7",
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We use your location to verify your attendance when you check in or check out.",

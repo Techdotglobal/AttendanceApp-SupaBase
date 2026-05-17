@@ -14,7 +14,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getAttendanceRecords, clearAllAttendanceRecords } from '../utils/storage';
-import { exportAttendanceToCSV } from '../utils/export';
+import { exportAttendanceToCSV, shareCSVFile } from '../utils/export';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import EmployeeManagement from './EmployeeManagement';
@@ -227,11 +227,7 @@ export default function AdminDashboard({ route }) {
       const result = await exportAttendanceToCSV(user?.companyId);
       
       if (result.success) {
-        Alert.alert(
-          'Export Successful',
-          `CSV file has been saved to: ${result.fileName}`,
-          [{ text: 'OK' }]
-        );
+        await shareCSVFile(result.fileUri, result.fileName);
       } else {
         Alert.alert('Export Failed', result.error || 'Failed to export data');
       }

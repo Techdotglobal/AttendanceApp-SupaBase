@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { getUserAttendanceRecords } from '../utils/storage';
+import { getUserAttendanceRecords, getOfflineQueuedRecordsForUser } from '../utils/storage';
 import { useAuth } from '../contexts/AuthContext';
 import { 
   getEmployeeByUsername, 
@@ -176,10 +176,13 @@ export default function EmployeeDashboard({ route }) {
 
   const loadLastRecord = async () => {
     try {
-      const records = await getUserAttendanceRecords(user.username);
-      if (records.length > 0) {
-        // Sort by timestamp and get the most recent
-        const sortedRecords = records.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      const [onlineRecords, offlineRecords] = await Promise.all([
+        getUserAttendanceRecords(user.username),
+        getOfflineQueuedRecordsForUser(user.username),
+      ]);
+      const all = [...onlineRecords, ...offlineRecords];
+      if (all.length > 0) {
+        const sortedRecords = all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
         setLastRecord(sortedRecords[0]);
       }
     } catch (error) {

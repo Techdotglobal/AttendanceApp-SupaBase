@@ -576,6 +576,7 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
     const requestData = {
       employee_id: employeeId,
       employee_uid: employeeUid,
+      company_id: tenantCid,
       leave_type: leaveType,
       start_date: startDate,
       end_date: endDate,

@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { Share } from 'react-native';
 import { supabase } from '../core/config/supabase';
 import { getAttendanceRecords } from './storage';
 import { getAllLeaveRequests, getAllEmployeesLeaveBalances } from './leaveManagement';
@@ -85,12 +86,13 @@ export const exportAttendanceToCSV = async (companyId = null) => {
  */
 export const shareCSVFile = async (fileUri, fileName) => {
   try {
-    // Note: expo-sharing is not included in the dependencies
-    // This is a placeholder for the sharing functionality
-    // In a real app, you would import and use expo-sharing
-    console.log('File ready for sharing:', fileUri);
+    const csvContent = await FileSystem.readAsStringAsync(fileUri);
+    await Share.share({ message: csvContent, title: fileName });
     return { success: true, fileUri, fileName };
   } catch (error) {
+    if (error.message === 'The user did not share') {
+      return { success: false, error: 'Share cancelled' };
+    }
     console.error('Error sharing file:', error);
     return { success: false, error: error.message };
   }

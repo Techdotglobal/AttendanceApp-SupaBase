@@ -530,10 +530,8 @@ export default function ThemeSettingsScreen({ navigation, route }) {
         transparent
         animationType="slide"
         onRequestClose={() => {
-          if (!isChangingPassword) {
-            resetPasswordForm();
-            setShowPasswordModal(false);
-          }
+          resetPasswordForm();
+          setShowPasswordModal(false);
         }}
       >
         <View
@@ -565,12 +563,9 @@ export default function ThemeSettingsScreen({ navigation, route }) {
                 </Text>
                 <TouchableOpacity
                   onPress={() => {
-                    if (!isChangingPassword) {
-                      resetPasswordForm();
-                      setShowPasswordModal(false);
-                    }
+                    resetPasswordForm();
+                    setShowPasswordModal(false);
                   }}
-                  disabled={isChangingPassword}
                 >
                   <Ionicons name="close" size={24} color={colors.textSecondary} />
                 </TouchableOpacity>
@@ -613,7 +608,6 @@ export default function ThemeSettingsScreen({ navigation, route }) {
                   <TouchableOpacity
                     onPress={() => setShowCurrentPassword(!showCurrentPassword)}
                     style={{ padding: 12 }}
-                    disabled={isChangingPassword}
                   >
                     <Ionicons
                       name={showCurrentPassword ? 'eye-off-outline' : 'eye-outline'}
@@ -670,7 +664,6 @@ export default function ThemeSettingsScreen({ navigation, route }) {
                   <TouchableOpacity
                     onPress={() => setShowNewPassword(!showNewPassword)}
                     style={{ padding: 12 }}
-                    disabled={isChangingPassword}
                   >
                     <Ionicons
                       name={showNewPassword ? 'eye-off-outline' : 'eye-outline'}
@@ -726,7 +719,6 @@ export default function ThemeSettingsScreen({ navigation, route }) {
                   <TouchableOpacity
                     onPress={() => setShowConfirmPassword(!showConfirmPassword)}
                     style={{ padding: 12 }}
-                    disabled={isChangingPassword}
                   >
                     <Ionicons
                       name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'}
@@ -753,12 +745,9 @@ export default function ThemeSettingsScreen({ navigation, route }) {
                     alignItems: 'center',
                   }}
                   onPress={() => {
-                    if (!isChangingPassword) {
-                      resetPasswordForm();
-                      setShowPasswordModal(false);
-                    }
+                    resetPasswordForm();
+                    setShowPasswordModal(false);
                   }}
-                  disabled={isChangingPassword}
                 >
                   <Text style={{ color: colors.text, fontWeight: '600', fontSize: 16 }}>
                     Cancel

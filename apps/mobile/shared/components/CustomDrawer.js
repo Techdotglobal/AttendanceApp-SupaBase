@@ -100,7 +100,7 @@ export default function CustomDrawer({ navigation, state }) {
     // Check if employee is inside office radius
     if (user && user.role === 'employee') {
       try {
-        const officeLocation = await getOfficeLocation();
+        const officeLocation = await getOfficeLocation(user);
         if (officeLocation) {
           const currentLocation = await getCurrentLocation();
           if (currentLocation && currentLocation.latitude && currentLocation.longitude) {
@@ -296,23 +296,14 @@ export default function CustomDrawer({ navigation, state }) {
       ...(user.role === 'manager' ? managerItems : []),
     ];
 
-    // Add GeoFencing for super_admin and HR (always visible, editable)
-    // Add GeoFencing for managers (always visible, read-only)
-    if (user.role === 'super_admin' || isHRAdmin(user)) {
+    // Geo-fencing: super admins (all departments) and managers (own department)
+    if (user.role === 'super_admin' || user.role === 'manager') {
       adminMenuItems.push({
         name: 'GeoFencing',
         icon: 'location-outline',
         screen: ROUTES.GEO_FENCING,
         roles: ['super_admin', 'manager'],
-        readOnly: false, // super_admin and HR can edit
-      });
-    } else if (user.role === 'manager') {
-      adminMenuItems.push({
-        name: 'GeoFencing',
-        icon: 'location-outline',
-        screen: ROUTES.GEO_FENCING,
-        roles: ['manager'],
-        readOnly: true, // Managers can only view
+        readOnly: false,
       });
     }
 

@@ -74,3 +74,16 @@ export const isHRAdmin = (user) => {
   return user.role === ROLES.MANAGER && String(user.department || '').toLowerCase() === 'hr';
 };
 
+/**
+ * Department geofence management (super admin: all; manager: own department).
+ * HR managers are managers — they use the same rules as other department managers.
+ */
+export const canManageGeofence = (user, departmentId = null) => {
+  if (!user) return false;
+  if (user.role === ROLES.SUPER_ADMIN) return true;
+  if (user.role !== ROLES.MANAGER) return false;
+  const targetId = departmentId || user.departmentId || user.department_id;
+  const userDeptId = user.departmentId || user.department_id;
+  return Boolean(targetId && userDeptId && String(targetId) === String(userDeptId));
+};
+

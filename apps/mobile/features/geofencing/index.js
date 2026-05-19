@@ -21,6 +21,12 @@ export {
   validateCheckInLocation,
 } from './services/geofenceService';
 
+export {
+  resolveUserDepartmentId,
+  canManageDepartmentGeofence,
+  listManageableDepartments,
+} from './services/departmentGeofenceAccess';
+
 // Location Monitoring
 export {
   startLocationMonitoring,

@@ -47,32 +47,36 @@ export const validateCheckoutLocation = async (user, location = null) => {
     }
 
     // Get office location
-    const officeLocation = await getOfficeLocation();
+    const officeLocation = await getOfficeLocation(user);
+    const deptLabel = officeLocation?.department_name || user.department || 'your department';
+
     if (!officeLocation) {
-      // No office location configured - allow checkout
-      console.warn('[CheckoutValidation] No office location configured, allowing checkout');
+      console.warn('[CheckoutValidation] No department geofence configured, allowing checkout');
       return { valid: true };
     }
 
-    // Check if user is within 1km radius
-    const isWithinRadius = isWithin1km(
+    const radiusM = officeLocation.radius_meters || 1000;
+    const distance = getDistanceInMeters(
       currentLocation.latitude,
       currentLocation.longitude,
       officeLocation.latitude,
       officeLocation.longitude
     );
 
-    if (!isWithinRadius) {
-      const distance = getDistanceInMeters(
-        currentLocation.latitude,
-        currentLocation.longitude,
-        officeLocation.latitude,
-        officeLocation.longitude
-      );
+    const within =
+      radiusM === 1000
+        ? isWithin1km(
+            currentLocation.latitude,
+            currentLocation.longitude,
+            officeLocation.latitude,
+            officeLocation.longitude
+          )
+        : distance <= radiusM;
 
+    if (!within) {
       return {
         valid: false,
-        error: `You must be within 1km of the office to check out. You are currently ${formatDistance(distance)} away from the office location.`,
+        error: `You must be within ${formatDistance(radiusM)} of the ${deptLabel} office to check out. You are currently ${formatDistance(distance)} away.`,
         distance,
       };
     }

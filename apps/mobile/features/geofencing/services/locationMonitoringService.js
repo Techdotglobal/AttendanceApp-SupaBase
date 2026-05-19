@@ -113,13 +113,23 @@ const isUserCheckedIn = async (username) => {
 const notifyManager = async (employee, distance) => {
   try {
     // Get employee's manager
-    const { data: managerData, error } = await supabase
+    let managerQuery = supabase
       .from('users')
       .select('uid, username, name, email')
-      .eq('department', employee.department)
       .eq('role', 'manager')
-      .limit(1)
-      .single();
+      .eq('is_active', true)
+      .limit(1);
+
+    if (employee.companyId || employee.company_id) {
+      managerQuery = managerQuery.eq('company_id', employee.companyId || employee.company_id);
+    }
+    if (employee.departmentId || employee.department_id) {
+      managerQuery = managerQuery.eq('department_id', employee.departmentId || employee.department_id);
+    } else if (employee.department) {
+      managerQuery = managerQuery.eq('department', employee.department);
+    }
+
+    const { data: managerData, error } = await managerQuery.maybeSingle();
 
     if (error || !managerData) {
       console.warn('[LocationMonitoring] Could not find manager for department:', employee.department);
@@ -275,7 +285,7 @@ const checkLocationAndCheckout = async (user) => {
     }
 
     // Get office location
-    const officeLocation = await getOfficeLocation();
+    const officeLocation = await getOfficeLocation(user);
     if (!officeLocation) {
       // No office location configured, skip check
       console.warn('[LocationMonitoring] No office location configured');
@@ -290,13 +300,16 @@ const checkLocationAndCheckout = async (user) => {
       officeLocation.longitude
     );
 
-    // Check if user is within 1km radius
-    const isWithinRadius = isWithin1km(
-      currentLocation.latitude,
-      currentLocation.longitude,
-      officeLocation.latitude,
-      officeLocation.longitude
-    );
+    const radiusM = officeLocation.radius_meters || 1000;
+    const isWithinRadius =
+      radiusM === 1000
+        ? isWithin1km(
+            currentLocation.latitude,
+            currentLocation.longitude,
+            officeLocation.latitude,
+            officeLocation.longitude
+          )
+        : distance <= radiusM;
 
     // Update state tracking
     const previousState = lastKnownLocationState;

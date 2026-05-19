@@ -19,13 +19,19 @@ import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Circle } from 'react-native-maps';
 import { useTheme } from '../../../core/contexts/ThemeContext';
 import { getOfficeLocation, updateOfficeLocation, canUpdateOfficeLocation } from '../services/geofenceService';
+import {
+  listManageableDepartments,
+  resolveUserDepartmentId,
+} from '../services/departmentGeofenceAccess';
 import { formatDistance } from '../utils/distance';
 import { reverseGeocode, cancelReverseGeocode } from '../utils/reverseGeocoding';
 import { spacing } from '../../../utils/responsive';
-import { isHRAdmin } from '../../../shared/constants/roles';
+import { useAuth } from '../../../core/contexts/AuthContext';
+import { ROLES } from '../../../shared/constants/roles';
 
 export default function GeoFencingScreen({ navigation, route }) {
-  const { user } = route.params || {};
+  const { user: authUser } = useAuth();
+  const user = authUser || route.params?.user || {};
   const { colors } = useTheme();
   const mapRef = useRef(null);
 
@@ -37,7 +43,10 @@ export default function GeoFencingScreen({ navigation, route }) {
   const [locationName, setLocationName] = useState('Unknown location'); // Human-readable location name
   const [isResolvingLocation, setIsResolvingLocation] = useState(false); // Loading state for reverse geocoding
   const [mapReady, setMapReady] = useState(false); // Track if map is ready to render
-  const [mapError, setMapError] = useState(null); // Track map rendering errors
+  const [mapError, setMapError] = useState(null);
+  const [departments, setDepartments] = useState([]);
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState(null);
+  const [selectedDepartmentName, setSelectedDepartmentName] = useState('');
   const [region, setRegion] = useState({
     latitude: -6.2088, // Default: Jakarta, Indonesia
     longitude: 106.8456,
@@ -45,12 +54,33 @@ export default function GeoFencingScreen({ navigation, route }) {
     longitudeDelta: 0.01,
   });
 
-  // Check if user can edit
-  const canEdit = canUpdateOfficeLocation(user);
+  const canEdit = canUpdateOfficeLocation(user, selectedDepartmentId);
   const isReadOnly = !canEdit;
 
-  // Load office location on mount
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const depts = await listManageableDepartments(user);
+      if (cancelled) return;
+      setDepartments(depts);
+      const defaultId =
+        route.params?.departmentId ||
+        (await resolveUserDepartmentId(user)) ||
+        depts[0]?.id ||
+        null;
+      if (defaultId) {
+        setSelectedDepartmentId(String(defaultId));
+        const match = depts.find((d) => String(d.id) === String(defaultId));
+        setSelectedDepartmentName(match?.name || user.department || '');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid, user?.role]);
+
+  useEffect(() => {
+    if (!selectedDepartmentId && user.role !== ROLES.SUPER_ADMIN) return;
     loadOfficeLocation();
 
     // Log map configuration status (for debugging Android Google Maps API key)
@@ -64,7 +94,76 @@ export default function GeoFencingScreen({ navigation, route }) {
     return () => {
       cancelReverseGeocode();
     };
-  }, []);
+  }, [selectedDepartmentId]);
+
+  const loadOfficeLocation = async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      const scopedUser =
+        selectedDepartmentId && user.role === ROLES.SUPER_ADMIN
+          ? { ...user, departmentId: selectedDepartmentId, department_id: selectedDepartmentId }
+          : user;
+
+      const location = await getOfficeLocation(scopedUser);
+
+      if (location) {
+        setOfficeLocation(location);
+        setRegion({
+          latitude: location.latitude,
+          longitude: location.longitude,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        });
+        setIsLocked(true);
+        await resolveLocationName(location.latitude, location.longitude);
+        return;
+      }
+
+      if (!canEdit) {
+        setOfficeLocation(null);
+        setIsLocked(false);
+        setLocationName('No geofence configured');
+        return;
+      }
+
+      const { getCurrentLocation } = await import('../services/geofenceService');
+      const gpsLocation = await getCurrentLocation();
+      if (gpsLocation) {
+        const initialLocation = {
+          id: 'draft',
+          latitude: gpsLocation.latitude,
+          longitude: gpsLocation.longitude,
+          radius_meters: 1000,
+        };
+        setOfficeLocation(initialLocation);
+        setRegion({
+          latitude: gpsLocation.latitude,
+          longitude: gpsLocation.longitude,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        });
+        setIsLocked(false);
+        await resolveLocationName(gpsLocation.latitude, gpsLocation.longitude);
+      } else {
+        setOfficeLocation(null);
+        setIsLocked(false);
+        setLocationName('Unknown location');
+      }
+    } catch (err) {
+      console.error('[GeoFencingScreen] Error loading office location:', err);
+      setError(err.message || 'Failed to load office location');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSelectDepartment = async (dept) => {
+    setSelectedDepartmentId(String(dept.id));
+    setSelectedDepartmentName(dept.name);
+    setIsLocked(false);
+  };
 
   // Handle map ready event
   const handleMapReady = () => {
@@ -112,93 +211,6 @@ export default function GeoFencingScreen({ navigation, route }) {
       setLocationName('Unknown location');
     } finally {
       setIsResolvingLocation(false);
-    }
-  };
-
-  /**
-   * Load office location from database or initialize from GPS if not exists
-   * This is the ONLY place where GPS is called automatically (on initial load if DB is empty)
-   */
-  const loadOfficeLocation = async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
-      
-      console.log('[GeoFencingScreen] Loading office location from database...');
-      const location = await getOfficeLocation();
-
-      if (location) {
-        // Office location exists in DB - use it as source of truth
-        console.log('[GeoFencingScreen] Office location found in DB:', {
-          latitude: location.latitude.toFixed(6),
-          longitude: location.longitude.toFixed(6),
-        });
-        
-        setOfficeLocation(location);
-        // Update map region to center on office location
-        setRegion({
-          latitude: location.latitude,
-          longitude: location.longitude,
-          latitudeDelta: 0.01,
-          longitudeDelta: 0.01,
-        });
-        // If location exists in database, marker should be locked by default
-        setIsLocked(true);
-        
-        // Resolve location name from coordinates
-        await resolveLocationName(location.latitude, location.longitude);
-      } else {
-        // No office location set in DB - initialize from GPS ONCE
-        console.log('[GeoFencingScreen] No office location in DB, initializing from GPS...');
-        
-        try {
-          const { getCurrentLocation } = await import('../services/geofenceService');
-          const gpsLocation = await getCurrentLocation();
-
-          if (gpsLocation) {
-            console.log('[GeoFencingScreen] GPS location obtained:', {
-              latitude: gpsLocation.latitude.toFixed(6),
-              longitude: gpsLocation.longitude.toFixed(6),
-            });
-
-            const initialLocation = {
-              id: 'office_location',
-              latitude: gpsLocation.latitude,
-              longitude: gpsLocation.longitude,
-              radius_meters: 1000,
-            };
-
-            setOfficeLocation(initialLocation);
-            setRegion({
-              latitude: gpsLocation.latitude,
-              longitude: gpsLocation.longitude,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
-            });
-            setIsLocked(false); // Unlocked so user can adjust before saving
-
-            // Resolve location name from GPS coordinates
-            await resolveLocationName(gpsLocation.latitude, gpsLocation.longitude);
-          } else {
-            // GPS failed - use default region
-            console.warn('[GeoFencingScreen] GPS location unavailable, using default region');
-            setOfficeLocation(null);
-            setIsLocked(false);
-            setLocationName('Unknown location');
-          }
-        } catch (gpsError) {
-          console.error('[GeoFencingScreen] Error getting GPS location:', gpsError);
-          // GPS failed - use default region
-          setOfficeLocation(null);
-          setIsLocked(false);
-          setLocationName('Unknown location');
-        }
-      }
-    } catch (err) {
-      console.error('[GeoFencingScreen] Error loading office location:', err);
-      setError(err.message || 'Failed to load office location');
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -261,7 +273,8 @@ export default function GeoFencingScreen({ navigation, route }) {
         officeLocation.latitude,
         officeLocation.longitude,
         officeLocation.radius_meters || 1000,
-        user
+        user,
+        selectedDepartmentId
       );
 
       if (result.success) {
@@ -377,8 +390,9 @@ export default function GeoFencingScreen({ navigation, route }) {
       const result = await updateOfficeLocation(
         officeLocation.latitude,
         officeLocation.longitude,
-        1000, // Always save as 1000m
-        user
+        1000,
+        user,
+        selectedDepartmentId
       );
 
       console.log('[GeoFencingScreen] Update result:', result);
@@ -692,13 +706,48 @@ export default function GeoFencingScreen({ navigation, route }) {
         <View style={styles.controlsContainer}>
           {isReadOnly && (
             <View style={styles.readOnlyBadge}>
-              <Text style={styles.readOnlyText}>Read Only - You can view but not edit</Text>
+              <Text style={styles.readOnlyText}>Read only — you cannot edit this department</Text>
             </View>
           )}
 
+          {user.role === ROLES.SUPER_ADMIN && departments.length > 0 && (
+            <View style={styles.infoCard}>
+              <Text style={styles.infoTitle}>Department</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                {departments.map((dept) => {
+                  const active = String(dept.id) === String(selectedDepartmentId);
+                  return (
+                    <TouchableOpacity
+                      key={dept.id}
+                      onPress={() => handleSelectDepartment(dept)}
+                      style={{
+                        paddingHorizontal: 14,
+                        paddingVertical: 8,
+                        borderRadius: 20,
+                        marginRight: 8,
+                        backgroundColor: active ? colors.primary : colors.border,
+                      }}
+                    >
+                      <Text style={{ color: active ? '#fff' : colors.text, fontWeight: '600' }}>
+                        {dept.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          )}
+
+          {selectedDepartmentName ? (
+            <View style={[styles.infoCard, { marginBottom: 8 }]}>
+              <Text style={styles.infoLabel}>Managing geofence for</Text>
+              <Text style={styles.infoTitle}>{selectedDepartmentName}</Text>
+            </View>
+          ) : null}
+
           {officeLocation ? (
             <View style={styles.infoCard}>
-              <Text style={styles.infoTitle}>Office Location</Text>
+              <Text style={styles.infoTitle}>Department office</Text>
 
               {/* Location Name */}
               <View style={[styles.infoRow, { marginBottom: spacing.md }]}>
@@ -828,7 +877,7 @@ export default function GeoFencingScreen({ navigation, route }) {
             <View style={[styles.button, styles.buttonSecondary]}>
               <Ionicons name="lock-closed" size={20} color={colors.text} />
               <Text style={styles.buttonSecondaryText}>
-                Only Super Admin and HR can edit
+                Only your department manager or a super admin can edit this geofence
               </Text>
             </View>
           )}

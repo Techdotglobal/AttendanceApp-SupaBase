@@ -6,9 +6,25 @@ import * as Location from 'expo-location';
 import { supabase } from '../../../core/config/supabase';
 import { calculateDistance, isPointInGeofence, isWithin1km, getDistanceInMeters, formatDistance } from '../utils/distance';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  resolveUserDepartmentId,
+  canManageDepartmentGeofence,
+  canManageDepartmentGeofenceAsync,
+  mapGeofenceRowToOfficeLocation,
+} from './departmentGeofenceAccess';
 
 const GEOFENCES_STORAGE_KEY = '@geofences';
 const ACTIVE_GEOFENCE_KEY = '@active_geofence';
+
+/** True when new department RPCs are not deployed yet — fall back to legacy company office. */
+const isMissingGeofenceRpc = (error) => {
+  const msg = String(error?.message || error?.code || '').toLowerCase();
+  return (
+    msg.includes('could not find the function') ||
+    msg.includes('does not exist') ||
+    error?.code === 'PGRST202'
+  );
+};
 
 /**
  * Request location permissions
@@ -312,58 +328,83 @@ export const validateGeofence = (geofence) => {
 };
 
 /**
- * Check if user has permission to update office location
- * Only super_admin and HR (manager with department='HR') can update
- * @param {Object} user - User object with role and department
- * @returns {boolean} True if user has permission
+ * Check if user can update geofence for a department.
+ * Super admins: any department. Managers: own department only (includes HR managers).
+ * @param {Object} user
+ * @param {string|null} departmentId - target department; defaults to user's department
  */
-export const canUpdateOfficeLocation = (user) => {
-  if (!user) {
-    return false;
-  }
-
-  // Super admin can always update
-  if (user.role === 'super_admin') {
-    return true;
-  }
-
-  // HR managers (manager with department='HR') can update
-  if (user.role === 'manager' && String(user.department || '').toLowerCase() === 'hr') {
-    return true;
-  }
-
-  return false;
+export const canUpdateOfficeLocation = (user, departmentId = null) => {
+  if (!user) return false;
+  const targetId = departmentId || user.departmentId || user.department_id;
+  return canManageDepartmentGeofence(user, targetId);
 };
 
 /**
- * Get office location from database
- * Uses the database function for safe retrieval
- * @returns {Promise<{id: string, latitude: number, longitude: number, radius_meters: number, updated_by: string, updated_at: string} | null>}
+ * Fetch department-scoped geofence via RPC.
+ * @param {string|null} departmentId
+ * @returns {Promise<object|null>}
  */
-export const getOfficeLocation = async () => {
+const getDepartmentGeofence = async (departmentId = null) => {
   try {
-    // Use the database function for safe retrieval
-    const { data, error } = await supabase.rpc('get_office_location');
+    const { data, error } = await supabase.rpc('get_department_geofence', {
+      p_department_id: departmentId || null,
+    });
 
     if (error) {
-      console.error('[GeofenceService] Error getting office location:', error);
+      if (!isMissingGeofenceRpc(error) && __DEV__) {
+        console.warn('[GeofenceService] get_department_geofence:', error.message);
+      }
       return null;
     }
 
-    // Function returns array, get first result
     if (data && data.length > 0) {
-      return {
-        id: data[0].id,
-        latitude: data[0].latitude,
-        longitude: data[0].longitude,
-        radius_meters: data[0].radius_meters,
-        updated_by: data[0].updated_by,
-        updated_at: data[0].updated_at,
-      };
+      return mapGeofenceRowToOfficeLocation({ ...data[0], source: 'department' });
+    }
+    return null;
+  } catch (error) {
+    console.error('[GeofenceService] getDepartmentGeofence:', error);
+    return null;
+  }
+};
+
+/**
+ * Company-wide fallback (legacy company_offices).
+ */
+const getCompanyOfficeLocation = async () => {
+  try {
+    const { data, error } = await supabase.rpc('get_office_location');
+    if (error || !data?.length) return null;
+    return {
+      id: data[0].id,
+      latitude: data[0].latitude,
+      longitude: data[0].longitude,
+      radius_meters: data[0].radius_meters,
+      updated_by: data[0].updated_by,
+      updated_at: data[0].updated_at,
+      source: 'company',
+    };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Get geofence for attendance validation (department site first, then company office).
+ * @param {Object|null} user - When provided, resolves the user's department geofence
+ */
+export const getOfficeLocation = async (user = null) => {
+  try {
+    let departmentId = null;
+    if (user) {
+      departmentId = await resolveUserDepartmentId(user);
     }
 
-    // No office location set
-    return null;
+    const departmentSite = await getDepartmentGeofence(departmentId);
+    if (departmentSite) {
+      return departmentSite;
+    }
+
+    return await getCompanyOfficeLocation();
   } catch (error) {
     console.error('[GeofenceService] Error getting office location:', error);
     return null;
@@ -371,15 +412,20 @@ export const getOfficeLocation = async () => {
 };
 
 /**
- * Update office location
- * Only super_admin and HR can update
- * @param {number} latitude - Office latitude (-90 to 90)
- * @param {number} longitude - Office longitude (-180 to 180)
- * @param {number} radius - Geofence radius in meters (default: 1000)
- * @param {Object} user - Current user object for permission check
- * @returns {Promise<{success: boolean, error?: string, location?: Object}>}
+ * Update department geofence (or company office fallback when no department).
+ * @param {number} latitude
+ * @param {number} longitude
+ * @param {number} radius - meters (default 1000)
+ * @param {Object} user
+ * @param {string|null} departmentId - required for managers; super_admin must pass when editing a dept
  */
-export const updateOfficeLocation = async (latitude, longitude, radius = 1000, user = null) => {
+export const updateOfficeLocation = async (
+  latitude,
+  longitude,
+  radius = 1000,
+  user = null,
+  departmentId = null
+) => {
   try {
     console.log('[GeofenceService] updateOfficeLocation called:', {
       latitude,
@@ -465,10 +511,11 @@ export const updateOfficeLocation = async (latitude, longitude, radius = 1000, u
       email: authUser.email,
     });
 
-    // Verify user exists in database
+    let dbUser = null;
+
     const { data: userData, error: userDataError } = await supabase
       .from('users')
-      .select('uid, username, role, department')
+      .select('uid, username, role, department, department_id, company_id')
       .eq('uid', authUser.id)
       .single();
 
@@ -482,7 +529,7 @@ export const updateOfficeLocation = async (latitude, longitude, radius = 1000, u
       // Try fallback: search by email
       const { data: userByEmail, error: emailError } = await supabase
         .from('users')
-        .select('uid, username, role, department')
+        .select('uid, username, role, department, department_id, company_id')
         .eq('email', authUser.email)
         .single();
 
@@ -498,41 +545,89 @@ export const updateOfficeLocation = async (latitude, longitude, radius = 1000, u
       }
 
       console.log('[GeofenceService] User found by email fallback:', userByEmail);
-      
-      // Check permissions
-      if (!canUpdateOfficeLocation(userByEmail)) {
-        console.error('[GeofenceService] Insufficient permissions:', userByEmail);
-        return {
-          success: false,
-          error: 'Insufficient permissions. Only super_admin and HR can update office location.',
-        };
-      }
+      dbUser = userByEmail;
     } else {
-      console.log('[GeofenceService] User found in database:', {
-        uid: userData.uid,
-        username: userData.username,
-        role: userData.role,
-        department: userData.department,
+      dbUser = userData;
+    }
+
+    const targetDept =
+      departmentId ||
+      dbUser.department_id ||
+      (await resolveUserDepartmentId(dbUser));
+
+    if (!(await canManageDepartmentGeofenceAsync(dbUser, targetDept))) {
+      return {
+        success: false,
+        error:
+          'Insufficient permissions. You can only update the geofence for your own department.',
+      };
+    }
+    const targetDepartmentId = targetDept;
+
+    if (targetDepartmentId) {
+      console.log('[GeofenceService] Calling set_department_geofence:', {
+        p_department_id: targetDepartmentId,
+        p_latitude: latitude,
+        p_longitude: longitude,
+        p_radius_meters: radius,
       });
 
-      // Permission check (client-side validation)
-      if (!canUpdateOfficeLocation(userData)) {
-        console.error('[GeofenceService] Insufficient permissions:', userData);
-        return {
-          success: false,
-          error: 'Insufficient permissions. Only super_admin and HR can update office location.',
-        };
+      const { error: deptError } = await supabase.rpc('set_department_geofence', {
+        p_department_id: targetDepartmentId,
+        p_latitude: latitude,
+        p_longitude: longitude,
+        p_radius_meters: radius,
+        p_site_name: 'Office',
+      });
+
+      if (deptError) {
+        if (isMissingGeofenceRpc(deptError)) {
+          console.warn(
+            '[GeofenceService] Department geofence RPC not available — using legacy company office save'
+          );
+        } else if (
+          deptError.message?.includes('permission') ||
+          deptError.message?.includes('Insufficient')
+        ) {
+          return {
+            success: false,
+            error:
+              'Insufficient permissions. You can only update the geofence for your own department.',
+          };
+        } else {
+          return {
+            success: false,
+            error: deptError.message || 'Failed to update department geofence',
+          };
+        }
+      } else {
+        const updatedLocation = await getDepartmentGeofence(targetDepartmentId);
+        return { success: true, location: updatedLocation };
       }
     }
 
-    // Call database function (server-side enforces permissions)
-    console.log('[GeofenceService] Calling set_office_location RPC:', {
+    if (dbUser?.role === 'manager' && !targetDepartmentId) {
+      return {
+        success: false,
+        error:
+          'Your account is not linked to a department. Ask an administrator to set your department before configuring geofencing.',
+      };
+    }
+
+    if (dbUser?.role !== 'manager' && dbUser?.role !== 'super_admin') {
+      return {
+        success: false,
+        error: 'Insufficient permissions to update office location.',
+      };
+    }
+
+    console.log('[GeofenceService] Calling set_office_location RPC (company fallback):', {
       p_latitude: latitude,
       p_longitude: longitude,
       p_radius_meters: radius,
     });
 
-    const { data, error } = await supabase.rpc('set_office_location', {
+    const { error } = await supabase.rpc('set_office_location', {
       p_latitude: latitude,
       p_longitude: longitude,
       p_radius_meters: radius,
@@ -545,12 +640,11 @@ export const updateOfficeLocation = async (latitude, longitude, radius = 1000, u
         details: error.details,
         hint: error.hint,
       });
-      
-      // Check if it's a permission error
+
       if (error.message?.includes('permission') || error.message?.includes('Insufficient')) {
         return {
           success: false,
-          error: 'Insufficient permissions. Only super_admin and HR can update office location.',
+          error: 'Insufficient permissions to update office location.',
         };
       }
 
@@ -568,11 +662,8 @@ export const updateOfficeLocation = async (latitude, longitude, radius = 1000, u
       };
     }
 
-    console.log('[GeofenceService] RPC success, data:', data);
-
-    // Fetch updated location to verify
-    const updatedLocation = await getOfficeLocation();
-    console.log('[GeofenceService] Updated location retrieved:', updatedLocation);
+    const updatedLocation = await getCompanyOfficeLocation();
+    console.log('[GeofenceService] Updated company location retrieved:', updatedLocation);
 
     if (!updatedLocation) {
       console.warn('[GeofenceService] Warning: Location update succeeded but could not retrieve updated location');
@@ -624,47 +715,36 @@ export const validateCheckInLocation = async (user, userLat, userLon) => {
       };
     }
 
-    // For in_office work mode, validate location
     if (workMode === 'in_office') {
-      // Fetch office location from database
-      const officeLocation = await getOfficeLocation();
+      const officeLocation = await getOfficeLocation(user);
+      const deptLabel =
+        officeLocation?.department_name || user.department || 'your department';
 
       if (!officeLocation) {
-        // No office location set - allow check-in but warn
-        console.warn('[GeofenceService] No office location configured, allowing check-in');
+        console.warn('[GeofenceService] No geofence for department, allowing check-in');
         return {
           valid: true,
-          warning: 'Office location not configured. Check-in allowed.',
+          warning: `No office geofence configured for ${deptLabel}. Check-in allowed.`,
         };
       }
 
-      // Check if user is within 1km radius
-      const isWithinRadius = isWithin1km(
+      const radiusM = officeLocation.radius_meters || 1000;
+      const distance = getDistanceInMeters(
         userLat,
         userLon,
         officeLocation.latitude,
         officeLocation.longitude
       );
 
-      if (!isWithinRadius) {
-        const distance = getDistanceInMeters(
-          userLat,
-          userLon,
-          officeLocation.latitude,
-          officeLocation.longitude
-        );
-
+      if (distance > radiusM) {
         return {
           valid: false,
-          error: `You must be within 1km of the office to check in. You are currently ${formatDistance(distance)} away from the office location.`,
+          error: `You must be within ${formatDistance(radiusM)} of the ${deptLabel} office to check in. You are currently ${formatDistance(distance)} away.`,
           distance,
         };
       }
 
-      // User is within 1km radius
-      return {
-        valid: true,
-      };
+      return { valid: true };
     }
 
     // Unknown work mode - allow check-in (graceful fallback)

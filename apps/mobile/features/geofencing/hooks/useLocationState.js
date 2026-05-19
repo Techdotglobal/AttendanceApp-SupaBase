@@ -48,7 +48,7 @@ export const useLocationState = (user, isCheckedIn, pollInterval = 30000) => {
       setAutoCheckoutEnabled(autoCheckout);
 
       // Get office location
-      const officeLocation = await getOfficeLocation();
+      const officeLocation = await getOfficeLocation(user);
       if (!officeLocation) {
         setIsInside(true); // Assume inside if no office location
         setDistance(null);
@@ -70,13 +70,16 @@ export const useLocationState = (user, isCheckedIn, pollInterval = 30000) => {
         officeLocation.longitude
       );
 
-      // Check if inside radius
-      const inside = isWithin1km(
-        currentLocation.latitude,
-        currentLocation.longitude,
-        officeLocation.latitude,
-        officeLocation.longitude
-      );
+      const radiusM = officeLocation.radius_meters || 1000;
+      const inside =
+        radiusM === 1000
+          ? isWithin1km(
+              currentLocation.latitude,
+              currentLocation.longitude,
+              officeLocation.latitude,
+              officeLocation.longitude
+            )
+          : dist <= radiusM;
 
       setIsInside(inside);
       setDistance(dist);

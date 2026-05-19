@@ -20,10 +20,27 @@ import {
 } from '../utils/biometricAuth';
 import { getCurrentLocationWithAddress, formatAddressForDisplay } from '../utils/location';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../core/contexts/AuthContext';
 import { validateCheckInLocation } from '../features/geofencing';
 
 export default function AuthenticationScreen({ navigation, route }) {
-  const { type, user, authMethod = 'face' } = route.params; // authMethod: 'face' or 'biometric'
+  const { type, user: routeUser, authMethod = 'face' } = route.params;
+  const { user: authUser } = useAuth();
+  const user = authUser
+    ? {
+        ...(routeUser || {}),
+        ...authUser,
+        departmentId:
+          authUser.departmentId ??
+          authUser.department_id ??
+          routeUser?.departmentId ??
+          routeUser?.department_id,
+        department:
+          authUser.department ?? routeUser?.department,
+        workMode: authUser.workMode ?? authUser.work_mode ?? routeUser?.workMode ?? routeUser?.work_mode,
+        work_mode: authUser.work_mode ?? authUser.workMode ?? routeUser?.work_mode ?? routeUser?.workMode,
+      }
+    : routeUser;
   const { colors } = useTheme();
   const [isLoading, setIsLoading] = useState(false);
   const [location, setLocation] = useState(null);

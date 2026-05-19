@@ -426,20 +426,33 @@ export default function AuthenticationScreen({ navigation, route }) {
         locationAddress: attendanceRecord.location?.address || 'N/A'
       });
 
-      await saveAttendanceRecord(attendanceRecord);
-      
-      Alert.alert(
-        'Success',
-        `Successfully ${type === 'checkin' ? 'checked in' : 'checked out'}!`,
-        [
-          { 
-            text: 'OK', 
-            onPress: () => {
-              navigation.goBack();
-            }
-          }
-        ]
-      );
+      const saveResult = await saveAttendanceRecord(attendanceRecord);
+
+      if (!saveResult?.success) {
+        Alert.alert(
+          'Could Not Save',
+          saveResult?.error ||
+            'Your check-in could not be saved. Please try again or contact support.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      const actionLabel = type === 'checkin' ? 'checked in' : 'checked out';
+      const title = saveResult.source === 'supabase' ? 'Success' : 'Saved Offline';
+      const message =
+        saveResult.source === 'supabase'
+          ? `Successfully ${actionLabel}!`
+          : `You are ${actionLabel} on this device. We will sync to the server when the connection is available.`;
+
+      Alert.alert(title, message, [
+        {
+          text: 'OK',
+          onPress: () => {
+            navigation.goBack();
+          },
+        },
+      ]);
     } catch (error) {
       console.error('Error saving attendance:', error);
       Alert.alert('Error', 'Failed to save attendance record');

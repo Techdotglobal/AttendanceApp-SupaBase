@@ -192,15 +192,17 @@ const performAutomaticCheckout = async (user, location, distance) => {
     };
 
     // Save checkout record
-    const result = await saveAttendanceRecord(attendanceRecord);
+    const saveResult = await saveAttendanceRecord(attendanceRecord);
 
-    if (result) {
+    if (saveResult?.success && saveResult.record) {
       lastAutoCheckoutTime = now;
+      const result = saveResult.record;
 
       // Log the event
       console.log('[LocationMonitoring] ✓ Automatic checkout successful:', {
         username: user.username,
         recordId: result.id || attendanceRecord.id,
+        synced: saveResult.source === 'supabase',
         distance: `${distance.toFixed(0)}m`,
         timestamp: attendanceRecord.timestamp,
         location: {

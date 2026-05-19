@@ -1,6 +1,6 @@
 // Storage utilities using Supabase (with AsyncStorage fallback)
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase } from '../core/config/supabase';
+import { supabase, isSupabaseConfigured } from '../core/config/supabase';
 import { getEmployeeByUsername } from './employees';
 import { fetchSessionUserCompanyId, fetchCompanyUserUids, requireValidCompanyId } from '../core/tenant/tenantScope';
 import { TENANT_RUNTIME_DIAG, tenantDiagLog } from '../core/debug/tenantRuntimeDiag';
@@ -36,19 +36,30 @@ const convertAttendanceFromDb = (dbRecord) => {
  */
 export const saveAttendanceRecord = async (attendanceRecord) => {
   try {
+    if (!isSupabaseConfigured()) {
+      console.error('[attendance] Supabase not configured — cannot sync check-in/out');
+      return {
+        success: false,
+        source: 'config',
+        error:
+          'App is not connected to the server. Close and reopen the app after installing the latest update.',
+      };
+    }
+
     // Get user UID from current Supabase session
     const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
     if (authError || !authUser) {
       console.error('Error getting Supabase session:', authError);
-      // Fallback to AsyncStorage
-      return await saveAttendanceRecordFallback(attendanceRecord);
+      const record = await saveAttendanceRecordFallback(attendanceRecord);
+      return { success: true, source: 'offline', record };
     }
 
     // Get employee data for employee_name
     const tenantCid = await fetchSessionUserCompanyId(supabase);
     if (!tenantCid) {
       console.error('[tenant] saveAttendanceRecord: missing company_id');
-      return await saveAttendanceRecordFallback(attendanceRecord);
+      const record = await saveAttendanceRecordFallback(attendanceRecord);
+      return { success: true, source: 'offline', record };
     }
     const employee = await getEmployeeByUsername(attendanceRecord.username, tenantCid);
     
@@ -74,16 +85,30 @@ export const saveAttendanceRecord = async (attendanceRecord) => {
 
     if (error) {
       console.error('Error saving attendance record to Supabase:', error);
-      // Fallback to AsyncStorage
-      return await saveAttendanceRecordFallback(attendanceRecord);
+      const record = await saveAttendanceRecordFallback(attendanceRecord);
+      return {
+        success: true,
+        source: 'offline',
+        record,
+        error: error.message,
+      };
     }
 
     console.log('✓ Attendance record saved to Supabase:', data.id);
-    return convertAttendanceFromDb(data);
+    return {
+      success: true,
+      source: 'supabase',
+      record: convertAttendanceFromDb(data),
+    };
   } catch (error) {
     console.error('Error saving attendance record:', error);
-    // Fallback to AsyncStorage
-    return await saveAttendanceRecordFallback(attendanceRecord);
+    const record = await saveAttendanceRecordFallback(attendanceRecord);
+    return {
+      success: true,
+      source: 'offline',
+      record,
+      error: error?.message,
+    };
   }
 };
 

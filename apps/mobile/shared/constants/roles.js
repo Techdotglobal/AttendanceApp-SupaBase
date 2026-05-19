@@ -71,6 +71,6 @@ export const isSuperAdmin = (role) => {
  */
 export const isHRAdmin = (user) => {
   if (!user) return false;
-  return user.role === ROLES.MANAGER && user.department === 'HR';
+  return user.role === ROLES.MANAGER && String(user.department || '').toLowerCase() === 'hr';
 };
 

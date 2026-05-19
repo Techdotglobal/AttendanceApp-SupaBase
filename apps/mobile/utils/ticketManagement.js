@@ -2,7 +2,7 @@
 import { supabase } from '../core/config/supabase';
 import { createNotification, createBatchNotifications } from './notifications';
 import { getAdminUsers, getSuperAdminUsers, getManagersByDepartment } from './employees';
-import { fetchSessionUserCompanyId, fetchCompanyUserUids, fetchCompanyUsernames } from '../core/tenant/tenantScope';
+import { fetchSessionUserCompanyId } from '../core/tenant/tenantScope';
 
 // Ticket Categories
 export const TICKET_CATEGORIES = {
@@ -275,6 +275,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
     // Create ticket in Supabase
     const ticketData = {
       created_by_uid: createdByUid,
+      company_id: tenantCid,
       created_by: createdBy,
       category: category,
       priority: priority,
@@ -467,14 +468,12 @@ export const getUserTickets = async (username) => {
   try {
     const tenantCid = await fetchSessionUserCompanyId(supabase);
     if (!tenantCid) return [];
-    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getUserTickets');
-    if (tenantUids.length === 0) return [];
 
     const { data: tickets, error } = await supabase
       .from('tickets')
       .select('*')
+      .eq('company_id', tenantCid)
       .eq('created_by', username)
-      .in('created_by_uid', tenantUids)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -500,46 +499,21 @@ export const getAllTickets = async () => {
       console.warn('[tenant] getAllTickets: no company_id');
       return [];
     }
-    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getAllTickets');
-    const tenantNames = await fetchCompanyUsernames(supabase, tenantCid, 'getAllTickets');
-    if (tenantUids.length === 0) {
-      return [];
-    }
 
     if (__DEV__) {
-      console.log('[tenant] getAllTickets', { queried_company_id: tenantCid, uid_count: tenantUids.length });
+      console.log('[tenant] getAllTickets', { queried_company_id: tenantCid });
     }
 
-    const { data: byCreator, error: e1 } = await supabase
+    const { data: tickets, error } = await supabase
       .from('tickets')
       .select('*')
-      .in('created_by_uid', tenantUids)
+      .eq('company_id', tenantCid)
       .order('created_at', { ascending: false });
 
-    if (e1) {
-      console.error('Error getting tickets (by creator) from Supabase:', e1);
+    if (error) {
+      console.error('Error getting tickets from Supabase:', error);
+      return [];
     }
-
-    let byAssignee = [];
-    if (tenantNames.length > 0) {
-      const { data: t2, error: e2 } = await supabase
-        .from('tickets')
-        .select('*')
-        .in('assigned_to', tenantNames)
-        .order('created_at', { ascending: false });
-      if (e2) {
-        console.error('Error getting tickets (by assignee) from Supabase:', e2);
-      } else {
-        byAssignee = t2 || [];
-      }
-    }
-
-    const merged = new Map();
-    (byCreator || []).forEach((t) => merged.set(t.id, t));
-    (byAssignee || []).forEach((t) => merged.set(t.id, t));
-    const tickets = Array.from(merged.values()).sort(
-      (a, b) => new Date(b.created_at) - new Date(a.created_at)
-    );
 
     return tickets.map(convertTicketFromDb);
   } catch (error) {
@@ -557,26 +531,16 @@ export const getTicketById = async (ticketId) => {
   try {
     const tenantCid = await fetchSessionUserCompanyId(supabase);
     if (!tenantCid) return null;
-    const tenantUids = await fetchCompanyUserUids(supabase, tenantCid, 'getTicketById');
-    const tenantNames = await fetchCompanyUsernames(supabase, tenantCid, 'getTicketById');
 
     const { data: ticket, error } = await supabase
       .from('tickets')
       .select('*')
       .eq('id', ticketId)
+      .eq('company_id', tenantCid)
       .single();
 
     if (error || !ticket) {
       console.error('Error getting ticket by ID from Supabase:', error);
-      return null;
-    }
-
-    const inTenant =
-      tenantUids.includes(ticket.created_by_uid) ||
-      (ticket.assigned_to && tenantNames.includes(ticket.assigned_to)) ||
-      (ticket.created_by && tenantNames.includes(ticket.created_by));
-    if (!inTenant) {
-      if (__DEV__) console.warn('[tenant] getTicketById: ticket outside current tenant');
       return null;
     }
 
@@ -596,6 +560,9 @@ export const getTicketById = async (ticketId) => {
  */
 export const updateTicketStatus = async (ticketId, status, updatedBy) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) return { success: false, error: 'Tenant context missing. Please sign in again.' };
+
     if (!Object.values(TICKET_STATUS).includes(status)) {
       return {
         success: false,
@@ -608,6 +575,7 @@ export const updateTicketStatus = async (ticketId, status, updatedBy) => {
       .from('tickets')
       .select('*')
       .eq('id', ticketId)
+      .eq('company_id', tenantCid)
       .single();
 
     if (fetchError || !ticket) {
@@ -632,7 +600,8 @@ export const updateTicketStatus = async (ticketId, status, updatedBy) => {
     const { error: updateError } = await supabase
       .from('tickets')
       .update(updateData)
-      .eq('id', ticketId);
+      .eq('id', ticketId)
+      .eq('company_id', tenantCid);
 
     if (updateError) {
       console.error('Error updating ticket status in Supabase:', updateError);
@@ -689,11 +658,15 @@ export const updateTicketStatus = async (ticketId, status, updatedBy) => {
  */
 export const assignTicket = async (ticketId, assignedTo, assignedBy) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) return { success: false, error: 'Tenant context missing. Please sign in again.' };
+
     // Get the ticket from Supabase first
     const { data: ticket, error: fetchError } = await supabase
       .from('tickets')
       .select('*')
       .eq('id', ticketId)
+      .eq('company_id', tenantCid)
       .single();
 
     if (fetchError || !ticket) {
@@ -718,6 +691,7 @@ export const assignTicket = async (ticketId, assignedTo, assignedBy) => {
       .from('tickets')
       .update(updateData)
       .eq('id', ticketId)
+      .eq('company_id', tenantCid)
       .select('id, created_by_uid, created_by, category, priority, subject, description, status, assigned_to, created_at, updated_at, resolved_at, closed_at, responses')
       .single();
 
@@ -821,6 +795,9 @@ export const assignTicket = async (ticketId, assignedTo, assignedBy) => {
  */
 export const addTicketResponse = async (ticketId, respondedBy, message) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) return { success: false, error: 'Tenant context missing. Please sign in again.' };
+
     if (!message.trim()) {
       return {
         success: false,
@@ -833,6 +810,7 @@ export const addTicketResponse = async (ticketId, respondedBy, message) => {
       .from('tickets')
       .select('*')
       .eq('id', ticketId)
+      .eq('company_id', tenantCid)
       .single();
 
     if (fetchError || !ticket) {
@@ -860,7 +838,8 @@ export const addTicketResponse = async (ticketId, respondedBy, message) => {
       .update({
         responses: updatedResponses
       })
-      .eq('id', ticketId);
+      .eq('id', ticketId)
+      .eq('company_id', tenantCid);
 
     if (updateError) {
       console.error('Error adding ticket response in Supabase:', updateError);

@@ -27,6 +27,7 @@ const router = express.Router();
 const { supabase, isServiceRole, tokenRole, assertServiceRoleClient } = require('../config/supabase');
 const { normalizeEmailForAuth } = require('../lib/loginNormalize');
 const { syncAuthMetadataForUid } = require('../lib/authMetadata');
+const { toLookupKey } = require('../lib/orgNormalize');
 
 /**
  * Format a PostgREST error for logs so RLS / permission failures are obvious.
@@ -201,7 +202,7 @@ router.post('/onboard-company', async (req, res) => {
     const { data: dupUsernameGlobal, error: userGlobalErr } = await supabase
       .from('users')
       .select('id')
-      .eq('username', username)
+      .eq('normalized_username', toLookupKey(username))
       .maybeSingle();
 
     if (userGlobalErr && userGlobalErr.code !== 'PGRST116') {

@@ -22,6 +22,7 @@ function mapUserRowToEmployee(emp) {
     email: emp.email,
     role: emp.role,
     department: emp.department,
+    departmentId: emp.department_id != null ? String(emp.department_id) : null,
     position: emp.position,
     workMode: emp.work_mode,
     hireDate: emp.hire_date,
@@ -345,7 +346,7 @@ export const getManagersByDepartment = async (department, companyId) => {
  * @returns {boolean} Whether user is HR manager
  */
 export const isHRManager = (user) => {
-  return user && user.role === 'manager' && user.department === 'HR';
+  return user && user.role === 'manager' && String(user.department || '').toLowerCase() === 'hr';
 };
 
 /**
@@ -400,7 +401,7 @@ export const getManageableEmployees = async (user) => {
       // Super admins can manage EVERYONE (including other super admins) within tenant
       if (user.role === 'super_admin') {
         queryFilters.role_branch = 'super_admin_all_in_company';
-      } else if (user.role === 'manager' && user.department === 'HR') {
+    } else if (user.role === 'manager' && String(user.department || '').toLowerCase() === 'hr') {
         query = query.neq('role', 'super_admin');
         queryFilters.role_branch = 'hr_manager_exclude_super_admin';
       } else if (user.role === 'manager') {
@@ -528,7 +529,7 @@ export const canManageEmployee = (user, employee) => {
   }
 
   // HR managers can manage all employees (special case)
-  if (user.role === 'manager' && user.department === 'HR') {
+    if (user.role === 'manager' && String(user.department || '').toLowerCase() === 'hr') {
     return employee.role !== 'super_admin';
   }
 
@@ -605,9 +606,9 @@ export const updateEmployeeWorkMode = async (employeeId, newWorkMode, updaterUse
     // 2. Check if updater can manage this employee
     if (!canManageEmployee(updaterUser, targetEmployee)) {
       // Provide specific error message based on updater role
-      if (updaterUser.role === 'manager' && updaterUser.department !== 'HR') {
+      if (updaterUser.role === 'manager' && String(updaterUser.department || '').toLowerCase() !== 'hr') {
         return { success: false, error: 'Permission denied: You can only manage employees in your department' };
-      } else if (updaterUser.role === 'manager' && updaterUser.department === 'HR') {
+      } else if (updaterUser.role === 'manager' && String(updaterUser.department || '').toLowerCase() === 'hr') {
         return { success: false, error: 'Permission denied: HR managers cannot modify super admin accounts' };
       } else {
         return { success: false, error: 'Permission denied: You do not have permission to manage this employee' };

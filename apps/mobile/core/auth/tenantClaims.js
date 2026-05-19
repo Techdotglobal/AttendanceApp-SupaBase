@@ -12,16 +12,10 @@ export function getTenantClaimsFromSession(session) {
   if (!meta || typeof meta !== 'object') {
     return { companyId: null, role: null, departmentId: null, username: null };
   }
-  const departmentText =
-    meta.department != null
-      ? String(meta.department).trim()
-      : meta.department_id != null
-        ? String(meta.department_id).trim()
-        : null;
   return {
     companyId: meta.company_id != null ? String(meta.company_id) : null,
     role: meta.role != null ? String(meta.role) : null,
-    departmentId: departmentText || null,
+    departmentId: meta.department_id != null ? String(meta.department_id).trim() : null,
     username: meta.username != null ? String(meta.username) : null,
   };
 }

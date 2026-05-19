@@ -39,7 +39,7 @@ export const useAuthStore = create((set) => ({
               department: data.department,
               companyId: data.company_id != null ? String(data.company_id) : null,
               company_id: data.company_id != null ? String(data.company_id) : null,
-              departmentId: data.department ? String(data.department).trim() : null,
+              departmentId: data.department_id != null ? String(data.department_id) : null,
             }
           : null,
       });
@@ -71,7 +71,7 @@ export const useAuthStore = create((set) => ({
         department: data.user.department,
         companyId: data.user.company_id != null ? String(data.user.company_id) : null,
         company_id: data.user.company_id != null ? String(data.user.company_id) : null,
-        departmentId: data.user.department ? String(data.user.department).trim() : null,
+        departmentId: data.user.department_id != null ? String(data.user.department_id) : null,
       };
       if (session && shouldSyncTenantMetadata(session, { ...profile, company_id: profile.companyId, department: profile.department, role: profile.role })) {
         const syncRes = await syncTenantMetadataViaGateway();
@@ -106,12 +106,16 @@ export const useAuthStore = create((set) => ({
             signInEmail = normalizeEmailForAuth(ident);
           } else {
             let row = null;
+            const { data: normalizedRow } = await supabase
+              .from('users')
+              .select('email')
+              .eq('normalized_username', ident.toLowerCase())
+              .maybeSingle();
+            row = normalizedRow;
             for (const u of usernameEqVariants(ident)) {
+              if (row?.email) break;
               const { data: r } = await supabase.from('users').select('email').eq('username', u).maybeSingle();
-              if (r?.email) {
-                row = r;
-                break;
-              }
+              if (r?.email) row = r;
             }
             if (!row?.email) {
               throw new Error('User not found for username');
@@ -154,7 +158,7 @@ export const useAuthStore = create((set) => ({
                 department: profile.department,
                 companyId: profile.company_id != null ? String(profile.company_id) : null,
                 company_id: profile.company_id != null ? String(profile.company_id) : null,
-                departmentId: profile.department ? String(profile.department).trim() : null,
+                departmentId: profile.department_id != null ? String(profile.department_id) : null,
               }
             : null;
 

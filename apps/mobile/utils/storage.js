@@ -46,10 +46,15 @@ export const saveAttendanceRecord = async (attendanceRecord) => {
 
     // Get employee data for employee_name
     const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      console.error('[tenant] saveAttendanceRecord: missing company_id');
+      return await saveAttendanceRecordFallback(attendanceRecord);
+    }
     const employee = await getEmployeeByUsername(attendanceRecord.username, tenantCid);
     
     const recordData = {
       user_uid: authUser.id,
+      company_id: tenantCid,
       username: attendanceRecord.username,
       employee_name: employee?.name || attendanceRecord.employeeName || attendanceRecord.username,
       type: attendanceRecord.type,
@@ -242,12 +247,16 @@ export const getUserAttendanceRecords = async (username) => {
 export const updateAttendanceRecord = async (recordId, updates) => {
   try {
     const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      return { success: false, error: 'Tenant context missing. Please sign in again.' };
+    }
     const tenantUids = tenantCid ? await fetchCompanyUserUids(supabase, tenantCid, 'updateAttendanceRecord') : [];
     if (tenantCid && tenantUids.length > 0) {
       const { data: existing, error: exErr } = await supabase
         .from('attendance_records')
         .select('user_uid')
         .eq('id', recordId)
+        .eq('company_id', tenantCid)
         .maybeSingle();
       if (exErr || !existing || !tenantUids.includes(existing.user_uid)) {
         console.error('[tenant] updateAttendanceRecord: record outside tenant or not found');
@@ -269,7 +278,8 @@ export const updateAttendanceRecord = async (recordId, updates) => {
     const { error } = await supabase
       .from('attendance_records')
       .update(updateData)
-      .eq('id', recordId);
+      .eq('id', recordId)
+      .eq('company_id', tenantCid);
 
     if (error) {
       console.error('Error updating attendance record in Supabase:', error);
@@ -302,12 +312,16 @@ const updateAttendanceRecordFallback = async (_recordId, _updates) => {
 export const deleteAttendanceRecord = async (recordId) => {
   try {
     const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      return { success: false, error: 'Tenant context missing. Please sign in again.' };
+    }
     const tenantUids = tenantCid ? await fetchCompanyUserUids(supabase, tenantCid, 'deleteAttendanceRecord') : [];
     if (tenantCid && tenantUids.length > 0) {
       const { data: existing, error: exErr } = await supabase
         .from('attendance_records')
         .select('user_uid')
         .eq('id', recordId)
+        .eq('company_id', tenantCid)
         .maybeSingle();
       if (exErr || !existing || !tenantUids.includes(existing.user_uid)) {
         console.error('[tenant] deleteAttendanceRecord: record outside tenant or not found');
@@ -318,7 +332,8 @@ export const deleteAttendanceRecord = async (recordId) => {
     const { error } = await supabase
       .from('attendance_records')
       .delete()
-      .eq('id', recordId);
+      .eq('id', recordId)
+      .eq('company_id', tenantCid);
 
     if (error) {
       console.error('Error deleting attendance record from Supabase:', error);
@@ -362,6 +377,7 @@ export const createManualAttendanceRecord = async (attendanceData, createdBy) =>
 
     const recordData = {
       user_uid: employee.uid || employee.id?.replace('emp_', '') || null, // Try to get UID from employee
+      company_id: tenantCid,
       username: attendanceData.username,
       employee_name: attendanceData.employeeName || employee.name || attendanceData.username,
       type: attendanceData.type,

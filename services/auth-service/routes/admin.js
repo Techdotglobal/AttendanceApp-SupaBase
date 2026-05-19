@@ -14,10 +14,11 @@ const ROLES = {
 const getRequesterDepartment = async (requester, companyId) => {
   if (!requester?.department || !companyId) return null;
   const normalized = normalizeDepartmentName(requester.department);
+  const lookupKey = toLookupKey(normalized || requester.department);
   const { data, error } = await supabase
     .from('departments')
     .select('id, name')
-    .eq('name', normalized)
+    .eq('normalized_name', lookupKey)
     .eq('company_id', companyId)
     .maybeSingle();
   if (error) throw error;
@@ -106,13 +107,10 @@ router.get('/dashboard/stats', async (req, res) => {
       .select('id', { count: 'exact' })
       .eq('company_id', companyId);
 
-    const { data: companyUsers } = await supabase.from('users').select('uid').eq('company_id', companyId);
-    const tenantUids = (companyUsers || []).map((u) => u.uid).filter(Boolean);
-
     let attendanceQuery = supabase
       .from('attendance_records')
       .select('id', { count: 'exact' })
-      .in('user_uid', tenantUids.length ? tenantUids : ['00000000-0000-0000-0000-000000000000']);
+      .eq('company_id', companyId);
     if (requester.role === ROLES.MANAGER) {
       const { data: deptUsers } = await supabase
         .from('users')
@@ -123,13 +121,14 @@ router.get('/dashboard/stats', async (req, res) => {
       attendanceQuery = supabase
         .from('attendance_records')
         .select('id', { count: 'exact' })
+        .eq('company_id', companyId)
         .in('user_uid', muids.length ? muids : ['00000000-0000-0000-0000-000000000000']);
     }
 
     let leaveQuery = supabase
       .from('leave_requests')
       .select('id, status', { count: 'exact' })
-      .in('employee_uid', tenantUids.length ? tenantUids : ['00000000-0000-0000-0000-000000000000']);
+      .eq('company_id', companyId);
     if (requester.role === ROLES.MANAGER) {
       const { data: deptUsers } = await supabase
         .from('users')
@@ -140,6 +139,7 @@ router.get('/dashboard/stats', async (req, res) => {
       leaveQuery = supabase
         .from('leave_requests')
         .select('id, status', { count: 'exact' })
+        .eq('company_id', companyId)
         .in('employee_uid', muids.length ? muids : ['00000000-0000-0000-0000-000000000000']);
     }
 
@@ -215,7 +215,7 @@ router.patch('/users/:uid', async (req, res) => {
         const { data: deptRecord, error: deptLookupError } = await supabase
           .from('departments')
           .select('id')
-          .eq('name', normalizedDepartment)
+          .eq('normalized_name', toLookupKey(normalizedDepartment))
           .eq('company_id', companyId)
           .maybeSingle();
         if (deptLookupError) throw deptLookupError;
@@ -387,19 +387,12 @@ router.get('/departments/overview', async (req, res) => {
     const { data: departments, error: departmentsError } = await departmentsQuery;
     if (departmentsError) throw departmentsError;
 
-    const departmentIds = (departments || []).map((d) => d.id);
-
-    // Primary path: centralized departments table with department_id links.
-    if (departmentIds.length > 0) {
-      const { data: users, error: usersError } = await supabase
-        .from('users')
-        .select('uid, name, username, role, position, is_active, department_id, department')
-        .eq('company_id', companyId)
-        .in('department_id', departmentIds)
-        .order('name', { ascending: true });
-      if (usersError) throw usersError;
-
+    // Primary path: centralized departments table. During rollout, some users
+    // may still have department text but no department_id, so map by ID first
+    // and normalized department name second.
+    if ((departments || []).length > 0) {
       const byDepartment = new Map();
+      const departmentIdByName = new Map();
       for (const dept of departments) {
         byDepartment.set(dept.id, {
           id: dept.id,
@@ -409,10 +402,18 @@ router.get('/departments/overview', async (req, res) => {
           manager: null,
           employees: [],
         });
+        departmentIdByName.set(toLookupKey(dept.name), dept.id);
       }
 
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('uid, name, username, role, position, is_active, department_id, department')
+        .eq('company_id', companyId)
+        .order('name', { ascending: true });
+      if (usersError) throw usersError;
+
       for (const user of users || []) {
-        const deptId = user.department_id;
+        const deptId = user.department_id || departmentIdByName.get(toLookupKey(user.department));
         if (!deptId || !byDepartment.has(deptId)) continue;
         const dept = byDepartment.get(deptId);
         if (user.is_active) dept.employeeCount += 1;
@@ -502,7 +503,11 @@ router.get('/sites', async (req, res) => {
   if (!ctx) return;
   const { requester, companyId } = ctx;
   try {
-    let query = supabase.from('sites').select('*').order('created_at', { ascending: false });
+    let query = supabase
+      .from('sites')
+      .select('*')
+      .eq('company_id', companyId)
+      .order('created_at', { ascending: false });
     if (requester.role === ROLES.MANAGER) {
       const managerDept = await getRequesterDepartment(requester, companyId);
       if (!managerDept?.id) return res.status(200).json({ success: true, data: [] });
@@ -544,6 +549,7 @@ router.post('/sites', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Department not in this tenant' });
       }
     }
+    payload.company_id = companyId;
     const { data, error } = await supabase.from('sites').insert(payload).select().single();
     if (error) throw error;
     res.status(201).json({ success: true, data });
@@ -564,7 +570,12 @@ router.post('/employee-sites', async (req, res) => {
       .eq('uid', employee_uid)
       .eq('company_id', companyId)
       .single();
-    const { data: site } = await supabase.from('sites').select('id, department_id').eq('id', site_id).single();
+    const { data: site } = await supabase
+      .from('sites')
+      .select('id, department_id, company_id')
+      .eq('id', site_id)
+      .eq('company_id', companyId)
+      .single();
     const { data: department } = await supabase
       .from('departments')
       .select('id, name')
@@ -593,9 +604,11 @@ router.get('/attendance', async (req, res) => {
   if (!ctx) return;
   const { requester, companyId } = ctx;
   try {
-    const tenantUids = await fetchCompanyUserUids(supabase, companyId);
-    const uidFilter = tenantUids.length ? tenantUids : ['00000000-0000-0000-0000-000000000000'];
-    let query = supabase.from('attendance_records').select('*').in('user_uid', uidFilter).order('timestamp', { ascending: false });
+    let query = supabase
+      .from('attendance_records')
+      .select('*')
+      .eq('company_id', companyId)
+      .order('timestamp', { ascending: false });
     if (requester.role === ROLES.MANAGER) {
       const { data: deptUsers } = await supabase
         .from('users')
@@ -604,7 +617,12 @@ router.get('/attendance', async (req, res) => {
         .eq('department', requester.department);
       const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
       const mfilter = muids.length ? muids : ['00000000-0000-0000-0000-000000000000'];
-      query = supabase.from('attendance_records').select('*').in('user_uid', mfilter).order('timestamp', { ascending: false });
+      query = supabase
+        .from('attendance_records')
+        .select('*')
+        .eq('company_id', companyId)
+        .in('user_uid', mfilter)
+        .order('timestamp', { ascending: false });
     }
     const { data, error } = await query;
     if (error) throw error;
@@ -619,12 +637,10 @@ router.get('/leaves', async (req, res) => {
   if (!ctx) return;
   const { requester, companyId } = ctx;
   try {
-    const tenantUids = await fetchCompanyUserUids(supabase, companyId);
-    const uidFilter = tenantUids.length ? tenantUids : ['00000000-0000-0000-0000-000000000000'];
     let query = supabase
       .from('leave_requests')
       .select('*')
-      .in('employee_uid', uidFilter)
+      .eq('company_id', companyId)
       .order('requested_at', { ascending: false });
     if (requester.role === ROLES.MANAGER) {
       const { data: deptUsers } = await supabase
@@ -637,6 +653,7 @@ router.get('/leaves', async (req, res) => {
       query = supabase
         .from('leave_requests')
         .select('*')
+        .eq('company_id', companyId)
         .in('employee_uid', mfilter)
         .order('requested_at', { ascending: false });
     }
@@ -660,6 +677,7 @@ router.patch('/leaves/:id', async (req, res) => {
       .from('leave_requests')
       .select('id, employee_uid, status')
       .eq('id', id)
+      .eq('company_id', companyId)
       .single();
     if (!requestRow) return res.status(404).json({ success: false, error: 'Leave request not found' });
     if (!tenantUids.includes(requestRow.employee_uid)) {
@@ -685,7 +703,8 @@ router.patch('/leaves/:id', async (req, res) => {
         processed_at: new Date().toISOString(),
         processed_by: requester.username || requester.email || requester.uid,
       })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('company_id', companyId);
     if (error) throw error;
     res.status(200).json({ success: true });
   } catch (error) {

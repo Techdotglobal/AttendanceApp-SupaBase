@@ -18,6 +18,7 @@ function buildUserMetadataFromUserRow(row) {
     company_id: row.company_id != null ? String(row.company_id) : null,
     role: row.role != null ? String(row.role) : null,
     department: row.department != null ? String(row.department) : null,
+    department_id: row.department_id != null ? String(row.department_id) : null,
   };
 }
 
@@ -45,6 +46,7 @@ function tenantMetadataMatchesRow(meta, row) {
     ['company_id', 'company_id'],
     ['role', 'role'],
     ['department', 'department'],
+    ['department_id', 'department_id'],
   ];
   for (const [metaKey, rowKey] of pairs) {
     const a = meta?.[metaKey] != null ? String(meta[metaKey]).trim() : '';

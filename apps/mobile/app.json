@@ -2,7 +2,7 @@
   "expo": {
     "name": "hadir.ai",
     "slug": "attendance-app",
-    "version": "1.0.4",
+    "version": "6.0.0",
     "runtimeVersion": "exposdk:54.0.0",
     "updates": {
       "url": "https://u.expo.dev/3517a51b-4c71-476d-8c07-d44f1189df72",
@@ -35,7 +35,8 @@
       }
     },
     "android": {
-      "package": "com.attendanceapp",
+      "package": "com.attendanceapphadirai",
+      "versionCode": 6000000,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#00000000"
@@ -101,11 +102,14 @@
       "expo-updates"
     ],
     "extra": {
-      "eas": {
-        "projectId": "3517a51b-4c71-476d-8c07-d44f1189df72"
-      },
       "apiGatewayUrl": "https://attendanceapp-supabase-1.onrender.com",
-      "supabaseRedirectUrl": "hadirai://reset-password"
-    }
+      "supabaseRedirectUrl": "hadirai://reset-password",
+      "supabaseUrl": "https://lxnwldnoxttxtgucvmlf.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx4bndsZG5veHR0eHRndWN2bWxmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY2NzM0MjEsImV4cCI6MjA4MjI0OTQyMX0.AWdwWtQOIzza3XbaJTipAwyOOU-xesGLyyB-IN_u9Lo",
+      "eas": {
+        "projectId": "11db4d5c-5270-4f6e-b84f-830d2c9ceb9c"
+      }
+    },
+    "owner": "hammadbakhtiar-tdg"
   }
 }

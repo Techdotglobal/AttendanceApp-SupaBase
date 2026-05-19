@@ -2,6 +2,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import { supabase } from '../core/config/supabase';
+import { fetchSessionUserCompanyId } from '../core/tenant/tenantScope';
 
 const NOTIFICATIONS_KEY = 'app_notifications';
 
@@ -81,13 +83,52 @@ export const createNotification = async (recipientUsername, title, body, type = 
   }
 
   try {
-    // Generate unique notification ID
-    const notificationId = `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      return {
+        success: false,
+        error: 'Tenant context missing. Please sign in again.'
+      };
+    }
+
+    const { data: recipient, error: recipientError } = await supabase
+      .from('users')
+      .select('uid, username')
+      .eq('company_id', tenantCid)
+      .eq('normalized_username', recipientUsername.trim().toLowerCase())
+      .maybeSingle();
+
+    if (recipientError || !recipient?.uid) {
+      return {
+        success: false,
+        error: recipientError?.message || 'Notification recipient not found'
+      };
+    }
+
+    const { data: dbNotificationId, error: rpcError } = await supabase.rpc('create_notification', {
+      p_recipient_uid: recipient.uid,
+      p_recipient_username: recipient.username,
+      p_title: title.trim(),
+      p_body: body.trim(),
+      p_type: type || 'general',
+      p_data: data || {},
+    });
+
+    if (rpcError || !dbNotificationId) {
+      console.error('[Notification] DB create failed:', rpcError);
+      return {
+        success: false,
+        error: rpcError?.message || 'Failed to create notification'
+      };
+    }
+
+    const notificationId = String(dbNotificationId);
     
     // Create notification object with all required fields
     const notification = {
       id: notificationId,
-      recipientUsername: recipientUsername.trim(),
+      recipientUsername: recipient.username,
+      recipient_uid: recipient.uid,
       title: title.trim(),
       body: body.trim(),
       type: type || 'general',
@@ -108,7 +149,7 @@ export const createNotification = async (recipientUsername, title, body, type = 
     // CRITICAL: Get all notifications and add new one
     // This must be awaited to prevent race conditions
     const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_KEY);
-    const allNotifications = notificationsJson ? JSON.parse(notificationsJson) : [];
+    let allNotifications = notificationsJson ? JSON.parse(notificationsJson) : [];
     
     // Validate parsed data is an array
     if (!Array.isArray(allNotifications)) {
@@ -294,6 +335,47 @@ export const createBatchNotifications = async (recipientUsernames, title, body, 
  */
 export const getUserNotifications = async (username, unreadOnly = false) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (tenantCid) {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      let query = supabase
+        .from('notifications')
+        .select('*')
+        .eq('company_id', tenantCid)
+        .order('created_at', { ascending: false })
+        .limit(1000);
+      query = authUser?.id
+        ? query.eq('recipient_uid', authUser.id)
+        : query.eq('recipient_username', username);
+
+      if (unreadOnly) {
+        query = query.eq('read', false);
+      }
+
+      const { data, error } = await query;
+      if (!error && Array.isArray(data)) {
+        const dbNotifications = data.map((notif) => ({
+          id: notif.id,
+          recipientUsername: notif.recipient_username,
+          recipient_uid: notif.recipient_uid,
+          title: notif.title,
+          body: notif.body,
+          type: notif.type || 'general',
+          data: notif.data || {},
+          read: notif.read === true,
+          isRead: notif.read === true,
+          readAt: notif.read_at || null,
+          createdAt: notif.created_at,
+          updatedAt: notif.updated_at,
+        }));
+        await AsyncStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(dbNotifications));
+        return dbNotifications;
+      }
+      if (error) {
+        console.warn('[Notification] DB read failed, falling back to cache:', error.message);
+      }
+    }
+
     const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_KEY);
     const allNotifications = notificationsJson ? JSON.parse(notificationsJson) : [];
     
@@ -325,6 +407,17 @@ export const markNotificationAsRead = async (notificationId) => {
   try {
     if (__DEV__) {
       console.log(`[Notification] Marking notification ${notificationId} as read`);
+    }
+
+    const { error: dbError } = await supabase
+      .from('notifications')
+      .update({
+        read: true,
+        read_at: new Date().toISOString(),
+      })
+      .eq('id', notificationId);
+    if (dbError) {
+      console.warn('[Notification] DB mark read failed, updating cache only:', dbError.message);
     }
 
     const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_KEY);
@@ -389,6 +482,26 @@ export const markAllNotificationsAsRead = async (username) => {
   try {
     if (__DEV__) {
       console.log(`[Notification] Marking all notifications as read for ${username}`);
+    }
+
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (tenantCid) {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      let query = supabase
+        .from('notifications')
+        .update({
+          read: true,
+          read_at: new Date().toISOString(),
+        })
+        .eq('company_id', tenantCid)
+        .eq('read', false);
+      query = authUser?.id
+        ? query.eq('recipient_uid', authUser.id)
+        : query.eq('recipient_username', username);
+      const { error: dbError } = await query;
+      if (dbError) {
+        console.warn('[Notification] DB mark all read failed, updating cache only:', dbError.message);
+      }
     }
 
     const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_KEY);
@@ -485,6 +598,14 @@ export const refreshNotificationCount = async (username) => {
  */
 export const deleteNotification = async (notificationId) => {
   try {
+    const { error: dbError } = await supabase
+      .from('notifications')
+      .delete()
+      .eq('id', notificationId);
+    if (dbError) {
+      console.warn('[Notification] DB delete failed, updating cache only:', dbError.message);
+    }
+
     const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_KEY);
     const allNotifications = notificationsJson ? JSON.parse(notificationsJson) : [];
     
@@ -509,6 +630,22 @@ export const deleteNotification = async (notificationId) => {
  */
 export const deleteAllUserNotifications = async (username) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (tenantCid) {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      let query = supabase
+        .from('notifications')
+        .delete()
+        .eq('company_id', tenantCid);
+      query = authUser?.id
+        ? query.eq('recipient_uid', authUser.id)
+        : query.eq('recipient_username', username);
+      const { error: dbError } = await query;
+      if (dbError) {
+        console.warn('[Notification] DB delete-all failed, updating cache only:', dbError.message);
+      }
+    }
+
     const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_KEY);
     const allNotifications = notificationsJson ? JSON.parse(notificationsJson) : [];
     
@@ -536,6 +673,23 @@ export const clearReadNotifications = async (username) => {
   try {
     if (__DEV__) {
       console.log(`[Notification] Clearing read notifications for ${username}`);
+    }
+
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (tenantCid) {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      let query = supabase
+        .from('notifications')
+        .delete()
+        .eq('company_id', tenantCid)
+        .eq('read', true);
+      query = authUser?.id
+        ? query.eq('recipient_uid', authUser.id)
+        : query.eq('recipient_username', username);
+      const { error: dbError } = await query;
+      if (dbError) {
+        console.warn('[Notification] DB clear-read failed, updating cache only:', dbError.message);
+      }
     }
 
     const notificationsJson = await AsyncStorage.getItem(NOTIFICATIONS_KEY);

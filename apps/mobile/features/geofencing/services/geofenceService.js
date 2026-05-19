@@ -328,7 +328,7 @@ export const canUpdateOfficeLocation = (user) => {
   }
 
   // HR managers (manager with department='HR') can update
-  if (user.role === 'manager' && user.department === 'HR') {
+  if (user.role === 'manager' && String(user.department || '').toLowerCase() === 'hr') {
     return true;
   }
 

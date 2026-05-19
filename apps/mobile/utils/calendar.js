@@ -1,7 +1,7 @@
 // Calendar and Events Management Utilities using Supabase (with AsyncStorage fallback)
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../core/config/supabase';
-import { fetchSessionUserCompanyId, fetchCompanyUserUids, fetchCompanyUsernames } from '../core/tenant/tenantScope';
+import { fetchSessionUserCompanyId, fetchCompanyUsernames } from '../core/tenant/tenantScope';
 import { createNotification, createBatchNotifications } from './notifications';
 
 const CALENDAR_EVENTS_KEY = 'calendar_events'; // For fallback only
@@ -229,6 +229,13 @@ export const createCalendarEvent = async (eventData) => {
     // Get user UID from current Supabase session
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
     const createdByUid = session?.user?.id || null;
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!createdByUid || !tenantCid) {
+      return {
+        success: false,
+        error: 'Tenant context missing. Please sign in again'
+      };
+    }
 
     // Determine visibleTo based on visibility
     let finalVisibleToArray = [];
@@ -251,6 +258,7 @@ export const createCalendarEvent = async (eventData) => {
       color,
       created_by: createdBy,
       created_by_uid: createdByUid,
+      company_id: tenantCid,
       visibility: visibility,
       visible_to: finalVisibleToArray,
       assigned_to: finalVisibleToArray // Keep for backward compatibility
@@ -383,10 +391,18 @@ export const getCalendarEvents = async (employeeId = null, startDate = null, end
     const { data: { session } } = await supabase.auth.getSession();
     const currentUserUid = session?.user?.id || null;
     const currentUsername = employeeId || session?.user?.user_metadata?.username || null;
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      if (__DEV__) {
+        console.warn('[tenant] getCalendarEvents: no session company_id - returning no events');
+      }
+      return [];
+    }
 
     let query = supabase
       .from('calendar_events')
       .select('*')
+      .eq('company_id', tenantCid)
       .order('date', { ascending: true })
       .order('time', { ascending: true });
 
@@ -409,21 +425,9 @@ export const getCalendarEvents = async (employeeId = null, startDate = null, end
     // Convert to app format
     let events = data.map(convertCalendarEventFromDb);
 
-    const tenantCid = await fetchSessionUserCompanyId(supabase);
-    const tenantUids = tenantCid ? await fetchCompanyUserUids(supabase, tenantCid, 'getCalendarEvents') : [];
-    const tenantUidSet = new Set(tenantUids);
-    if (tenantCid) {
-      if (__DEV__) {
-        console.log('[tenant] getCalendarEvents', { queried_company_id: tenantCid, uid_count: tenantUids.length });
-      }
-      events = events.filter((ev) => ev.createdByUid && tenantUidSet.has(ev.createdByUid));
-    } else {
-      if (__DEV__) {
-        console.warn('[tenant] getCalendarEvents: no session company_id — returning no events');
-      }
-      events = [];
+    if (__DEV__) {
+      console.log('[tenant] getCalendarEvents', { queried_company_id: tenantCid, recordCount: events.length });
     }
-
     // Filter events based on visibility rules (RLS handles most, but we do additional client-side filtering)
     // Note: currentUserUid and currentUsername are already declared above (lines 367-369)
     if (currentUsername || currentUserUid) {
@@ -550,6 +554,11 @@ export const getEventsByDate = async (date, employeeId = null) => {
  */
 export const updateCalendarEvent = async (eventId, updates) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      return { success: false, error: 'Tenant context missing. Please sign in again' };
+    }
+
     const updateData = {
       ...updates,
       updated_at: new Date().toISOString()
@@ -577,7 +586,8 @@ export const updateCalendarEvent = async (eventId, updates) => {
     const { error } = await supabase
       .from('calendar_events')
       .update(updateData)
-      .eq('id', eventId);
+      .eq('id', eventId)
+      .eq('company_id', tenantCid);
 
     if (error) {
       console.error('Error updating calendar event in Supabase:', error);
@@ -660,10 +670,16 @@ const updateCalendarEventFallback = async (eventId, updates) => {
  */
 export const deleteCalendarEvent = async (eventId, deletedBy) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) {
+      return { success: false, error: 'Tenant context missing. Please sign in again' };
+    }
+
     const { error } = await supabase
       .from('calendar_events')
       .delete()
-      .eq('id', eventId);
+      .eq('id', eventId)
+      .eq('company_id', tenantCid);
 
     if (error) {
       console.error('Error deleting calendar event from Supabase:', error);
@@ -718,10 +734,14 @@ const deleteCalendarEventFallback = async (eventId, deletedBy) => {
  */
 export const getEventById = async (eventId) => {
   try {
+    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    if (!tenantCid) return null;
+
     const { data, error } = await supabase
       .from('calendar_events')
       .select('*')
       .eq('id', eventId)
+      .eq('company_id', tenantCid)
       .single();
 
     if (error) {

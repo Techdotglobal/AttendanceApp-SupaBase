@@ -18,7 +18,7 @@ const {
   parseLoginIdentifier,
   usernameEqVariants,
 } = require('../lib/loginNormalize');
-const { normalizePosition } = require('../lib/orgNormalize');
+const { normalizePosition, toLookupKey } = require('../lib/orgNormalize');
 const {
   listDepartmentsForCompany,
   ensureDepartmentForCompany,
@@ -65,6 +65,35 @@ async function resolveRequesterCompanyId(requester) {
   return UUID_RE.test(String(data.company_id)) ? String(data.company_id) : null;
 }
 
+async function resolveScopedTargetByUsername(req, username) {
+  const requester = parseRequester(req);
+  if (!requester || !requester.role) {
+    return { errorStatus: 401, error: 'Missing requester identity (X-User-Context).' };
+  }
+  if (!PRIVILEGED_ROLES.has(String(requester.role))) {
+    return { errorStatus: 403, error: 'Only super admins or managers can update users.' };
+  }
+  const companyId = await resolveRequesterCompanyId(requester);
+  if (!companyId) {
+    return { errorStatus: 403, error: 'Caller is not bound to a tenant (company_id missing).' };
+  }
+
+  let query = supabase
+    .from('users')
+    .select('uid, username, email, role, department, company_id')
+    .eq('normalized_username', toLookupKey(username))
+    .eq('company_id', companyId);
+
+  if (requester.role === 'manager') {
+    query = query.eq('department', requester.department).neq('role', 'super_admin');
+  }
+
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  if (!data) return { errorStatus: 404, error: 'User not found' };
+  return { requester, companyId, target: data };
+}
+
 /**
  * Ensure tenant department catalog row exists; return display name for users.department (TEXT).
  * Does not write users.department_id — schema uses department TEXT only for now.
@@ -73,13 +102,13 @@ async function resolveRequesterCompanyId(requester) {
 async function resolveDepartmentForUserCreate(companyId, departmentName) {
   const trimmed = departmentName != null ? String(departmentName).trim() : '';
   if (!trimmed || !companyId) {
-    return '';
+    return { id: null, name: '' };
   }
   const ensured = await ensureDepartmentForCompany(companyId, trimmed);
   if (!ensured) {
-    return '';
+    return { id: null, name: '' };
   }
-  return ensured.name;
+  return { id: ensured.id, name: ensured.name };
 }
 
 /**
@@ -119,8 +148,24 @@ router.post('/login', async (req, res) => {
     if (!isEmail) {
       try {
         let resolved = null;
+        const normalizedUsername = toLookupKey(ident);
         const variants = usernameEqVariants(ident);
+        const { data: normalizedRow, error: normalizedErr } = await supabase
+          .from('users')
+          .select('email, username')
+          .eq('normalized_username', normalizedUsername)
+          .maybeSingle();
+        if (normalizedErr) {
+          console.warn(`[${timestamp}] Auth Service: normalized username lookup error`, {
+            username: normalizedUsername,
+            message: normalizedErr.message,
+          });
+        } else if (normalizedRow?.email) {
+          resolved = normalizedRow;
+        }
+
         for (const u of variants) {
+          if (resolved?.email) break;
           const { data: row, error: qErr } = await supabase
             .from('users')
             .select('email, username')
@@ -230,6 +275,7 @@ router.post('/login', async (req, res) => {
           role: userData.role,
           name: userData.name,
           department: userData.department || '',
+          department_id: userData.department_id || null,
           position: userData.position || '',
           workMode: userData.work_mode || 'in_office',
           company_id: userData.company_id != null ? String(userData.company_id) : null,
@@ -321,11 +367,11 @@ router.get('/check-username/:username', async (req, res) => {
       });
     }
 
-    // Query Supabase database
+    const normalizedUsername = toLookupKey(username);
     const { data, error } = await supabase
       .from('users')
       .select('username')
-      .eq('username', username)
+      .eq('normalized_username', normalizedUsername)
       .limit(1);
 
     if (error) {
@@ -428,8 +474,8 @@ router.post('/users', async (req, res) => {
 
     const canonicalEmail = normalizeEmailForAuth(email);
 
-    // Tenant-scoped duplicate checks (username unique within tenant; email
-    // unique globally because Supabase Auth is project-wide).
+    // Email and username are global because Supabase Auth/login is project-wide
+    // and username login does not include tenant context.
     const { data: dupEmail } = await supabase
       .from('users')
       .select('id')
@@ -441,8 +487,7 @@ router.post('/users', async (req, res) => {
     const { data: dupUsername } = await supabase
       .from('users')
       .select('id')
-      .eq('username', username)
-      .eq('company_id', companyId)
+      .eq('normalized_username', toLookupKey(username))
       .maybeSingle();
     if (dupUsername) {
       return res.status(409).json({ success: false, error: 'Username already taken.' });
@@ -470,12 +515,13 @@ router.post('/users', async (req, res) => {
       departmentInput: department != null ? String(department).slice(0, 80) : '',
     });
 
-    let resolvedDepartmentName = '';
+    let resolvedDepartment = { id: null, name: '' };
     try {
-      resolvedDepartmentName = await resolveDepartmentForUserCreate(companyId, department);
+      resolvedDepartment = await resolveDepartmentForUserCreate(companyId, department);
       traceCreateUser('department_ensured', {
         companyId,
-        resolvedDepartmentName,
+        resolvedDepartmentName: resolvedDepartment.name,
+        resolvedDepartmentId: resolvedDepartment.id,
         hadInput: Boolean(department && String(department).trim()),
       });
     } catch (deptErr) {
@@ -504,7 +550,8 @@ router.post('/users', async (req, res) => {
         name: name || username,
         company_id: companyId,
         role,
-        department: resolvedDepartmentName || '',
+        department: resolvedDepartment.name || '',
+        department_id: resolvedDepartment.id || null,
       },
     });
 
@@ -545,7 +592,8 @@ router.post('/users', async (req, res) => {
       name: name || username,
       role: role,
       company_id: companyId,
-      department: resolvedDepartmentName || '',
+      department: resolvedDepartment.name || '',
+      department_id: resolvedDepartment.id || null,
       position: normalizedPosition || '',
       work_mode: workMode || 'in_office',
       hire_date: hireDate || new Date().toISOString().split('T')[0],
@@ -620,6 +668,7 @@ router.post('/users', async (req, res) => {
         role: role,
         name: name || username,
         department: userData.department || '',
+        department_id: userData.department_id || null,
         position: normalizedPosition || userData.position || '',
         workMode: workMode || 'in_office',
         company_id: userData.company_id != null ? String(userData.company_id) : String(companyId),
@@ -661,12 +710,20 @@ router.delete('/users/:uid', async (req, res) => {
         error: 'Requester context is required',
       });
     }
+    const companyId = await resolveRequesterCompanyId(requester);
+    if (!companyId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Caller is not bound to a tenant (company_id missing).',
+      });
+    }
 
     // Fetch target user for permission checks
     const { data: targetUser, error: targetUserError } = await supabase
       .from('users')
-      .select('uid, role, department, username')
+      .select('uid, role, department, username, company_id')
       .eq('uid', uid)
+      .eq('company_id', companyId)
       .single();
 
     if (targetUserError || !targetUser) {
@@ -680,7 +737,7 @@ router.delete('/users/:uid', async (req, res) => {
     // - super_admin cannot delete any super_admin accounts (never allowed)
     // - HR manager can delete employees + managers, but not super_admin
     const isSuperAdmin = requester.role === 'super_admin';
-    const isHrManager = requester.role === 'manager' && requester.department === 'HR';
+    const isHrManager = requester.role === 'manager' && String(requester.department || '').toLowerCase() === 'hr';
 
     if (!isSuperAdmin && !isHrManager) {
       return res.status(403).json({
@@ -730,7 +787,8 @@ router.delete('/users/:uid', async (req, res) => {
     const { error: dbDeleteError } = await supabase
       .from('users')
       .delete()
-      .eq('uid', uid);
+      .eq('uid', uid)
+      .eq('company_id', companyId);
 
     if (dbDeleteError) {
       console.error('Delete user profile error:', dbDeleteError);
@@ -779,6 +837,14 @@ router.patch('/users/:username/role', async (req, res) => {
       });
     }
 
+    const scope = await resolveScopedTargetByUsername(req, username);
+    if (scope.errorStatus) {
+      return res.status(scope.errorStatus).json({ success: false, error: scope.error });
+    }
+    if (scope.requester.role === 'manager' && role !== scope.target.role) {
+      return res.status(403).json({ success: false, error: 'Managers cannot update roles.' });
+    }
+
     // Update role in Supabase database
     const { data, error } = await supabase
       .from('users')
@@ -786,7 +852,8 @@ router.patch('/users/:username/role', async (req, res) => {
         role: role,
         updated_at: new Date().toISOString(),
       })
-      .eq('username', username)
+      .eq('uid', scope.target.uid)
+      .eq('company_id', scope.companyId)
       .select();
 
     if (error) {
@@ -854,19 +921,11 @@ router.patch('/users/:username/email', async (req, res) => {
       });
     }
 
-    // Step 1: Get user's UID from database
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('uid, email')
-      .eq('username', username)
-      .single();
-
-    if (userError || !userData) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found',
-      });
+    const scope = await resolveScopedTargetByUsername(req, username);
+    if (scope.errorStatus) {
+      return res.status(scope.errorStatus).json({ success: false, error: scope.error });
     }
+    const userData = scope.target;
 
     // Step 2: Update email in Supabase Auth (requires admin API)
     const { data: authData, error: authError } = await supabase.auth.admin.updateUserById(
@@ -892,7 +951,8 @@ router.patch('/users/:username/email', async (req, res) => {
         email: email,
         updated_at: new Date().toISOString(),
       })
-      .eq('username', username)
+      .eq('uid', userData.uid)
+      .eq('company_id', scope.companyId)
       .select();
 
     if (dbError) {
@@ -980,11 +1040,29 @@ router.patch('/users/:username', async (req, res) => {
       });
     }
 
+    const scope = await resolveScopedTargetByUsername(req, username);
+    if (scope.errorStatus) {
+      return res.status(scope.errorStatus).json({ success: false, error: scope.error });
+    }
+    if (scope.requester.role === 'manager' && dbUpdates.role !== undefined && dbUpdates.role !== scope.target.role) {
+      return res.status(403).json({ success: false, error: 'Managers cannot update roles.' });
+    }
+    if (scope.requester.role === 'manager' && dbUpdates.department !== undefined && dbUpdates.department !== scope.target.department) {
+      return res.status(403).json({ success: false, error: 'Managers cannot change departments.' });
+    }
+
+    if (dbUpdates.department !== undefined) {
+      const resolved = await resolveDepartmentForUserCreate(scope.companyId, dbUpdates.department);
+      dbUpdates.department = resolved.name || null;
+      dbUpdates.department_id = resolved.id || null;
+    }
+
     // Update user data in Supabase database
     const { data, error } = await supabase
       .from('users')
       .update(dbUpdates)
-      .eq('username', username)
+      .eq('uid', scope.target.uid)
+      .eq('company_id', scope.companyId)
       .select();
 
     if (error) {

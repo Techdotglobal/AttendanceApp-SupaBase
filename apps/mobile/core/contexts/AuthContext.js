@@ -487,7 +487,7 @@ export function AuthProvider({ children }) {
         username: userData.username || authUser?.email?.split('@')[0],
         role: dbRole,
         companyId: companyIdStr,
-        departmentId: userData.department ? String(userData.department).trim() : null,
+        departmentId: userData.department_id != null ? String(userData.department_id) : null,
         name: userData.name || authUser?.user_metadata?.name,
         department: userData.department || '',
         position: userData.position || '',

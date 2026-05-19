@@ -79,7 +79,7 @@ export const authenticateUser = async (usernameOrEmail, password) => {
             position: data.user?.position || '',
             workMode: data.user?.workMode || 'in_office',
             companyId: data.user?.company_id != null ? String(data.user.company_id) : null,
-            departmentId: data.user?.department ? String(data.user.department).trim() : null,
+            departmentId: data.user?.department_id != null ? String(data.user.department_id) : null,
           }
         };
       }
@@ -168,7 +168,7 @@ export const authenticateUser = async (usernameOrEmail, password) => {
         position: userData.position || '',
         workMode: userData.work_mode || 'in_office',
         companyId: userData.company_id != null ? String(userData.company_id) : null,
-        departmentId: userData.department ? String(userData.department).trim() : null,
+        departmentId: userData.department_id != null ? String(userData.department_id) : null,
       }
     };
   } catch (error) {

@@ -7,7 +7,6 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "channel": "development",
       "env": {
         "GOOGLE_MAPS_API_KEY": "@GOOGLE_MAPS_API_KEY"
       }
@@ -17,16 +16,14 @@
         "buildType": "apk"
       },
       "distribution": "internal",
-      "channel": "preview",
       "env": {
         "GOOGLE_MAPS_API_KEY": "@GOOGLE_MAPS_API_KEY"
       }
     },
     "production": {
       "android": {
-        "buildType": "apk"
+        "buildType": "app-bundle"
       },
-      "channel": "production",
       "env": {
         "GOOGLE_MAPS_API_KEY": "@GOOGLE_MAPS_API_KEY"
       }
@@ -36,3 +33,4 @@
     "production": {}
   }
 }
+

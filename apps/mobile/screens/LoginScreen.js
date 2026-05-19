@@ -502,21 +502,6 @@ export default function LoginScreen() {
             </Text>
           </TouchableOpacity>
 
-          {/* Sign Up Link */}
-          <TouchableOpacity
-            onPress={() => navigation.navigate('SignUp')}
-            style={{ alignItems: 'center', marginTop: spacing.md }}
-          >
-            <Text
-              style={{
-                color: colors.primary,
-                fontSize: responsiveFont(14),
-              }}
-            >
-              Don't have an account? Sign Up
-            </Text>
-          </TouchableOpacity>
-
           {/* Footer: Logo and Trademark - inside ScrollView so never cut off */}
           <View 
             style={{ 

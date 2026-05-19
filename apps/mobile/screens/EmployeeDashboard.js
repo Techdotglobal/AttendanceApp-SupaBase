@@ -9,6 +9,7 @@ import {
   RefreshControl,
   Modal,
   TextInput,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,6 +35,7 @@ import { getPreferredAuthMethod } from '../utils/authPreferences';
 import { useTheme } from '../contexts/ThemeContext';
 import { getUnreadNotificationCount } from '../utils/notifications';
 import { getEmployeeLeaveBalance, calculateRemainingLeaves } from '../utils/leaveManagement';
+import { getEmployeeQuickStats } from '../utils/analytics';
 import { 
   getHRRoleFromPosition, 
   getHRRoleColor, 
@@ -70,6 +72,13 @@ export default function EmployeeDashboard({ route }) {
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [leaveBalance, setLeaveBalance] = useState(null);
   const [remainingLeaves, setRemainingLeaves] = useState(null);
+  const [quickStats, setQuickStats] = useState({
+    daysWorked: 0,
+    hoursLogged: 0,
+    thisMonth: 0,
+  });
+  const [quickStatsLoading, setQuickStatsLoading] = useState(true);
+  const [quickStatsError, setQuickStatsError] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -148,8 +157,34 @@ export default function EmployeeDashboard({ route }) {
       loadEmployeeData(),
       loadMyRequests(),
       loadNotificationCount(),
-      loadLeaveBalance()
+      loadLeaveBalance(),
+      loadQuickStats(),
     ]);
+  };
+
+  const loadQuickStats = async () => {
+    if (!user?.username) {
+      setQuickStatsLoading(false);
+      return;
+    }
+    setQuickStatsError(null);
+    try {
+      const result = await getEmployeeQuickStats(user.username);
+      if (result.success) {
+        setQuickStats({
+          daysWorked: result.daysWorked ?? 0,
+          hoursLogged: result.hoursLogged ?? 0,
+          thisMonth: result.thisMonth ?? 0,
+        });
+      } else {
+        setQuickStatsError(result.error || 'Could not load stats');
+      }
+    } catch (error) {
+      console.error('Error loading quick stats:', error);
+      setQuickStatsError('Could not load stats');
+    } finally {
+      setQuickStatsLoading(false);
+    }
   };
 
   const loadLeaveBalance = async () => {
@@ -211,6 +246,7 @@ export default function EmployeeDashboard({ route }) {
 
   const onRefresh = async () => {
     setIsRefreshing(true);
+    setQuickStatsLoading(true);
     await loadData();
     setIsRefreshing(false);
   };
@@ -1102,23 +1138,52 @@ export default function EmployeeDashboard({ route }) {
 
         {/* Quick Stats */}
         <View className="rounded-2xl p-6 mt-6 shadow-sm" style={{ backgroundColor: colors.surface }}>
-          <Text className="text-lg font-semibold mb-4" style={{ color: colors.text }}>
-            Quick Stats
-          </Text>
-          <View className="flex-row justify-around">
-            <View className="items-center">
-              <Text className="text-2xl font-bold" style={{ color: colors.primary }}>0</Text>
-              <Text className="text-sm" style={{ color: colors.textSecondary }}>Days Worked</Text>
-            </View>
-            <View className="items-center">
-              <Text className="text-2xl font-bold" style={{ color: colors.success }}>0</Text>
-              <Text className="text-sm" style={{ color: colors.textSecondary }}>Hours Logged</Text>
-            </View>
-            <View className="items-center">
-              <Text className="text-2xl font-bold" style={{ color: colors.primary }}>0</Text>
-              <Text className="text-sm" style={{ color: colors.textSecondary }}>This Month</Text>
-            </View>
+          <View className="flex-row items-center justify-between mb-4">
+            <Text className="text-lg font-semibold" style={{ color: colors.text }}>
+              Quick Stats
+            </Text>
+            {quickStatsLoading ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : null}
           </View>
+          {quickStatsError ? (
+            <View className="items-center py-2">
+              <Text className="text-sm text-center mb-2" style={{ color: colors.textSecondary }}>
+                {quickStatsError}
+              </Text>
+              <TouchableOpacity onPress={loadQuickStats}>
+                <Text className="text-sm font-semibold" style={{ color: colors.primary }}>
+                  Tap to retry
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View className="flex-row justify-around">
+              <View className="items-center">
+                <Text className="text-2xl font-bold" style={{ color: colors.primary }}>
+                  {quickStatsLoading ? '—' : quickStats.daysWorked}
+                </Text>
+                <Text className="text-sm" style={{ color: colors.textSecondary }}>Days Worked</Text>
+              </View>
+              <View className="items-center">
+                <Text className="text-2xl font-bold" style={{ color: colors.success }}>
+                  {quickStatsLoading ? '—' : quickStats.hoursLogged}
+                </Text>
+                <Text className="text-sm" style={{ color: colors.textSecondary }}>Hours Logged</Text>
+              </View>
+              <View className="items-center">
+                <Text className="text-2xl font-bold" style={{ color: colors.primary }}>
+                  {quickStatsLoading ? '—' : quickStats.thisMonth}
+                </Text>
+                <Text className="text-sm" style={{ color: colors.textSecondary }}>This Month</Text>
+              </View>
+            </View>
+          )}
+          {!quickStatsLoading && !quickStatsError && quickStats.daysWorked === 0 && quickStats.hoursLogged === 0 ? (
+            <Text className="text-xs text-center mt-3" style={{ color: colors.textTertiary }}>
+              Complete a check-in and check-out to see your stats.
+            </Text>
+          ) : null}
         </View>
 
         {/* Trademark */}

@@ -2,7 +2,6 @@
 export const ROUTES = {
   // Auth Routes
   LOGIN: 'Login',
-  SIGNUP: 'SignUp',
   FORGOT_PASSWORD: 'ForgotPassword',
   RESET_PASSWORD: 'ResetPassword',
   
@@ -23,7 +22,6 @@ export const ROUTES = {
   HR_DASHBOARD: 'HRDashboard',
   TICKET_MANAGEMENT: 'TicketManagement',
   MANUAL_ATTENDANCE: 'ManualAttendance',
-  SIGNUP_APPROVAL: 'SignupApproval',
   CREATE_USER: 'CreateUser',
   DELETE_USER: 'DeleteUserScreen',
   EMPLOYEE_MANAGEMENT: 'EmployeeManagement',
@@ -53,7 +51,6 @@ export const ADMIN_ROUTES = [
   ROUTES.HR_DASHBOARD,
   ROUTES.TICKET_MANAGEMENT,
   ROUTES.MANUAL_ATTENDANCE,
-  ROUTES.SIGNUP_APPROVAL,
   ROUTES.EMPLOYEE_MANAGEMENT,
   ROUTES.DELETE_USER,
 ];

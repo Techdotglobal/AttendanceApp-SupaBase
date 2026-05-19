@@ -100,13 +100,20 @@ export function AuthProvider({ children }) {
         setIsLoading(false);
       });
 
-    // Listen to Supabase auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    // Defer profile reload so auth API calls (e.g. signInWithPassword during password
+    // change) are not blocked waiting for this listener to finish — avoids deadlocks.
+    const scheduleLoadUserData = (userId) => {
+      setTimeout(() => {
+        void loadUserData(userId);
+      }, 0);
+    };
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       console.log('Auth state changed:', event, session ? 'has session' : 'no session');
 
       if (event === 'INITIAL_SESSION') {
         if (session?.user) {
-          await loadUserData(session.user.id);
+          scheduleLoadUserData(session.user.id);
         } else {
           setUser(null);
           setIsLoading(false);
@@ -114,21 +121,24 @@ export function AuthProvider({ children }) {
         return;
       }
 
-      // Handle token refresh errors
       if (event === 'TOKEN_REFRESHED') {
         console.log('Token refreshed successfully');
         if (session?.user) {
-          await loadUserData(session.user.id);
+          scheduleLoadUserData(session.user.id);
         }
-      } else if (event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
+      } else if (event === 'SIGNED_OUT') {
         if (session?.user) {
-          await loadUserData(session.user.id);
+          scheduleLoadUserData(session.user.id);
         } else {
           setUser(null);
           setIsLoading(false);
         }
+      } else if (event === 'USER_UPDATED') {
+        if (session?.user) {
+          scheduleLoadUserData(session.user.id);
+        }
       } else if (event === 'SIGNED_IN' && session?.user) {
-        await loadUserData(session.user.id);
+        scheduleLoadUserData(session.user.id);
       } else if (!session) {
         setUser(null);
         setIsLoading(false);

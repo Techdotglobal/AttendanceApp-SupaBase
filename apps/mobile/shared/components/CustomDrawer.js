@@ -10,7 +10,6 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../core/contexts/AuthContext';
 import { useTheme } from '../../core/contexts/ThemeContext';
-import { getPendingSignupCount } from '../../utils/signupRequests';
 import { getUnreadNotificationCount } from '../../utils/notifications';
 import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp, isTablet } from '../../utils/responsive';
 import { ROUTES } from '../constants/routes';
@@ -26,7 +25,6 @@ export default function CustomDrawer({ navigation, state }) {
   const { user, handleLogout } = useAuth();
   const { colors, theme } = useTheme();
   const tablet = isTablet();
-  const [pendingSignupCount, setPendingSignupCount] = useState(0);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [isEmployeeInsideRadius, setIsEmployeeInsideRadius] = useState(false);
 
@@ -81,14 +79,6 @@ export default function CustomDrawer({ navigation, state }) {
   }, [navigation]);
 
   const loadCounts = async () => {
-    if (user && (user.role === 'super_admin' || user.role === 'manager')) {
-      try {
-        const signupCount = await getPendingSignupCount();
-        setPendingSignupCount(signupCount);
-      } catch (error) {
-        console.error('Error loading signup count:', error);
-      }
-    }
     if (user) {
       try {
         const notifCount = await getUnreadNotificationCount(user.username);
@@ -248,13 +238,6 @@ export default function CustomDrawer({ navigation, state }) {
         icon: 'trash-outline',
         screen: ROUTES.DELETE_USER,
         roles: ['super_admin'],
-      },
-      {
-        name: 'Signup Approvals',
-        icon: 'checkmark-circle-outline',
-        screen: ROUTES.SIGNUP_APPROVAL,
-        roles: ['super_admin', 'manager'], // Managers can approve signups, including HR
-        badge: pendingSignupCount,
       },
       {
         name: 'Reports',

@@ -10,7 +10,6 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { getPendingSignupCount } from '../utils/signupRequests';
 import { getUnreadNotificationCount } from '../utils/notifications';
 import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp } from '../utils/responsive';
 import Logo from './Logo';
@@ -19,7 +18,6 @@ import Trademark from './Trademark';
 export default function CustomDrawer({ navigation, state }) {
   const { user, handleLogout } = useAuth();
   const { colors, theme } = useTheme();
-  const [pendingSignupCount, setPendingSignupCount] = useState(0);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
 
   useEffect(() => {
@@ -29,14 +27,6 @@ export default function CustomDrawer({ navigation, state }) {
   }, []);
 
   const loadCounts = async () => {
-    if (user && (user.role === 'super_admin' || user.role === 'manager')) {
-      try {
-        const signupCount = await getPendingSignupCount();
-        setPendingSignupCount(signupCount);
-      } catch (error) {
-        console.error('Error loading signup count:', error);
-      }
-    }
     if (user) {
       try {
         const notifCount = await getUnreadNotificationCount(user.username);
@@ -152,13 +142,6 @@ export default function CustomDrawer({ navigation, state }) {
         icon: 'person-add-outline',
         screen: 'CreateUser',
         roles: ['super_admin'],
-      },
-      {
-        name: 'Signup Approvals',
-        icon: 'checkmark-circle-outline',
-        screen: 'SignupApproval',
-        roles: ['super_admin'],
-        badge: pendingSignupCount,
       },
     ];
 

@@ -1,7 +1,18 @@
 // Analytics utilities for attendance data
 import { supabase } from '../core/config/supabase';
 import { fetchSessionUserCompanyId, requireValidCompanyId } from '../core/tenant/tenantScope';
-import { getAttendanceRecords, getUserAttendanceRecords } from './storage';
+import {
+  getAttendanceRecords,
+  getUserAttendanceRecords,
+  getOfflineQueuedRecordsForUser,
+} from './storage';
+
+function normalizeAttendanceType(type) {
+  const t = String(type || '').toLowerCase().replace(/-/g, '_');
+  if (t === 'check_in' || t === 'checkin') return 'checkin';
+  if (t === 'check_out' || t === 'checkout') return 'checkout';
+  return t;
+}
 
 /**
  * Group attendance records by date
@@ -40,10 +51,11 @@ const calculateDayHours = (dayRecords) => {
   
   // Find the first check-in and last check-out of the day
   for (const record of sorted) {
-    if (record.type === 'checkin' && !checkIn) {
+    const recordType = normalizeAttendanceType(record.type);
+    if (recordType === 'checkin' && !checkIn) {
       checkIn = new Date(record.timestamp);
     }
-    if (record.type === 'checkout') {
+    if (recordType === 'checkout') {
       checkOut = new Date(record.timestamp);
     }
   }
@@ -269,6 +281,95 @@ export const calculateAverageHours = async (username, period = 'monthly') => {
  * @param {string} period - Period type ('daily', 'weekly', 'monthly', 'yearly', 'all')
  * @returns {Promise<Object>} Object with all analytics
  */
+/**
+ * Compute dashboard quick stats from attendance records (all-time + current month).
+ * @param {Array} records - Merged online + offline attendance records
+ * @returns {{ daysWorked: number, hoursLogged: number, thisMonth: number }}
+ */
+export const computeQuickStatsFromRecords = (records) => {
+  if (!Array.isArray(records) || records.length === 0) {
+    return { daysWorked: 0, hoursLogged: 0, thisMonth: 0 };
+  }
+
+  const normalized = records.map((r) => ({
+    ...r,
+    type: normalizeAttendanceType(r.type),
+  }));
+
+  const groupedByDate = groupRecordsByDate(normalized);
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  monthStart.setHours(0, 0, 0, 0);
+
+  let daysWorked = 0;
+  let hoursLogged = 0;
+  let thisMonth = 0;
+
+  Object.keys(groupedByDate).forEach((dateKey) => {
+    const hours = calculateDayHours(groupedByDate[dateKey]);
+    if (hours == null || hours <= 0) return;
+
+    daysWorked += 1;
+    hoursLogged += hours;
+
+    const dayDate = new Date(`${dateKey}T12:00:00`);
+    if (!Number.isNaN(dayDate.getTime()) && dayDate >= monthStart) {
+      thisMonth += 1;
+    }
+  });
+
+  return {
+    daysWorked,
+    hoursLogged: Math.round(hoursLogged * 10) / 10,
+    thisMonth,
+  };
+};
+
+/**
+ * Load quick stats for the signed-in employee (Supabase + offline queue).
+ * @param {string} username
+ * @returns {Promise<{ success: boolean, daysWorked: number, hoursLogged: number, thisMonth: number, error?: string }>}
+ */
+export const getEmployeeQuickStats = async (username) => {
+  if (!username) {
+    return {
+      success: false,
+      daysWorked: 0,
+      hoursLogged: 0,
+      thisMonth: 0,
+      error: 'Missing username',
+    };
+  }
+
+  try {
+    const [onlineRecords, offlineRecords] = await Promise.all([
+      getUserAttendanceRecords(username),
+      getOfflineQueuedRecordsForUser(username),
+    ]);
+
+    const seen = new Set();
+    const merged = [];
+    for (const record of [...onlineRecords, ...offlineRecords]) {
+      const key = record.id || `${record.username}-${record.type}-${record.timestamp}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(record);
+    }
+
+    const stats = computeQuickStatsFromRecords(merged);
+    return { success: true, ...stats };
+  } catch (error) {
+    console.error('[analytics] getEmployeeQuickStats:', error);
+    return {
+      success: false,
+      daysWorked: 0,
+      hoursLogged: 0,
+      thisMonth: 0,
+      error: error?.message || 'Failed to load stats',
+    };
+  }
+};
+
 export const getUserAnalytics = async (username, period = 'monthly') => {
   try {
     const [attendanceRate, averageHours] = await Promise.all([

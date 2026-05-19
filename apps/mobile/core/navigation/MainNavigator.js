@@ -21,7 +21,6 @@ import TicketScreen from '../../screens/TicketScreen';
 import HRDashboard from '../../screens/HRDashboard';
 import TicketManagementScreen from '../../screens/TicketManagementScreen';
 import ManualAttendanceScreen from '../../screens/ManualAttendanceScreen';
-import SignupApprovalScreen from '../../screens/SignupApprovalScreen';
 import CreateUserScreen from '../../screens/CreateUserScreen';
 import DeleteUserScreen from '../../screens/DeleteUserScreen';
 import EmployeeManagement from '../../screens/EmployeeManagement';
@@ -176,12 +175,6 @@ export default function MainNavigator({ user }) {
           name={ROUTES.MANUAL_ATTENDANCE} 
           component={ManualAttendanceScreen}
           options={{ title: 'Manual Attendance' }}
-          initialParams={{ user }}
-        />
-        <Stack.Screen 
-          name={ROUTES.SIGNUP_APPROVAL} 
-          component={SignupApprovalScreen}
-          options={{ title: 'Signup Approvals' }}
           initialParams={{ user }}
         />
         <Stack.Screen 

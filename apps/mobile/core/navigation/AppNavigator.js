@@ -25,7 +25,6 @@ export default function AppNavigator() {
             ResetPassword: 'reset-password',
             ForgotPassword: 'forgot-password',
             Login: '',
-            SignUp: 'signup',
           },
         },
       },

@@ -13,7 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../core/contexts/AuthContext';
-import { changePassword } from '../utils/passwordChange';
+import { changePassword, resolvePasswordChangeEmail } from '../utils/passwordChange';
 
 export default function ThemeSettingsScreen({ navigation, route }) {
   const { user } = route.params;
@@ -73,16 +73,18 @@ export default function ThemeSettingsScreen({ navigation, route }) {
       return;
     }
 
-    // Get user email from auth context or route params
-    const userEmail = authUser?.email || user?.email;
-    if (!userEmail) {
-      Alert.alert('Error', 'Unable to get user email. Please try logging out and back in.');
-      return;
-    }
-
     setIsChangingPassword(true);
 
     try {
+      const userEmail = await resolvePasswordChangeEmail(authUser?.email || user?.email);
+      if (!userEmail) {
+        Alert.alert(
+          'Error',
+          'Unable to determine your account email. Please sign out and sign in again.'
+        );
+        return;
+      }
+
       const result = await changePassword(currentPassword, newPassword, userEmail);
 
       if (result.success) {

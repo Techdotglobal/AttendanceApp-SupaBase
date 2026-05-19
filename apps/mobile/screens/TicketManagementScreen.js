@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   FlatList,
   RefreshControl,
   Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -22,17 +23,372 @@ import {
   getPriorityColor,
   TICKET_STATUS,
   fetchTicketDepartments,
+  getTicketsForViewer,
 } from '../utils/ticketManagement';
 import { getCategoryLabel } from '../utils/ticketDepartments';
 import { getAdminUsers } from '../utils/employees';
 import { useTheme } from '../contexts/ThemeContext';
-import { isTablet } from '../shared/utils/responsive';
+import { useAuth } from '../core/contexts/AuthContext';
+import { isTablet, spacing, fontSize, iconSize, responsivePadding } from '../shared/utils/responsive';
+
+function formatTicketDate(dateString) {
+  const date = new Date(dateString);
+  return (
+    date.toLocaleDateString() +
+    ' ' +
+    date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  );
+}
+
+function TicketManagementList({ user, onSelectTicket }) {
+  const { colors } = useTheme();
+  const [tickets, setTickets] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [ticketFilter, setTicketFilter] = useState('all');
+
+  const LOAD_TIMEOUT_MS = 20000;
+
+  const loadTickets = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const result = await Promise.race([
+        getTicketsForViewer(user),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Loading tickets timed out. Please try again.')),
+            LOAD_TIMEOUT_MS
+          )
+        ),
+      ]);
+      if (!result.success) {
+        setTickets([]);
+        setDepartments(result.departments || []);
+        setLoadError(result.error || 'Failed to load tickets');
+        return;
+      }
+      setTickets(result.data || []);
+      setDepartments(result.departments || []);
+    } catch (error) {
+      console.error('[TicketManagementList] load error:', error);
+      setTickets([]);
+      setLoadError(error?.message || 'Failed to load tickets. Please try again.');
+    }
+  }, [user]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setIsLoading(true);
+      try {
+        await loadTickets();
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadTickets]);
+
+  const onRefresh = async () => {
+    setIsRefreshing(true);
+    await loadTickets();
+    setIsRefreshing(false);
+  };
+
+  const filteredTickets =
+    ticketFilter === 'all'
+      ? tickets
+      : tickets.filter((t) => t.status === ticketFilter);
+
+  if (isLoading) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: colors.background,
+          padding: spacing.xl,
+        }}
+      >
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={{ color: colors.textSecondary, marginTop: spacing.md }}>
+          Loading tickets…
+        </Text>
+      </View>
+    );
+  }
+
+  if (loadError && tickets.length === 0) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: colors.background,
+          padding: spacing.xl,
+        }}
+      >
+        <Ionicons name="alert-circle-outline" size={48} color={colors.error || '#ef4444'} />
+        <Text
+          style={{
+            color: colors.text,
+            fontSize: fontSize.lg,
+            fontWeight: '600',
+            marginTop: spacing.md,
+            textAlign: 'center',
+          }}
+        >
+          Could not load tickets
+        </Text>
+        <Text
+          style={{
+            color: colors.textSecondary,
+            marginTop: spacing.sm,
+            textAlign: 'center',
+          }}
+        >
+          {loadError}
+        </Text>
+        <TouchableOpacity
+          style={{
+            marginTop: spacing.lg,
+            backgroundColor: colors.primary,
+            paddingHorizontal: spacing.lg,
+            paddingVertical: spacing.md,
+            borderRadius: 8,
+          }}
+          onPress={async () => {
+            setIsLoading(true);
+            await loadTickets();
+            setIsLoading(false);
+          }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '600' }}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <View style={{ padding: responsivePadding(16) }}>
+        <Text style={{ fontSize: fontSize.xl, fontWeight: 'bold', color: colors.text }}>
+          Ticket Management
+        </Text>
+        <Text style={{ color: colors.textSecondary, marginTop: spacing.xs, marginBottom: spacing.md }}>
+          Tickets for your department and assignments
+        </Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
+          {['all', TICKET_STATUS.OPEN, TICKET_STATUS.IN_PROGRESS, TICKET_STATUS.RESOLVED, TICKET_STATUS.CLOSED].map(
+            (filterType) => (
+              <TouchableOpacity
+                key={filterType}
+                onPress={() => setTicketFilter(filterType)}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 6,
+                  borderRadius: 16,
+                  backgroundColor:
+                    ticketFilter === filterType ? colors.primary : colors.surface,
+                }}
+              >
+                <Text
+                  style={{
+                    color: ticketFilter === filterType ? '#fff' : colors.textSecondary,
+                    fontWeight: ticketFilter === filterType ? '600' : '400',
+                    fontSize: fontSize.sm,
+                  }}
+                >
+                  {filterType === 'all' ? 'All' : getStatusLabel(filterType)}
+                </Text>
+              </TouchableOpacity>
+            )
+          )}
+        </View>
+      </View>
+
+      {filteredTickets.length === 0 ? (
+        <View
+          style={{
+            flex: 1,
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: spacing['2xl'],
+          }}
+        >
+          <Ionicons name="ticket-outline" size={iconSize['4xl'] || 64} color={colors.textTertiary} />
+          <Text
+            style={{
+              fontSize: fontSize.lg,
+              fontWeight: '600',
+              color: colors.text,
+              marginTop: spacing.base,
+            }}
+          >
+            No tickets
+          </Text>
+          <Text style={{ color: colors.textSecondary, marginTop: spacing.xs, textAlign: 'center' }}>
+            {ticketFilter === 'all'
+              ? 'There are no tickets in your scope right now.'
+              : `No ${getStatusLabel(ticketFilter).toLowerCase()} tickets.`}
+          </Text>
+        </View>
+      ) : (
+        <FlatList
+          data={filteredTickets}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ paddingBottom: spacing.xl }}
+          refreshControl={
+            <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
+          }
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              style={{
+                backgroundColor: colors.surface,
+                borderRadius: 12,
+                padding: responsivePadding(16),
+                marginHorizontal: responsivePadding(16),
+                marginBottom: spacing.md,
+              }}
+              onPress={() => onSelectTicket(item)}
+            >
+              <Text style={{ fontSize: fontSize.md, fontWeight: '600', color: colors.text }}>
+                {item.subject}
+              </Text>
+              <Text style={{ fontSize: fontSize.sm, color: colors.textSecondary, marginTop: 4 }}>
+                By {item.createdBy} • {formatTicketDate(item.createdAt)}
+              </Text>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  marginTop: spacing.sm,
+                  gap: spacing.xs,
+                }}
+              >
+                <View
+                  style={{
+                    backgroundColor: getStatusColor(item.status) + '20',
+                    borderRadius: 12,
+                    paddingHorizontal: 10,
+                    paddingVertical: 4,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: fontSize.sm,
+                      fontWeight: '600',
+                      color: getStatusColor(item.status),
+                    }}
+                  >
+                    {getStatusLabel(item.status)}
+                  </Text>
+                </View>
+                <Text style={{ fontSize: fontSize.sm, color: colors.textSecondary }}>
+                  {getCategoryLabel(item.category, departments)}
+                </Text>
+                {item.assignedTo ? (
+                  <Text style={{ fontSize: fontSize.sm, color: colors.textSecondary }}>
+                    → {item.assignedTo}
+                  </Text>
+                ) : null}
+              </View>
+            </TouchableOpacity>
+          )}
+        />
+      )}
+    </View>
+  );
+}
+
+function hasValidTicketId(ticket) {
+  return ticket != null && ticket.id != null && String(ticket.id).trim() !== '';
+}
 
 export default function TicketManagementScreen({ navigation, route }) {
-  const { user, ticket: initialTicket } = route.params;
+  const { user: routeUser, ticket: routeTicket } = route.params || {};
+  const { user: authUser, isLoading: authLoading } = useAuth();
+  const user = authUser || routeUser;
+
+  const initialValidTicket = hasValidTicketId(routeTicket) ? routeTicket : null;
+  const [activeTicket, setActiveTicket] = useState(initialValidTicket);
+
+  useEffect(() => {
+    if (hasValidTicketId(routeTicket)) {
+      setActiveTicket(routeTicket);
+    } else if (!routeTicket) {
+      setActiveTicket(null);
+    }
+  }, [routeTicket?.id]);
+
+  if (!user) {
+    if (authLoading || routeUser) {
+      return (
+        <View
+          style={{
+            flex: 1,
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: spacing.xl,
+          }}
+        >
+          <ActivityIndicator size="large" />
+          <Text style={{ marginTop: 12, color: '#6b7280' }}>Loading account…</Text>
+        </View>
+      );
+    }
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: spacing.xl,
+        }}
+      >
+        <Ionicons name="log-in-outline" size={48} color="#6b7280" />
+        <Text style={{ marginTop: 12, fontWeight: '600' }}>Sign in required</Text>
+        <Text style={{ marginTop: 8, color: '#6b7280', textAlign: 'center' }}>
+          Could not load your profile. Please sign in again.
+        </Text>
+      </View>
+    );
+  }
+
+  if (!hasValidTicketId(activeTicket)) {
+    return (
+      <TicketManagementList
+        user={user}
+        onSelectTicket={(ticket) => {
+          if (hasValidTicketId(ticket)) setActiveTicket(ticket);
+        }}
+      />
+    );
+  }
+
+  return (
+    <TicketManagementDetail
+      navigation={navigation}
+      user={user}
+      initialTicket={activeTicket}
+      onBack={() => setActiveTicket(null)}
+    />
+  );
+}
+
+function TicketManagementDetail({ navigation, user, initialTicket, onBack }) {
   const { colors } = useTheme();
   const tablet = isTablet();
   const [ticket, setTicket] = useState(initialTicket);
+  const [detailLoading, setDetailLoading] = useState(true);
+  const [detailError, setDetailError] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [employees, setEmployees] = useState([]);
   
@@ -77,10 +433,20 @@ export default function TicketManagementScreen({ navigation, route }) {
         }
       }
     };
-  }, [navigation]);
+  }, [navigation, initialTicket?.id]);
+
+  useEffect(() => {
+    setTicket(initialTicket);
+    setSelectedStatus(initialTicket?.status || TICKET_STATUS.OPEN);
+  }, [initialTicket?.id]);
 
   const loadData = async () => {
-    await Promise.all([loadTicket(), loadEmployees(), loadTicketDepartments()]);
+    setDetailLoading(true);
+    try {
+      await Promise.all([loadTicket(), loadEmployees(), loadTicketDepartments()]);
+    } finally {
+      setDetailLoading(false);
+    }
   };
 
   const loadTicketDepartments = async () => {
@@ -95,16 +461,33 @@ export default function TicketManagementScreen({ navigation, route }) {
   };
 
   const loadTicket = async () => {
-    if (ticket?.id) {
-      try {
-        const updatedTicket = await getTicketById(ticket.id);
-        if (updatedTicket) {
-          setTicket(updatedTicket);
-          setSelectedStatus(updatedTicket.status);
-        }
-      } catch (error) {
-        console.error('Error loading ticket:', error);
+    const ticketId = initialTicket?.id || ticket?.id;
+    if (!ticketId) {
+      setDetailError('Invalid ticket.');
+      return;
+    }
+    try {
+      setDetailError(null);
+      const updatedTicket = await Promise.race([
+        getTicketById(ticketId),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Loading ticket timed out. Please try again.')),
+            20000
+          )
+        ),
+      ]);
+      if (updatedTicket) {
+        setTicket(updatedTicket);
+        setSelectedStatus(updatedTicket.status);
+      } else {
+        setTicket(initialTicket);
+        setDetailError('Ticket not found or you do not have access.');
       }
+    } catch (error) {
+      console.error('Error loading ticket:', error);
+      setTicket(initialTicket);
+      setDetailError(error?.message || 'Failed to load ticket.');
     }
   };
 
@@ -202,21 +585,101 @@ export default function TicketManagementScreen({ navigation, route }) {
     }
   };
 
-  const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
+  const formatDate = formatTicketDate;
 
-  if (!ticket) {
+  if (detailLoading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background }}>
-        <Text style={{ color: colors.text }}>Loading ticket...</Text>
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: colors.background,
+        }}
+      >
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={{ color: colors.textSecondary, marginTop: spacing.md }}>
+          Loading ticket…
+        </Text>
       </View>
     );
   }
 
+  if (detailError && !ticket) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: colors.background,
+          padding: spacing.xl,
+        }}
+      >
+        <Ionicons name="alert-circle-outline" size={48} color={colors.error || '#ef4444'} />
+        <Text style={{ color: colors.text, fontWeight: '600', marginTop: spacing.md, textAlign: 'center' }}>
+          {detailError}
+        </Text>
+        {onBack ? (
+          <TouchableOpacity
+            onPress={onBack}
+            style={{
+              marginTop: spacing.lg,
+              backgroundColor: colors.primary,
+              paddingHorizontal: spacing.lg,
+              paddingVertical: spacing.md,
+              borderRadius: 8,
+            }}
+          >
+            <Text style={{ color: '#fff', fontWeight: '600' }}>Back to tickets</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+    );
+  }
+
+  if (!ticket) {
+    if (onBack) {
+      return (
+        <View
+          style={{
+            flex: 1,
+            justifyContent: 'center',
+            alignItems: 'center',
+            backgroundColor: colors.background,
+            padding: spacing.xl,
+          }}
+        >
+          <Text style={{ color: colors.textSecondary, textAlign: 'center' }}>
+            Ticket unavailable.
+          </Text>
+          <TouchableOpacity onPress={onBack} style={{ marginTop: spacing.lg }}>
+            <Text style={{ color: colors.primary, fontWeight: '600' }}>Back to tickets</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    return null;
+  }
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
+      {onBack ? (
+        <TouchableOpacity
+          onPress={onBack}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+          }}
+        >
+          <Ionicons name="arrow-back" size={24} color={colors.primary} />
+          <Text style={{ color: colors.primary, fontWeight: '600', marginLeft: 8 }}>
+            All tickets
+          </Text>
+        </TouchableOpacity>
+      ) : null}
       <ScrollView
         style={{ flex: 1 }}
         refreshControl={

@@ -1,7 +1,13 @@
 // Ticket Management Utilities using Supabase
 import { supabase } from '../core/config/supabase';
 import { createNotification, createBatchNotifications } from './notifications';
-import { getAdminUsers, getSuperAdminUsers, getManagersByDepartment } from './employees';
+import {
+  getAdminUsers,
+  getSuperAdminUsers,
+  getManagersByDepartment,
+  getManageableEmployees,
+} from './employees';
+import { isHRAdmin } from '../shared/constants/roles';
 import { fetchSessionUserCompanyId } from '../core/tenant/tenantScope';
 import { resolveCurrentRequester } from '../core/api/gatewayRequest';
 import {
@@ -491,6 +497,61 @@ export const getUserTickets = async (username) => {
  * Get all tickets (for admin)
  * @returns {Promise<Array>} Array of all tickets
  */
+/**
+ * Tickets visible to the current viewer (super_admin / HR admin: all; manager: scoped).
+ * @param {object} viewer - Auth user with role, username, department, companyId
+ * @returns {Promise<{ success: boolean, data: Array, departments: Array, error?: string }>}
+ */
+export const getTicketsForViewer = async (viewer) => {
+  if (!viewer?.role) {
+    return { success: false, data: [], departments: [], error: 'Not signed in.' };
+  }
+
+  if (viewer.role !== 'super_admin' && viewer.role !== 'manager') {
+    return {
+      success: false,
+      data: [],
+      departments: [],
+      error: 'You do not have access to ticket management.',
+    };
+  }
+
+  try {
+    const deptResult = await fetchTicketDepartments(viewer);
+    const departments = deptResult.success ? deptResult.data || [] : [];
+
+    let tickets = await getAllTickets();
+
+    if (viewer.role !== 'super_admin' && !isHRAdmin(viewer)) {
+      let manageableUsernames = new Set();
+      try {
+        const manageable = await getManageableEmployees(viewer);
+        manageableUsernames = new Set(manageable.map((emp) => emp.username));
+      } catch (manageErr) {
+        console.warn('[ticket] getManageableEmployees failed, using department filter only:', manageErr);
+      }
+      tickets = filterTicketsForManager(
+        tickets,
+        viewer,
+        departments,
+        manageableUsernames
+      );
+    }
+
+    tickets.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    return { success: true, data: tickets, departments };
+  } catch (error) {
+    console.error('[ticket] getTicketsForViewer:', error);
+    return {
+      success: false,
+      data: [],
+      departments: [],
+      error: error?.message || 'Failed to load tickets.',
+    };
+  }
+};
+
 export const getAllTickets = async () => {
   try {
     const tenantCid = await fetchSessionUserCompanyId(supabase);

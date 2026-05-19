@@ -21,7 +21,6 @@ import EmployeeManagement from './EmployeeManagement';
 import CalendarScreen from './CalendarScreen';
 import HRDashboard from './HRDashboard';
 import { getUnreadNotificationCount } from '../utils/notifications';
-import { getPendingSignupCount } from '../utils/signupRequests';
 import { spacing, iconSize, componentSize, responsivePadding, responsiveFont, dashboardTitleFont, isSmallScreen, isTablet, normalize, getTabletGridColumns, SCREEN_WIDTH } from '../utils/responsive';
 import Logo from '../components/Logo';
 import Trademark from '../components/Trademark';
@@ -74,7 +73,6 @@ export default function AdminDashboard({ route }) {
   const [filter, setFilter] = useState('all'); // all, checkin, checkout
   const [isExporting, setIsExporting] = useState(false);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
-  const [pendingSignupCount, setPendingSignupCount] = useState(0);
   const [company, setCompany] = useState(null);
   const [companyLoading, setCompanyLoading] = useState(false);
   const [companyLogoFailed, setCompanyLogoFailed] = useState(false);
@@ -82,12 +80,10 @@ export default function AdminDashboard({ route }) {
   useEffect(() => {
     loadRecords();
     loadNotificationCount();
-    loadPendingSignupCount();
     
     // Set up interval to check notifications every 30 seconds
     const notificationInterval = setInterval(() => {
       loadNotificationCount();
-      loadPendingSignupCount();
     }, 30000);
 
     return () => {
@@ -175,15 +171,6 @@ export default function AdminDashboard({ route }) {
       setUnreadNotificationCount(count);
     } catch (error) {
       console.error('Error loading notification count:', error);
-    }
-  };
-
-  const loadPendingSignupCount = async () => {
-    try {
-      const count = await getPendingSignupCount();
-      setPendingSignupCount(count);
-    } catch (error) {
-      console.error('Error loading pending signup count:', error);
     }
   };
 
@@ -612,42 +599,6 @@ export default function AdminDashboard({ route }) {
             >
               <Ionicons name="log-out-outline" size={iconSize.lg} color={colors.error} />
             </TouchableOpacity>
-            {(user.role === 'super_admin' || user.role === 'manager') && (
-              <TouchableOpacity
-                onPress={() => navigation.navigate('SignupApproval', { user: user })}
-                style={{ 
-                  position: 'relative',
-                  padding: spacing.xs,
-                  marginLeft: spacing.xs,
-                }}
-              >
-                <Ionicons name="person-add" size={iconSize.lg} color={colors.primary} />
-                {pendingSignupCount > 0 && (
-                  <View
-                    style={{
-                      position: 'absolute',
-                      top: 2,
-                      right: 2,
-                      backgroundColor: colors.error,
-                      borderRadius: 10,
-                      minWidth: normalize(18),
-                      height: normalize(18),
-                      paddingHorizontal: spacing.xs / 2,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <Text style={{ 
-                      color: 'white', 
-                      fontSize: responsiveFont(10), 
-                      fontWeight: '600' 
-                    }}>
-                      {pendingSignupCount > 99 ? '99+' : pendingSignupCount}
-                    </Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-            )}
             <TouchableOpacity
               onPress={() => navigation.navigate('ThemeSettingsScreen', { user: user })}
               style={{ padding: spacing.xs, marginLeft: spacing.xs }}

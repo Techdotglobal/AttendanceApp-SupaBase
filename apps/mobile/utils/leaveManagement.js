@@ -4,47 +4,18 @@ import { supabase } from '../core/config/supabase';
 import { createNotification, createBatchNotifications } from './notifications';
 import { getEmployeeById, getAdminUsers, getSuperAdminUsers, getManagersByDepartment } from './employees';
 import { fetchSessionUserCompanyId, fetchCompanyUserUids, requireValidCompanyId } from '../core/tenant/tenantScope';
+import { resolveCurrentRequester } from '../core/api/gatewayRequest';
+import {
+  fetchTicketDepartments,
+  findDepartmentByCategoryValue,
+  getCategoryLabel,
+} from './ticketDepartments';
+
+export { getCategoryLabel, fetchTicketDepartments } from './ticketDepartments';
 
 const LEAVE_SETTINGS_KEY = 'leave_settings';
 const EMPLOYEE_LEAVES_KEY = 'employee_leaves';
 const LEAVE_REQUESTS_KEY = 'leave_requests';
-
-// Leave Request Categories (same as ticket categories for routing)
-export const LEAVE_CATEGORIES = {
-  ENGINEERING: 'engineering',
-  TECHNICAL: 'technical',
-  HR: 'hr',
-  FINANCE: 'finance',
-  SALES: 'sales',
-  FACILITIES: 'facilities',
-  OTHER: 'other'
-};
-
-// Map leave categories to departments (same as tickets)
-// Engineering and Technical are separate departments with separate managers
-const CATEGORY_TO_DEPARTMENT_MAP = {
-  [LEAVE_CATEGORIES.ENGINEERING]: 'Engineering', // Routes to Engineering Manager
-  [LEAVE_CATEGORIES.TECHNICAL]: 'Technical',     // Routes to Technical Manager (separate department)
-  [LEAVE_CATEGORIES.HR]: 'HR',
-  [LEAVE_CATEGORIES.FINANCE]: 'Finance',
-  [LEAVE_CATEGORIES.SALES]: 'Sales',
-  [LEAVE_CATEGORIES.FACILITIES]: 'Facilities',
-  [LEAVE_CATEGORIES.OTHER]: null // No specific department, goes to super_admin only
-};
-
-// Category Labels
-export const getCategoryLabel = (category) => {
-  const labels = {
-    [LEAVE_CATEGORIES.ENGINEERING]: 'Engineering',
-    [LEAVE_CATEGORIES.TECHNICAL]: 'Technical',
-    [LEAVE_CATEGORIES.HR]: 'HR',
-    [LEAVE_CATEGORIES.FINANCE]: 'Finance',
-    [LEAVE_CATEGORIES.SALES]: 'Sales',
-    [LEAVE_CATEGORIES.FACILITIES]: 'Facilities',
-    [LEAVE_CATEGORIES.OTHER]: 'Other'
-  };
-  return labels[category] || category;
-};
 
 const LEAVE_SETTINGS_DEFAULTS = {
   defaultAnnualLeaves: 20,
@@ -53,6 +24,20 @@ const LEAVE_SETTINGS_DEFAULTS = {
   leaveYearStart: '01-01',
   leaveYearEnd: '12-31',
 };
+
+function formatLeaveSettingsError(error) {
+  const code = error?.code;
+  const message = error?.message || '';
+
+  if (code === '42501' || /row-level security/i.test(message)) {
+    return 'You do not have permission to save leave settings. Ask a manager or super admin, and ensure the latest database policies are applied.';
+  }
+  if (/JWT|session|not authenticated/i.test(message)) {
+    return 'Your session expired. Please sign in again and retry.';
+  }
+  if (message) return message;
+  return 'Failed to save leave settings. Please try again.';
+}
 
 function _dbRowToLeaveSettings(row) {
   return {
@@ -100,31 +85,101 @@ export const getDefaultLeaveSettings = async () => {
  */
 export const updateDefaultLeaveSettings = async (settings) => {
   try {
+    const {
+      data: { user: authUser },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !authUser?.id) {
+      return {
+        success: false,
+        error: 'Please sign in again to save leave settings.',
+      };
+    }
+
     const companyId = await fetchSessionUserCompanyId(supabase);
     if (!companyId) {
       return { success: false, error: 'No active company session.' };
     }
-    const { error } = await supabase
+
+    const { data: profile, error: profileError } = await supabase
+      .from('users')
+      .select('role, is_active, company_id')
+      .eq('uid', authUser.id)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error('[leave] updateDefaultLeaveSettings profile:', profileError.message);
+      return { success: false, error: 'Could not verify your account. Please try again.' };
+    }
+
+    if (!profile?.is_active) {
+      return { success: false, error: 'Your account is inactive.' };
+    }
+
+    if (profile.role !== 'super_admin' && profile.role !== 'manager') {
+      return {
+        success: false,
+        error: 'Only managers and super admins can update leave settings.',
+      };
+    }
+
+    if (String(profile.company_id) !== String(companyId)) {
+      return {
+        success: false,
+        error: 'Company context mismatch. Please sign out and sign in again.',
+      };
+    }
+
+    const row = {
+      default_annual_leaves:
+        settings.defaultAnnualLeaves ?? LEAVE_SETTINGS_DEFAULTS.defaultAnnualLeaves,
+      default_sick_leaves:
+        settings.defaultSickLeaves ?? LEAVE_SETTINGS_DEFAULTS.defaultSickLeaves,
+      default_casual_leaves:
+        settings.defaultCasualLeaves ?? LEAVE_SETTINGS_DEFAULTS.defaultCasualLeaves,
+      leave_year_start:
+        settings.leaveYearStart ?? LEAVE_SETTINGS_DEFAULTS.leaveYearStart,
+      leave_year_end:
+        settings.leaveYearEnd ?? LEAVE_SETTINGS_DEFAULTS.leaveYearEnd,
+    };
+
+    const { data: existing, error: readError } = await supabase
       .from('leave_settings')
-      .upsert(
-        {
-          company_id: companyId,
-          default_annual_leaves: settings.defaultAnnualLeaves ?? LEAVE_SETTINGS_DEFAULTS.defaultAnnualLeaves,
-          default_sick_leaves: settings.defaultSickLeaves ?? LEAVE_SETTINGS_DEFAULTS.defaultSickLeaves,
-          default_casual_leaves: settings.defaultCasualLeaves ?? LEAVE_SETTINGS_DEFAULTS.defaultCasualLeaves,
-          leave_year_start: settings.leaveYearStart ?? LEAVE_SETTINGS_DEFAULTS.leaveYearStart,
-          leave_year_end: settings.leaveYearEnd ?? LEAVE_SETTINGS_DEFAULTS.leaveYearEnd,
-        },
-        { onConflict: 'company_id' }
-      );
+      .select('id')
+      .eq('company_id', companyId)
+      .maybeSingle();
+
+    if (readError) {
+      console.error('[leave] updateDefaultLeaveSettings read:', readError.message);
+      return { success: false, error: formatLeaveSettingsError(readError) };
+    }
+
+    let error;
+    if (existing?.id) {
+      ({ error } = await supabase
+        .from('leave_settings')
+        .update(row)
+        .eq('company_id', companyId));
+    } else {
+      ({ error } = await supabase.from('leave_settings').insert({
+        company_id: companyId,
+        ...row,
+      }));
+    }
+
     if (error) {
       console.error('[leave] updateDefaultLeaveSettings Supabase error:', error.message);
-      return { success: false, error: error.message };
+      return { success: false, error: formatLeaveSettingsError(error) };
     }
+
     return { success: true };
   } catch (error) {
     console.error('[leave] updateDefaultLeaveSettings:', error);
-    return { success: false, error: error.message || 'Failed to update default leave settings' };
+    return {
+      success: false,
+      error: formatLeaveSettingsError(error),
+    };
   }
 };
 
@@ -351,7 +406,7 @@ export const calculateRemainingLeaves = (leaveBalance) => {
  * @param {string} reason - Reason for leave
  * @param {boolean} isHalfDay - Whether this is a half-day leave (default: false)
  * @param {string} halfDayPeriod - For half-day: 'morning' or 'afternoon' (optional)
- * @param {string} category - Category for routing: 'engineering', 'technical', 'hr', 'finance', 'sales', 'facilities', 'other' (optional, defaults to employee's department)
+ * @param {string} category - Department UUID for routing (optional; defaults to employee's department when omitted)
  * @returns {Promise<{success: boolean, requestId?: string, error?: string}>}
  */
 export const createLeaveRequest = async (employeeId, leaveType, startDate, endDate, reason = '', isHalfDay = false, halfDayPeriod = null, category = null) => {
@@ -441,92 +496,98 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
     }
     
     console.log(`[Leave Routing] Employee: ${employee.username} (${employeeId}), Department: ${employee.department || 'N/A'}`);
-    
-    // Determine category - use provided category or default based on employee department
-    let finalCategory = category;
-    if (!finalCategory && employee && employee.department) {
-      // Map department to category (reverse mapping)
-      // Engineering department defaults to Engineering category
-      // Technical department defaults to Technical category
-      const departmentToCategory = {
-        'Engineering': LEAVE_CATEGORIES.ENGINEERING,
-        'Technical': LEAVE_CATEGORIES.TECHNICAL,
-        'HR': LEAVE_CATEGORIES.HR,
-        'Finance': LEAVE_CATEGORIES.FINANCE,
-        'Sales': LEAVE_CATEGORIES.SALES,
-        'Facilities': LEAVE_CATEGORIES.FACILITIES
-      };
-      finalCategory = departmentToCategory[employee.department] || LEAVE_CATEGORIES.OTHER;
-      console.log(`[Leave Routing] Auto-detected category from department: ${employee.department} → ${finalCategory}`);
-    }
-    if (!finalCategory) {
-      finalCategory = LEAVE_CATEGORIES.OTHER;
-      console.log(`[Leave Routing] No category provided and no department found, defaulting to: ${finalCategory}`);
-    }
 
-    // Validate category
-    const validCategories = Object.values(LEAVE_CATEGORIES);
-    if (!validCategories.includes(finalCategory)) {
+    const requester = await resolveCurrentRequester();
+    const deptResult = await fetchTicketDepartments(requester);
+    if (!deptResult.success) {
       return {
         success: false,
-        error: 'Invalid category. Must be: engineering, technical, hr, finance, sales, facilities, or other'
+        error: deptResult.error || 'Could not load departments. Please try again.',
       };
     }
 
-    // Route to appropriate manager based on category
+    const departments = deptResult.data || [];
+    if (departments.length === 0) {
+      return {
+        success: false,
+        error: 'No departments are configured for your company. Contact your administrator.',
+      };
+    }
+
+    let categoryInput = category;
+    if (!categoryInput && employee.departmentId) {
+      categoryInput = String(employee.departmentId);
+    } else if (!categoryInput && employee.department) {
+      const inferred = findDepartmentByCategoryValue(employee.department, departments);
+      if (inferred?.id) categoryInput = String(inferred.id);
+    }
+
+    if (!categoryInput) {
+      return {
+        success: false,
+        error: 'Please select a department',
+      };
+    }
+
+    const targetDepartment = findDepartmentByCategoryValue(categoryInput, departments);
+    if (!targetDepartment?.id) {
+      return {
+        success: false,
+        error: 'Please select a valid department',
+      };
+    }
+
+    const storedCategory = String(targetDepartment.id);
+    const departmentLabel = targetDepartment.name;
+
     let assignedManager = null;
-    const department = CATEGORY_TO_DEPARTMENT_MAP[finalCategory];
-    
-    console.log(`[Leave Routing] Category: ${finalCategory}, Target Department: ${department || 'N/A'}`);
-    
-    if (department) {
-      try {
-        const departmentManagers = await getManagersByDepartment(department, tenantCid);
-        console.log(`[Leave Routing] Found ${departmentManagers.length} manager(s) for department: ${department}`);
-        
-        if (departmentManagers.length > 0) {
-          // Direct routing: Each category maps to its own department
-          // - "engineering" category → Engineering department → Engineering Manager
-          // - "technical" category → Technical department → Technical Manager
-          assignedManager = departmentManagers[0];
-          console.log(`✓ Leave request (${finalCategory}) will be assigned to ${assignedManager.username} (${assignedManager.position || department} Manager)`);
-        } else {
-          console.warn(`⚠️ No manager found for department: ${department}. Leave request will not be auto-assigned.`);
-          // Fallback: Try to assign to a super_admin if no manager found
-          try {
-            const superAdmins = await getSuperAdminUsers(tenantCid);
-            if (superAdmins.length > 0) {
-              assignedManager = superAdmins[0];
-              console.log(`✓ Fallback: Assigning leave request to super_admin: ${assignedManager.username}`);
-            }
-          } catch (fallbackError) {
-            console.error('Error getting super_admin for fallback assignment:', fallbackError);
-          }
-        }
-      } catch (error) {
-        console.error('Error finding department manager:', error);
-        // Fallback: Try to assign to a super_admin on error
+
+    console.log(
+      `[Leave Routing] Department: ${departmentLabel} (${storedCategory})`
+    );
+
+    try {
+      const departmentManagers = await getManagersByDepartment(
+        { id: targetDepartment.id, name: targetDepartment.name },
+        tenantCid
+      );
+      console.log(
+        `[Leave Routing] Found ${departmentManagers.length} manager(s) for ${departmentLabel}`
+      );
+
+      if (departmentManagers.length > 0) {
+        assignedManager = departmentManagers[0];
+        console.log(
+          `✓ Leave request (${departmentLabel}) will be assigned to ${assignedManager.username}`
+        );
+      } else {
+        console.warn(
+          `⚠️ No manager found for department: ${departmentLabel}. Leave request will not be auto-assigned.`
+        );
         try {
           const superAdmins = await getSuperAdminUsers(tenantCid);
           if (superAdmins.length > 0) {
             assignedManager = superAdmins[0];
-            console.log(`✓ Fallback (on error): Assigning leave request to super_admin: ${assignedManager.username}`);
+            console.log(
+              `✓ Fallback: Assigning leave request to super_admin: ${assignedManager.username}`
+            );
           }
         } catch (fallbackError) {
           console.error('Error getting super_admin for fallback assignment:', fallbackError);
         }
       }
-    } else {
-      console.log(`[Leave Routing] No department mapping for category: ${finalCategory}, assigning to super_admin`);
-      // For 'other' category, assign to super_admin
+    } catch (error) {
+      console.error('Error finding department manager:', error);
       try {
         const superAdmins = await getSuperAdminUsers(tenantCid);
         if (superAdmins.length > 0) {
           assignedManager = superAdmins[0];
-          console.log(`✓ Assigning leave request to super_admin: ${assignedManager.username}`);
+          console.log(
+            `✓ Fallback (on error): Assigning leave request to super_admin: ${assignedManager.username}`
+          );
         }
       } catch (fallbackError) {
-        console.error('Error getting super_admin for assignment:', fallbackError);
+        console.error('Error getting super_admin for fallback assignment:', fallbackError);
       }
     }
 
@@ -582,7 +643,7 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
       end_date: endDate,
       days: days,
       reason: reason || null,
-      category: finalCategory,
+      category: storedCategory,
       is_half_day: isHalfDay || false,
       half_day_period: isHalfDay ? (halfDayPeriod || 'morning') : null,
       status: 'pending',
@@ -619,7 +680,7 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
       const halfDayText = isHalfDay ? ` (Half Day - ${halfDayPeriod || 'morning'})` : '';
       const daysText = isHalfDay ? 'half day' : `${days} day${days !== 1 ? 's' : ''}`;
       const notificationTitle = 'New Leave Request';
-      const categoryLabel = getCategoryLabel(finalCategory);
+      const categoryLabel = getCategoryLabel(storedCategory, departments);
       const notificationBody = `${employee ? employee.name : 'An employee'} has submitted a ${leaveTypeLabels[leaveType]} request for ${daysText}${halfDayText} (${startDate}${startDate !== endDate ? ` to ${endDate}` : ''})${assignedManager ? ` (Assigned to ${assignedManager.name} - ${categoryLabel})` : ` (${categoryLabel})`}`;
       
       // Get super admins (always notified)
@@ -651,7 +712,7 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
           employeeId,
           employeeName: employee ? employee.name : 'Unknown',
           leaveType,
-          category: finalCategory,
+          category: storedCategory,
           days,
           startDate,
           endDate,

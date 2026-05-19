@@ -1103,7 +1103,9 @@ router.patch('/users/:username', async (req, res) => {
 
 /**
  * GET /api/auth/departments
- * Tenant-scoped department list for employee creation UI.
+ * Tenant-scoped department list (read-only).
+ * All roles (employee, manager, super_admin) may list departments for tickets, leaves, etc.
+ * Query ?scope=manage — managers only see their own department (employee-creation UI).
  */
 router.get('/departments', async (req, res) => {
   const requester = parseRequester(req);
@@ -1113,10 +1115,12 @@ router.get('/departments', async (req, res) => {
       error: 'Missing requester identity (X-User-Context).',
     });
   }
-  if (!PRIVILEGED_ROLES.has(String(requester.role))) {
+  const role = String(requester.role);
+  const tenantRoles = new Set(['super_admin', 'manager', 'employee']);
+  if (!tenantRoles.has(role)) {
     return res.status(403).json({
       success: false,
-      error: 'Only super admins or managers can list departments.',
+      error: 'Unauthorized role for department listing.',
     });
   }
   const companyId = await resolveRequesterCompanyId(requester);
@@ -1128,7 +1132,12 @@ router.get('/departments', async (req, res) => {
   }
   try {
     let departments = await listDepartmentsForCompany(companyId);
-    if (requester.role === 'manager' && requester.department) {
+    const scope = String(req.query.scope || 'all').trim().toLowerCase();
+    if (
+      scope === 'manage' &&
+      requester.role === 'manager' &&
+      requester.department
+    ) {
       const mgrDept = String(requester.department).trim().toLowerCase();
       departments = departments.filter(
         (d) => String(d.name).trim().toLowerCase() === mgrDept

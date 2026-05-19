@@ -37,8 +37,10 @@ export default function DepartmentPositionFields({
     }
     setDeptLoading(true);
     setLoadError(null);
+    const deptScope =
+      requester?.role === 'manager' ? { scope: 'manage' } : { scope: 'all' };
     const [deptRes, posRes] = await Promise.all([
-      fetchTenantDepartments(requester),
+      fetchTenantDepartments(requester, deptScope),
       fetchTenantPositionSuggestions(requester),
     ]);
     if (deptRes.success) {

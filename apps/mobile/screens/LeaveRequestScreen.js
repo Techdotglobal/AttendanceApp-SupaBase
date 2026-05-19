@@ -18,9 +18,12 @@ import {
   calculateRemainingLeaves,
   createLeaveRequest,
   getEmployeeLeaveRequests,
-  LEAVE_CATEGORIES,
-  getCategoryLabel
 } from '../utils/leaveManagement';
+import {
+  fetchTicketDepartments,
+  getCategoryLabel,
+} from '../utils/ticketDepartments';
+import { departmentNamesMatch } from '../utils/orgNormalize';
 import { getEmployeeByUsername } from '../utils/employees';
 import DatePickerCalendar from '../components/DatePickerCalendar';
 import { useTheme } from '../contexts/ThemeContext';
@@ -43,10 +46,49 @@ export default function LeaveRequestScreen({ navigation, route }) {
   const [isHalfDay, setIsHalfDay] = useState(false);
   const [halfDayPeriod, setHalfDayPeriod] = useState('morning');
   const [selectedPreviewDate, setSelectedPreviewDate] = useState(null); // Date selected in calendar but not yet assigned
-  const [category, setCategory] = useState(null); // Category for routing (null = auto-detect from department)
+  const [category, setCategory] = useState(null);
+  const [departments, setDepartments] = useState([]);
+  const [departmentsLoading, setDepartmentsLoading] = useState(true);
+  const [departmentsError, setDepartmentsError] = useState(null);
+
+  const loadDepartments = async () => {
+    setDepartmentsLoading(true);
+    setDepartmentsError(null);
+    try {
+      const result = await fetchTicketDepartments(user);
+      if (!result.success) {
+        setDepartments([]);
+        setDepartmentsError(result.error || 'Failed to load departments');
+        return;
+      }
+      const list = result.data || [];
+      setDepartments(list);
+      setCategory((prev) => {
+        if (prev && list.some((d) => String(d.id) === String(prev))) {
+          return prev;
+        }
+        if (employee?.departmentId) {
+          const byId = list.find((d) => String(d.id) === String(employee.departmentId));
+          if (byId) return String(byId.id);
+        }
+        if (employee?.department) {
+          const byName = list.find((d) => departmentNamesMatch(d.name, employee.department));
+          if (byName) return String(byName.id);
+        }
+        return list.length > 0 ? String(list[0].id) : null;
+      });
+    } catch (error) {
+      console.error('Error loading departments:', error);
+      setDepartments([]);
+      setDepartmentsError('Failed to load departments');
+    } finally {
+      setDepartmentsLoading(false);
+    }
+  };
 
   useEffect(() => {
     loadData();
+    loadDepartments();
     
     // Safely check if navigation and addListener exist
     let unsubscribe = null;
@@ -122,6 +164,12 @@ export default function LeaveRequestScreen({ navigation, route }) {
     }
   }, [employee]);
 
+  useEffect(() => {
+    if (showRequestModal) {
+      loadDepartments();
+    }
+  }, [showRequestModal]);
+
   const onRefresh = async () => {
     setIsRefreshing(true);
     await loadData();
@@ -136,7 +184,7 @@ export default function LeaveRequestScreen({ navigation, route }) {
     setIsHalfDay(false);
     setHalfDayPeriod('morning');
     setSelectedPreviewDate(null);
-    setCategory(null); // Reset to auto-detect
+    setCategory(departments.length > 0 ? String(departments[0].id) : null);
   };
 
   const handleSubmitRequest = async () => {
@@ -152,6 +200,19 @@ export default function LeaveRequestScreen({ navigation, route }) {
 
     if (!employee) {
       Alert.alert('Error', 'Employee data not loaded');
+      return;
+    }
+
+    if (!category) {
+      Alert.alert('Error', 'Please select a department');
+      return;
+    }
+
+    if (departments.length === 0) {
+      Alert.alert(
+        'Error',
+        departmentsError || 'No departments are available. Contact your administrator.'
+      );
       return;
     }
 
@@ -263,7 +324,7 @@ export default function LeaveRequestScreen({ navigation, route }) {
         <View className="flex-row items-center mt-2">
           <Ionicons name="business-outline" size={14} color={colors.textSecondary} />
           <Text className="text-sm ml-1" style={{ color: colors.textSecondary }}>
-            Category: {getCategoryLabel(item.category)}
+            Department: {getCategoryLabel(item.category, departments)}
           </Text>
         </View>
       )}
@@ -444,94 +505,65 @@ export default function LeaveRequestScreen({ navigation, route }) {
                 </View>
               </View>
 
-              {/* Category Selection (for routing to appropriate manager) */}
+              {/* Department (routing to department manager) */}
               <View className="mb-4">
-                <Text className="mb-2 font-medium" style={{ color: colors.text }}>Department/Category</Text>
+                <Text className="mb-2 font-medium" style={{ color: colors.text }}>Department *</Text>
                 <Text className="text-xs mb-2" style={{ color: colors.textTertiary }}>
                   Select the department manager who should review this request
                 </Text>
-                <View className="flex-row flex-wrap gap-2">
-                  {/* Define allowed categories: HR, Finance, Engineering, Sales, Technical */}
-                  {(() => {
-                    // Define the categories to show (in order: HR, Finance, Engineering, Sales, Technical)
-                    const allowedCategories = [
-                      { value: LEAVE_CATEGORIES.HR, label: 'HR', mapsTo: LEAVE_CATEGORIES.HR, department: 'HR' },
-                      { value: LEAVE_CATEGORIES.FINANCE, label: 'Finance', mapsTo: LEAVE_CATEGORIES.FINANCE, department: 'Finance' },
-                      { value: LEAVE_CATEGORIES.ENGINEERING, label: 'Engineering', mapsTo: LEAVE_CATEGORIES.ENGINEERING, department: 'Engineering' },
-                      { value: LEAVE_CATEGORIES.SALES, label: 'Sales', mapsTo: LEAVE_CATEGORIES.SALES, department: 'Sales' },
-                      { value: LEAVE_CATEGORIES.TECHNICAL, label: 'Technical', mapsTo: LEAVE_CATEGORIES.TECHNICAL, department: 'Technical' },
-                    ];
-                    
-                    return allowedCategories.map((cat) => {
-                      // Determine if this category should be enabled
-                      const isEnabled = (() => {
-                        if (!employee || !employee.department) return false;
-                        
-                        const department = employee.department;
-                        
-                        // HR is always enabled for all employees
-                        if (cat.value === LEAVE_CATEGORIES.HR) return true;
-                        
-                        // Enable if employee's department matches this category's department
-                        // Engineering employees can select: Engineering, HR
-                        // Technical employees can select: Technical, HR
-                        // Sales employees can select: Sales, HR
-                        // Finance employees can select: Finance, HR
-                        // HR employees can select: HR only
-                        return department === cat.department;
-                      })();
-                      
-                      const routingCategory = cat.mapsTo;
-                      const isSelected = category === routingCategory;
-                      
+                {departmentsLoading ? (
+                  <Text className="text-sm" style={{ color: colors.textSecondary }}>
+                    Loading departments…
+                  </Text>
+                ) : departmentsError ? (
+                  <View>
+                    <Text className="text-sm mb-1" style={{ color: colors.error || '#ef4444' }}>
+                      {departmentsError}
+                    </Text>
+                    <TouchableOpacity onPress={loadDepartments}>
+                      <Text className="text-sm font-medium" style={{ color: colors.primary }}>
+                        Tap to retry
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : departments.length === 0 ? (
+                  <Text className="text-sm" style={{ color: colors.textSecondary }}>
+                    No departments are configured for your company.
+                  </Text>
+                ) : (
+                  <View className="flex-row flex-wrap gap-2">
+                    {departments.map((dept) => {
+                      const deptId = String(dept.id);
+                      const isSelected = category === deptId;
                       return (
                         <TouchableOpacity
-                          key={cat.value}
+                          key={deptId}
                           className="rounded-lg p-3 border-2"
                           style={{
                             flexBasis: tablet ? '31%' : '48%',
                             maxWidth: tablet ? '31%' : '48%',
                             borderColor: isSelected ? colors.primary : colors.border,
-                            backgroundColor: isSelected 
-                              ? colors.primaryLight 
-                              : isEnabled 
-                                ? colors.surface 
-                                : colors.borderLight,
-                            opacity: isEnabled ? 1 : 0.5,
+                            backgroundColor: isSelected ? colors.primaryLight : colors.surface,
                           }}
-                          onPress={() => {
-                            if (isEnabled) {
-                              setCategory(routingCategory);
-                            }
-                          }}
-                          disabled={!isEnabled}
+                          onPress={() => setCategory(deptId)}
                         >
                           <Text
-                            numberOfLines={1}
+                            numberOfLines={2}
                             className="text-center font-medium text-sm"
                             style={{
-                              color: isSelected
-                                ? colors.primary
-                                : isEnabled
-                                  ? colors.text
-                                  : colors.textTertiary,
+                              color: isSelected ? colors.primary : colors.text,
                             }}
                           >
-                            {cat.label}
+                            {dept.name}
                           </Text>
                         </TouchableOpacity>
                       );
-                    });
-                  })()}
-                </View>
+                    })}
+                  </View>
+                )}
                 {category && (
                   <Text className="text-xs mt-2" style={{ color: colors.textTertiary }}>
-                    Will be routed to {getCategoryLabel(category)} manager
-                  </Text>
-                )}
-                {!category && employee && employee.department && (
-                  <Text className="text-xs mt-2" style={{ color: colors.textTertiary }}>
-                    Please select a department category (HR is always available)
+                    Will be routed to {getCategoryLabel(category, departments)} manager
                   </Text>
                 )}
               </View>
@@ -842,9 +874,23 @@ export default function LeaveRequestScreen({ navigation, route }) {
                 
                 <TouchableOpacity
                   className="rounded-lg p-3 flex-1"
-                  style={{ backgroundColor: colors.primary }}
+                  style={{
+                    backgroundColor: colors.primary,
+                    opacity:
+                      isSubmitting ||
+                      departmentsLoading ||
+                      !category ||
+                      departments.length === 0
+                        ? 0.5
+                        : 1,
+                  }}
                   onPress={handleSubmitRequest}
-                  disabled={isSubmitting}
+                  disabled={
+                    isSubmitting ||
+                    departmentsLoading ||
+                    !category ||
+                    departments.length === 0
+                  }
                 >
                   <Text className="text-center font-medium text-white">
                     {isSubmitting ? 'Submitting...' : 'Submit Request'}

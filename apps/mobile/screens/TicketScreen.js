@@ -16,15 +16,17 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   createTicket,
   getUserTickets,
-  getCategoryLabel,
   getPriorityLabel,
   getStatusLabel,
   getPriorityColor,
   getStatusColor,
-  TICKET_CATEGORIES,
   TICKET_PRIORITIES,
   TICKET_STATUS,
 } from '../utils/ticketManagement';
+import {
+  fetchTicketDepartments,
+  getCategoryLabel,
+} from '../utils/ticketDepartments';
 import { useTheme } from '../contexts/ThemeContext';
 import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTablet } from '../shared/utils/responsive';
 
@@ -43,13 +45,44 @@ export default function TicketScreen({ navigation, route }) {
   const [filter, setFilter] = useState('all'); // all, open, in_progress, resolved, closed
   
   // Form state
-  const [category, setCategory] = useState(TICKET_CATEGORIES.HR);
+  const [departments, setDepartments] = useState([]);
+  const [departmentsLoading, setDepartmentsLoading] = useState(true);
+  const [departmentsError, setDepartmentsError] = useState(null);
+  const [category, setCategory] = useState(null);
   const [priority, setPriority] = useState(TICKET_PRIORITIES.MEDIUM);
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const loadDepartments = async () => {
+    setDepartmentsLoading(true);
+    setDepartmentsError(null);
+    try {
+      const result = await fetchTicketDepartments(user);
+      if (!result.success) {
+        setDepartments([]);
+        setDepartmentsError(result.error || 'Failed to load departments');
+        return;
+      }
+      const list = result.data || [];
+      setDepartments(list);
+      setCategory((prev) => {
+        if (prev && list.some((d) => String(d.id) === String(prev))) {
+          return prev;
+        }
+        return list.length > 0 ? String(list[0].id) : null;
+      });
+    } catch (error) {
+      console.error('Error loading departments:', error);
+      setDepartments([]);
+      setDepartmentsError('Failed to load departments');
+    } finally {
+      setDepartmentsLoading(false);
+    }
+  };
+
   useEffect(() => {
+    loadDepartments();
     loadTickets();
     
     // Safely check if navigation and addListener exist
@@ -79,6 +112,12 @@ export default function TicketScreen({ navigation, route }) {
       }
     };
   }, [navigation, filter]);
+
+  useEffect(() => {
+    if (showCreateModal) {
+      loadDepartments();
+    }
+  }, [showCreateModal]);
 
   const loadTickets = async () => {
     try {
@@ -110,6 +149,19 @@ export default function TicketScreen({ navigation, route }) {
       return;
     }
 
+    if (!category) {
+      Alert.alert('Error', 'Please select a department');
+      return;
+    }
+
+    if (departments.length === 0) {
+      Alert.alert(
+        'Error',
+        departmentsError || 'No departments are available. Contact your administrator.'
+      );
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const result = await createTicket(
@@ -125,7 +177,7 @@ export default function TicketScreen({ navigation, route }) {
         setShowCreateModal(false);
         setSubject('');
         setDescription('');
-        setCategory(TICKET_CATEGORIES.HR);
+        setCategory(departments.length > 0 ? String(departments[0].id) : null);
         setPriority(TICKET_PRIORITIES.MEDIUM);
         await loadTickets();
       } else {
@@ -229,7 +281,7 @@ export default function TicketScreen({ navigation, route }) {
             marginLeft: spacing.xs,
           }}
         >
-          {getCategoryLabel(item.category)}
+          {getCategoryLabel(item.category, departments)}
         </Text>
         {item.assignedTo && (
           <>
@@ -472,52 +524,67 @@ export default function TicketScreen({ navigation, route }) {
                 </TouchableOpacity>
               </View>
 
-              {/* Category */}
+              {/* Department */}
               <View style={{ marginBottom: spacing.base }}>
-                <Text style={{ color: colors.text, marginBottom: spacing.xs, fontWeight: '500', fontSize: fontSize.md }}>Category *</Text>
+                <Text style={{ color: colors.text, marginBottom: spacing.xs, fontWeight: '500', fontSize: fontSize.md }}>Department *</Text>
                 <Text style={{ color: colors.textSecondary, marginBottom: spacing.xs, fontSize: fontSize.sm }}>
-                  Select the department manager who should handle this ticket
+                  Select the department that should handle this ticket
                 </Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
-                  {/* Show only: HR, Finance, Engineering, Sales, Technical (all enabled for everyone) */}
-                  {[
-                    TICKET_CATEGORIES.HR,
-                    TICKET_CATEGORIES.FINANCE,
-                    TICKET_CATEGORIES.ENGINEERING,
-                    TICKET_CATEGORIES.SALES,
-                    TICKET_CATEGORIES.TECHNICAL,
-                  ].map((cat) => {
-                    const isSelected = category === cat;
-                    
-                    return (
-                      <TouchableOpacity
-                        key={cat}
-                        style={{
-                          borderRadius: 8,
-                          padding: spacing.md,
-                          borderWidth: 2,
-                          borderColor: isSelected ? colors.primary : colors.border,
-                          backgroundColor: isSelected ? colors.primaryLight : 'transparent',
-                          minWidth: '30%',
-                          flex: 1,
-                          maxWidth: '48%', // Prevent too wide on larger screens
-                        }}
-                        onPress={() => setCategory(cat)}
-                      >
-                        <Text
+                {departmentsLoading ? (
+                  <Text style={{ color: colors.textSecondary, fontSize: fontSize.sm }}>
+                    Loading departments…
+                  </Text>
+                ) : departmentsError ? (
+                  <View>
+                    <Text style={{ color: colors.error || '#ef4444', fontSize: fontSize.sm, marginBottom: spacing.xs }}>
+                      {departmentsError}
+                    </Text>
+                    <TouchableOpacity onPress={loadDepartments}>
+                      <Text style={{ color: colors.primary, fontSize: fontSize.sm, fontWeight: '500' }}>
+                        Tap to retry
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : departments.length === 0 ? (
+                  <Text style={{ color: colors.textSecondary, fontSize: fontSize.sm }}>
+                    No departments are configured for your company.
+                  </Text>
+                ) : (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
+                    {departments.map((dept) => {
+                      const deptId = String(dept.id);
+                      const isSelected = category === deptId;
+
+                      return (
+                        <TouchableOpacity
+                          key={deptId}
                           style={{
-                            textAlign: 'center',
-                            fontSize: fontSize.sm,
-                            fontWeight: '500',
-                            color: isSelected ? colors.primary : colors.text,
+                            borderRadius: 8,
+                            padding: spacing.md,
+                            borderWidth: 2,
+                            borderColor: isSelected ? colors.primary : colors.border,
+                            backgroundColor: isSelected ? colors.primaryLight : 'transparent',
+                            minWidth: '30%',
+                            flex: 1,
+                            maxWidth: '48%',
                           }}
+                          onPress={() => setCategory(deptId)}
                         >
-                          {getCategoryLabel(cat)}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+                          <Text
+                            style={{
+                              textAlign: 'center',
+                              fontSize: fontSize.sm,
+                              fontWeight: '500',
+                              color: isSelected ? colors.primary : colors.text,
+                            }}
+                          >
+                            {dept.name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
               </View>
 
               {/* Priority */}
@@ -620,9 +687,21 @@ export default function TicketScreen({ navigation, route }) {
                     padding: spacing.md,
                     flex: 1,
                     minWidth: 120,
+                    opacity:
+                      isSubmitting ||
+                      departmentsLoading ||
+                      !category ||
+                      departments.length === 0
+                        ? 0.5
+                        : 1,
                   }}
                   onPress={handleCreateTicket}
-                  disabled={isSubmitting}
+                  disabled={
+                    isSubmitting ||
+                    departmentsLoading ||
+                    !category ||
+                    departments.length === 0
+                  }
                 >
                   <Text style={{ textAlign: 'center', fontWeight: '500', color: 'white', fontSize: fontSize.base }}>
                     {isSubmitting ? 'Creating...' : 'Create Ticket'}

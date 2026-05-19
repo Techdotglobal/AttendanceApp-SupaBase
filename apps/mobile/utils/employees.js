@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../core/config/supabase';
 import { WORK_MODES } from './workModes';
 import { resolveCompanyIdFromUser, requireValidCompanyId } from '../core/tenant/tenantScope';
+import { departmentNamesMatch } from './orgNormalize';
 import {
   TENANT_RUNTIME_DIAG,
   tenantDiagLog,
@@ -302,35 +303,90 @@ export const getSuperAdminUsers = async (companyId) => {
 };
 
 /**
- * Get managers for a specific department (within company)
- * @param {string} department - Department name
+ * Get managers for a specific department (within company).
+ * @param {string|{ id?: string, name?: string }} departmentRef - Department UUID, name, or { id, name }
  * @param {string} companyId
  */
-export const getManagersByDepartment = async (department, companyId) => {
+export const getManagersByDepartment = async (departmentRef, companyId) => {
   try {
     const cid = requireValidCompanyId(companyId, 'getManagersByDepartment');
     if (!cid) return [];
 
-    const { data: managers, error } = await supabase
+    const deptId =
+      typeof departmentRef === 'object' && departmentRef?.id
+        ? String(departmentRef.id)
+        : isDepartmentUuid(departmentRef)
+          ? String(departmentRef)
+          : null;
+    const deptName =
+      typeof departmentRef === 'object'
+        ? departmentRef?.name
+        : deptId
+          ? null
+          : departmentRef;
+
+    const selectFields =
+      'uid, username, email, name, role, department, department_id, position, work_mode, hire_date, is_active, company_id';
+
+    if (deptId) {
+      const { data: byId, error: byIdError } = await supabase
+        .from('users')
+        .select(selectFields)
+        .eq('role', 'manager')
+        .eq('department_id', deptId)
+        .eq('is_active', true)
+        .eq('company_id', cid);
+
+      if (!byIdError && byId?.length) {
+        if (__DEV__) {
+          console.log('[tenant] getManagersByDepartment', {
+            department_id: deptId,
+            queried_company_id: cid,
+            count: byId.length,
+          });
+        }
+        return byId.map(mapUserRowToEmployee);
+      }
+    }
+
+    const { data: allManagers, error } = await supabase
       .from('users')
-      .select('uid, username, email, name, role, department, position, work_mode, hire_date, is_active, company_id')
+      .select(selectFields)
       .eq('role', 'manager')
-      .eq('department', department)
       .eq('is_active', true)
       .eq('company_id', cid);
-
-    if (__DEV__) {
-      console.log('[tenant] getManagersByDepartment', { department, queried_company_id: cid, count: managers?.length ?? 0 });
-    }
 
     if (error) {
       console.error('[tenant] getManagersByDepartment Supabase:', error.message);
       return [];
     }
 
-    const list = (managers || []).map(mapUserRowToEmployee);
+    const nameToMatch = deptName || (typeof departmentRef === 'string' ? departmentRef : null);
+    const list = (allManagers || [])
+      .filter((m) => {
+        if (deptId && m.department_id != null && String(m.department_id) === deptId) {
+          return true;
+        }
+        if (nameToMatch && departmentNamesMatch(m.department, nameToMatch)) {
+          return true;
+        }
+        return false;
+      })
+      .map(mapUserRowToEmployee);
+
+    if (__DEV__) {
+      console.log('[tenant] getManagersByDepartment', {
+        department_id: deptId,
+        department_name: nameToMatch,
+        queried_company_id: cid,
+        count: list.length,
+      });
+    }
+
     if (list.length === 0) {
-      console.warn(`⚠️ No managers found for department: ${department}`);
+      console.warn(
+        `⚠️ No managers found for department: ${deptId || nameToMatch || departmentRef}`
+      );
     }
     return list;
   } catch (error) {
@@ -338,6 +394,12 @@ export const getManagersByDepartment = async (department, companyId) => {
     return [];
   }
 };
+
+function isDepartmentUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || '').trim()
+  );
+}
 
 /**
  * Check if user is HR manager (special privileges)

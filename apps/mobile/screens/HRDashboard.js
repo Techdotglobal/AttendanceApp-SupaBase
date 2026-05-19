@@ -22,7 +22,9 @@ import {
   getPriorityLabel,
   getPriorityColor,
   getCategoryLabel,
-  CATEGORY_TO_DEPARTMENT_MAP,
+  fetchTicketDepartments,
+  filterTicketsForManager,
+  managerCanManageTicket,
   updateTicketStatus,
   getTicketById,
 } from '../utils/ticketManagement';
@@ -85,7 +87,24 @@ export default function HRDashboard({ navigation, route }) {
   
   // Ticket data
   const [tickets, setTickets] = useState([]);
+  const [ticketDepartments, setTicketDepartments] = useState([]);
   const [ticketFilter, setTicketFilter] = useState('all');
+
+  const filterTicketsForCurrentUser = async (allTickets, departments) => {
+    if (user.role === 'super_admin' || isHRAdmin(user)) {
+      return allTickets;
+    }
+    const manageableEmployees = await getManageableEmployees(user);
+    const manageableEmployeeUsernames = new Set(
+      manageableEmployees.map((emp) => emp.username)
+    );
+    return filterTicketsForManager(
+      allTickets,
+      user,
+      departments,
+      manageableEmployeeUsernames
+    );
+  };
 
   useEffect(() => {
     loadData();
@@ -162,23 +181,11 @@ export default function HRDashboard({ navigation, route }) {
       // Get pending leave requests (already filtered by role in getPendingLeaveRequests)
       const pending = await getPendingLeaveRequests();
       
-      // Get tickets (filtered by role)
+      const deptResult = await fetchTicketDepartments(user);
+      const departments = deptResult.success ? deptResult.data || [] : [];
+
       let allTickets = await getAllTickets();
-      // HR admins and super admins see all tickets
-      if (user.role !== 'super_admin' && !isHRAdmin(user)) {
-        // Filter tickets for regular managers (same logic as loadTicketData)
-        const manageableEmployees = await getManageableEmployees(user);
-        const manageableEmployeeUsernames = new Set(manageableEmployees.map(emp => emp.username));
-        const managerDepartment = user.department;
-        
-        allTickets = allTickets.filter(ticket => {
-          if (ticket.assignedTo === user.username) return true;
-          if (manageableEmployeeUsernames.has(ticket.createdBy)) return true;
-          const ticketDepartment = CATEGORY_TO_DEPARTMENT_MAP[ticket.category];
-          if (ticketDepartment && ticketDepartment === managerDepartment) return true;
-          return false;
-        });
-      }
+      allTickets = await filterTicketsForCurrentUser(allTickets, departments);
       const openTickets = allTickets.filter(t => t.status === TICKET_STATUS.OPEN || t.status === TICKET_STATUS.IN_PROGRESS);
 
       setStats({
@@ -218,34 +225,12 @@ export default function HRDashboard({ navigation, route }) {
 
   const loadTicketData = async () => {
     try {
+      const deptResult = await fetchTicketDepartments(user);
+      const departments = deptResult.success ? deptResult.data || [] : [];
+      setTicketDepartments(departments);
+
       let allTicketsData = await getAllTickets();
-      
-      // For super admins and HR admins, show all tickets
-      if (user.role !== 'super_admin' && !isHRAdmin(user)) {
-        // For other managers, show tickets assigned to them OR tickets from their department category
-        const manageableEmployees = await getManageableEmployees(user);
-        const manageableEmployeeUsernames = new Set(manageableEmployees.map(emp => emp.username));
-        
-        // Get manager's department
-        const managerDepartment = user.department;
-        
-        allTicketsData = allTicketsData.filter(ticket => {
-          // Show if assigned to this manager
-          if (ticket.assignedTo === user.username) {
-            return true;
-          }
-          // Show if created by an employee in their department
-          if (manageableEmployeeUsernames.has(ticket.createdBy)) {
-            return true;
-          }
-          // Show if ticket category matches manager's department
-          const ticketDepartment = CATEGORY_TO_DEPARTMENT_MAP[ticket.category];
-          if (ticketDepartment && ticketDepartment === managerDepartment) {
-            return true;
-          }
-          return false;
-        });
-      }
+      allTicketsData = await filterTicketsForCurrentUser(allTicketsData, departments);
       
       // Apply status filter
       if (ticketFilter !== 'all') {
@@ -406,20 +391,7 @@ export default function HRDashboard({ navigation, route }) {
     // Check permissions
     // HR admins and super admins can manage all tickets
     if (user.role !== 'super_admin' && !isHRAdmin(user)) {
-      // For regular managers, check if they can manage this ticket
-      let canManage = false;
-      
-      // Check if ticket is assigned to this manager
-      if (ticket.assignedTo === user.username) {
-        canManage = true;
-      } else {
-        // Check if ticket category matches manager's department
-        const ticketDepartment = CATEGORY_TO_DEPARTMENT_MAP[ticket.category];
-        if (ticketDepartment && ticketDepartment === user.department) {
-          canManage = true;
-        }
-      }
-      
+      const canManage = managerCanManageTicket(ticket, user, ticketDepartments);
       if (!canManage) {
         Alert.alert('Permission Denied', 'You can only close tickets assigned to you or from your department.');
         return;
@@ -1055,7 +1027,7 @@ export default function HRDashboard({ navigation, route }) {
               <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginTop: spacing.xs }}>
                 <Ionicons name="pricetag-outline" size={iconSize.sm} color={colors.textSecondary} />
                 <Text style={{ fontSize: fontSize.sm, color: colors.textSecondary, marginLeft: spacing.xs }}>
-                  {getCategoryLabel(item.category)}
+                  {getCategoryLabel(item.category, ticketDepartments)}
                 </Text>
                 {item.assignedTo && (
                   <>

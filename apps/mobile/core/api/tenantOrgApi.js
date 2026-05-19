@@ -9,16 +9,20 @@ function gatewayBase() {
 
 /**
  * @param {object|null} requester - AuthContext user; resolved from session if omitted
+ * @param {{ scope?: 'all' | 'manage' }} [options] - `manage` limits managers to their department (HR forms)
  * @returns {Promise<{ success: boolean, data?: Array<{ id: string, name: string }>, error?: string }>}
  */
-export async function fetchTenantDepartments(requester = null) {
+export async function fetchTenantDepartments(requester = null, options = {}) {
   const ctx = requester || (await resolveCurrentRequester());
   if (!ctx) {
     return { success: false, error: 'You must be signed in to load departments.' };
   }
 
+  const scope = options.scope === 'manage' ? 'manage' : 'all';
+  const query = scope === 'manage' ? '?scope=manage' : '';
+
   try {
-    const response = await fetch(`${gatewayBase()}/api/auth/departments`, {
+    const response = await fetch(`${gatewayBase()}/api/auth/departments${query}`, {
       method: 'GET',
       headers: buildGatewayAuthHeaders(ctx),
     });

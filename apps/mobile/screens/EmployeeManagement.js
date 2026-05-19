@@ -95,6 +95,7 @@ export default function EmployeeManagement({
     defaultSickLeaves: 10,
     defaultCasualLeaves: 5
   });
+  const [savingLeaveSettings, setSavingLeaveSettings] = useState(false);
   const [employeeLeaveData, setEmployeeLeaveData] = useState(null);
   const [leaveInputs, setLeaveInputs] = useState({
     annualLeaves: '',
@@ -523,46 +524,56 @@ export default function EmployeeManagement({
   };
 
   const handleSaveDefaultLeaves = async () => {
+    if (savingLeaveSettings) return false;
+
     try {
       Keyboard.dismiss();
-      
-      if (!defaultLeaveSettings.defaultAnnualLeaves || 
-          !defaultLeaveSettings.defaultSickLeaves || 
-          !defaultLeaveSettings.defaultCasualLeaves) {
+
+      if (
+        !defaultLeaveSettings.defaultAnnualLeaves ||
+        !defaultLeaveSettings.defaultSickLeaves ||
+        !defaultLeaveSettings.defaultCasualLeaves
+      ) {
         Alert.alert('Error', 'Please fill in all default leave fields');
-        return;
+        return false;
       }
 
-      const annualLeaves = parseInt(defaultLeaveSettings.defaultAnnualLeaves);
-      const sickLeaves = parseInt(defaultLeaveSettings.defaultSickLeaves);
-      const casualLeaves = parseInt(defaultLeaveSettings.defaultCasualLeaves);
+      const annualLeaves = parseInt(defaultLeaveSettings.defaultAnnualLeaves, 10);
+      const sickLeaves = parseInt(defaultLeaveSettings.defaultSickLeaves, 10);
+      const casualLeaves = parseInt(defaultLeaveSettings.defaultCasualLeaves, 10);
 
       if (isNaN(annualLeaves) || isNaN(sickLeaves) || isNaN(casualLeaves)) {
         Alert.alert('Error', 'Please enter valid numbers');
-        return;
+        return false;
       }
 
       if (annualLeaves < 0 || sickLeaves < 0 || casualLeaves < 0) {
         Alert.alert('Error', 'Leave values cannot be negative');
-        return;
+        return false;
       }
 
+      setSavingLeaveSettings(true);
       const result = await updateDefaultLeaveSettings({
         defaultAnnualLeaves: annualLeaves,
         defaultSickLeaves: sickLeaves,
-        defaultCasualLeaves: casualLeaves
+        defaultCasualLeaves: casualLeaves,
       });
 
       if (result.success) {
         Alert.alert('Success', 'Default leave settings updated successfully');
         setShowLeaveSettingsModal(false);
         await loadDefaultLeaveSettings();
-      } else {
-        Alert.alert('Error', result.error || 'Failed to update default leave settings');
+        return true;
       }
+
+      Alert.alert('Could not save', result.error || 'Failed to update default leave settings');
+      return false;
     } catch (error) {
       console.error('Error saving default leaves:', error);
-      Alert.alert('Error', 'Failed to save default leave settings');
+      Alert.alert('Error', 'Failed to save default leave settings. Please try again.');
+      return false;
+    } finally {
+      setSavingLeaveSettings(false);
     }
   };
 
@@ -1210,6 +1221,7 @@ export default function EmployeeManagement({
         onClose={() => setShowLeaveSettingsModal(false)}
         defaultSettings={defaultLeaveSettings}
         onSave={handleSaveDefaultLeaves}
+        isSaving={savingLeaveSettings}
         onSettingsChange={setDefaultLeaveSettings}
       />
       {/* Role Edit Modal */}
@@ -1314,23 +1326,26 @@ export default function EmployeeManagement({
 }
 
 // Leave Settings Modal Component
-const LeaveSettingsModal = ({ visible, onClose, defaultSettings, onSave, onSettingsChange }) => {
+const LeaveSettingsModal = ({ visible, onClose, defaultSettings, onSave, onSettingsChange, isSaving = false }) => {
   const { colors } = useTheme();
   if (!visible) return null;
   
   const handleClose = () => {
+    if (isSaving) return;
     Keyboard.dismiss();
     onClose();
   };
 
   const handleSaveAndClose = async () => {
+    if (isSaving) return;
     Keyboard.dismiss();
     await onSave();
   };
 
-  const handleBack = async () => {
+  const handleBack = () => {
+    if (isSaving) return;
     Keyboard.dismiss();
-    await onSave();
+    onClose();
   };
   
   return (
@@ -1437,17 +1452,22 @@ const LeaveSettingsModal = ({ visible, onClose, defaultSettings, onSave, onSetti
               <View className="flex-row space-x-2 mt-4">
                 <TouchableOpacity
                   className="rounded-lg p-3 flex-1"
-                  style={{ backgroundColor: colors.borderLight }}
+                  style={{ backgroundColor: colors.borderLight, opacity: isSaving ? 0.6 : 1 }}
                   onPress={handleClose}
+                  disabled={isSaving}
                 >
                   <Text className="text-center font-medium" style={{ color: colors.text }}>Cancel</Text>
                 </TouchableOpacity>
                 
                 <TouchableOpacity
                   className="bg-primary-500 rounded-lg p-3 flex-1"
+                  style={{ opacity: isSaving ? 0.6 : 1 }}
                   onPress={handleSaveAndClose}
+                  disabled={isSaving}
                 >
-                  <Text className="text-center font-medium text-white">Save</Text>
+                  <Text className="text-center font-medium text-white">
+                    {isSaving ? 'Saving…' : 'Save'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>

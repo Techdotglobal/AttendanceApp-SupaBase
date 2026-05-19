@@ -3,29 +3,24 @@ import { supabase } from '../core/config/supabase';
 import { createNotification, createBatchNotifications } from './notifications';
 import { getAdminUsers, getSuperAdminUsers, getManagersByDepartment } from './employees';
 import { fetchSessionUserCompanyId } from '../core/tenant/tenantScope';
+import { resolveCurrentRequester } from '../core/api/gatewayRequest';
+import {
+  fetchTicketDepartments,
+  findDepartmentByCategoryValue,
+  getCategoryLabel,
+  filterTicketsForManager,
+  managerCanManageTicket,
+  categoryMatchesManagerDepartment,
+} from './ticketDepartments';
 
-// Ticket Categories
-export const TICKET_CATEGORIES = {
-  ENGINEERING: 'engineering',
-  TECHNICAL: 'technical',
-  HR: 'hr',
-  FINANCE: 'finance',
-  SALES: 'sales',
-  FACILITIES: 'facilities',
-  OTHER: 'other'
-};
-
-// Map ticket categories to departments
-// Engineering and Technical are separate departments
-export const CATEGORY_TO_DEPARTMENT_MAP = {
-  [TICKET_CATEGORIES.ENGINEERING]: 'Engineering', // Routes to Engineering Manager
-  [TICKET_CATEGORIES.TECHNICAL]: 'Technical',     // Routes to Technical Manager (separate department)
-  [TICKET_CATEGORIES.HR]: 'HR',
-  [TICKET_CATEGORIES.FINANCE]: 'Finance',
-  [TICKET_CATEGORIES.SALES]: 'Sales',
-  [TICKET_CATEGORIES.FACILITIES]: 'Facilities',
-  [TICKET_CATEGORIES.OTHER]: null // No specific department, goes to super_admin only
-};
+export {
+  fetchTicketDepartments,
+  findDepartmentByCategoryValue,
+  getCategoryLabel,
+  filterTicketsForManager,
+  managerCanManageTicket,
+  categoryMatchesManagerDepartment,
+} from './ticketDepartments';
 
 // Ticket Priorities
 export const TICKET_PRIORITIES = {
@@ -41,20 +36,6 @@ export const TICKET_STATUS = {
   IN_PROGRESS: 'in_progress',
   RESOLVED: 'resolved',
   CLOSED: 'closed'
-};
-
-// Category Labels
-export const getCategoryLabel = (category) => {
-  const labels = {
-    [TICKET_CATEGORIES.ENGINEERING]: 'Engineering',
-    [TICKET_CATEGORIES.TECHNICAL]: 'Technical',
-    [TICKET_CATEGORIES.HR]: 'HR',
-    [TICKET_CATEGORIES.FINANCE]: 'Finance',
-    [TICKET_CATEGORIES.SALES]: 'Sales',
-    [TICKET_CATEGORIES.FACILITIES]: 'Facilities',
-    [TICKET_CATEGORIES.OTHER]: 'Other'
-  };
-  return labels[category] || category;
 };
 
 // Priority Labels
@@ -136,14 +117,6 @@ const convertTicketFromDb = (dbTicket) => {
  */
 export const createTicket = async (createdBy, category, priority, subject, description) => {
   try {
-    // Validate category
-    if (!Object.values(TICKET_CATEGORIES).includes(category)) {
-      return {
-        success: false,
-        error: 'Invalid ticket category'
-      };
-    }
-
     // Validate priority
     if (!Object.values(TICKET_PRIORITIES).includes(priority)) {
       return {
@@ -206,66 +179,92 @@ export const createTicket = async (createdBy, category, priority, subject, descr
       return { success: false, error: 'Tenant context missing. Please sign in again.' };
     }
 
-    // Auto-assign to department manager based on category
+    const requester = await resolveCurrentRequester();
+    const deptResult = await fetchTicketDepartments(requester);
+    if (!deptResult.success) {
+      return {
+        success: false,
+        error: deptResult.error || 'Could not load departments. Please try again.',
+      };
+    }
+
+    const departments = deptResult.data || [];
+    if (departments.length === 0) {
+      return {
+        success: false,
+        error: 'No departments are configured for your company. Contact your administrator.',
+      };
+    }
+
+    const targetDepartment = findDepartmentByCategoryValue(category, departments);
+    if (!targetDepartment?.id) {
+      return {
+        success: false,
+        error: 'Please select a valid department',
+      };
+    }
+
+    const storedCategory = String(targetDepartment.id);
+    const departmentLabel = targetDepartment.name;
+
+    // Auto-assign to department manager based on selected department
     let assignedManager = null;
-    const department = CATEGORY_TO_DEPARTMENT_MAP[category];
     let initialStatus = TICKET_STATUS.OPEN;
-    
-    console.log(`[Ticket Routing] Category: ${category}, Department: ${department || 'N/A'}`);
-    
-    if (department) {
-      try {
-        console.log(`[Ticket Routing] Looking for managers in department: ${department}`);
-        const departmentManagers = await getManagersByDepartment(department, tenantCid);
-        console.log(`[Ticket Routing] Found ${departmentManagers.length} manager(s) for ${department}:`, 
-          departmentManagers.map(m => m.username));
-        
-        if (departmentManagers.length > 0) {
-          // Direct routing: Each category maps to its own department
-          // - "technical" category → Technical department → Technical Manager
-          assignedManager = departmentManagers[0];
-          initialStatus = TICKET_STATUS.IN_PROGRESS;
-          console.log(`✓ Ticket (${category}) will be assigned to ${assignedManager.username} (${assignedManager.position || department} Manager)`);
-        } else {
-          console.warn(`⚠️ No manager found for department: ${department}. Ticket will not be auto-assigned.`);
-          // Fallback: Try to assign to a super_admin if no manager found
-          try {
-            const superAdmins = await getSuperAdminUsers(tenantCid);
-            if (superAdmins.length > 0) {
-              assignedManager = superAdmins[0];
-              console.log(`✓ Fallback: Assigning ticket to super_admin: ${assignedManager.username}`);
-            }
-          } catch (fallbackError) {
-            console.error('Error getting super_admin for fallback assignment:', fallbackError);
-          }
-        }
-      } catch (error) {
-        console.error('Error finding department manager:', error);
-        // Fallback: Try to assign to a super_admin on error
+
+    console.log(
+      `[Ticket Routing] Department: ${departmentLabel} (${storedCategory})`
+    );
+
+    try {
+      console.log(
+        `[Ticket Routing] Looking for managers in department: ${departmentLabel}`
+      );
+      const departmentManagers = await getManagersByDepartment(
+        { id: targetDepartment.id, name: targetDepartment.name },
+        tenantCid
+      );
+      console.log(
+        `[Ticket Routing] Found ${departmentManagers.length} manager(s) for ${departmentLabel}:`,
+        departmentManagers.map((m) => m.username)
+      );
+
+      if (departmentManagers.length > 0) {
+        assignedManager = departmentManagers[0];
+        initialStatus = TICKET_STATUS.IN_PROGRESS;
+        console.log(
+          `✓ Ticket (${departmentLabel}) will be assigned to ${assignedManager.username}`
+        );
+      } else {
+        console.warn(
+          `⚠️ No manager found for department: ${departmentLabel}. Ticket will not be auto-assigned.`
+        );
         try {
           const superAdmins = await getSuperAdminUsers(tenantCid);
           if (superAdmins.length > 0) {
             assignedManager = superAdmins[0];
-            console.log(`✓ Fallback (on error): Assigning ticket to super_admin: ${assignedManager.username}`);
+            console.log(
+              `✓ Fallback: Assigning ticket to super_admin: ${assignedManager.username}`
+            );
           }
         } catch (fallbackError) {
           console.error('Error getting super_admin for fallback assignment:', fallbackError);
         }
       }
-    } else {
-      console.log(`[Ticket Routing] No department mapping for category: ${category}. Assigning to super_admin.`);
-      // For "other" category or unmapped categories, assign to super_admin
+    } catch (error) {
+      console.error('Error finding department manager:', error);
       try {
         const superAdmins = await getSuperAdminUsers(tenantCid);
         if (superAdmins.length > 0) {
           assignedManager = superAdmins[0];
-          console.log(`✓ Assigning ticket to super_admin: ${assignedManager.username}`);
+          console.log(
+            `✓ Fallback (on error): Assigning ticket to super_admin: ${assignedManager.username}`
+          );
         }
       } catch (fallbackError) {
-        console.error('Error getting super_admin for assignment:', fallbackError);
+        console.error('Error getting super_admin for fallback assignment:', fallbackError);
       }
     }
-    
+
     if (assignedManager) {
       console.log(`✓ Final assignment: ${assignedManager.username} (${assignedManager.role}, ${assignedManager.department || 'N/A'})`);
     } else {
@@ -277,7 +276,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
       created_by_uid: createdByUid,
       company_id: tenantCid,
       created_by: createdBy,
-      category: category,
+      category: storedCategory,
       priority: priority,
       subject: subject.trim(),
       description: description.trim(),
@@ -317,12 +316,12 @@ export const createTicket = async (createdBy, category, priority, subject, descr
         
         if (superAdminUsernames.length > 0) {
           const notificationTitle = 'New Ticket Created';
-          const notificationBody = `${createdBy} created a ${getPriorityLabel(priority)} priority ${getCategoryLabel(category)} ticket: ${subject}${assignedManager ? ` (Assigned to ${assignedManager.name})` : ''}`;
+          const notificationBody = `${createdBy} created a ${getPriorityLabel(priority)} priority ${getCategoryLabel(storedCategory, departments)} ticket: ${subject}${assignedManager ? ` (Assigned to ${assignedManager.name})` : ''}`;
           
           const notificationData = {
             ticketId,
             createdBy,
-            category,
+            category: storedCategory,
             priority,
             subject,
             assignedTo: assignedManager?.username || null,
@@ -367,7 +366,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
     if (assignedManager && assignedManager.username) {
       try {
         const notificationTitle = 'Ticket Assigned to You';
-        const notificationBody = `A ${getPriorityLabel(priority)} priority ${getCategoryLabel(category)} ticket has been assigned to you: ${subject}`;
+        const notificationBody = `A ${getPriorityLabel(priority)} priority ${getCategoryLabel(storedCategory, departments)} ticket has been assigned to you: ${subject}`;
         
         const result = await createNotification(
           assignedManager.username,
@@ -412,7 +411,7 @@ export const createTicket = async (createdBy, category, priority, subject, descr
           
           if (managerUsernames.length > 0) {
             const notificationTitle = 'New Unassigned Ticket';
-            const notificationBody = `${createdBy} created a ${getPriorityLabel(priority)} priority ${getCategoryLabel(category)} ticket (needs assignment): ${subject}`;
+            const notificationBody = `${createdBy} created a ${getPriorityLabel(priority)} priority ${getCategoryLabel(storedCategory, departments)} ticket (needs assignment): ${subject}`;
             
             const batchResult = await createBatchNotifications(
               managerUsernames,

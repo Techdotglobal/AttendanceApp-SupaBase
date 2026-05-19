@@ -20,9 +20,10 @@ import {
   getStatusColor,
   getPriorityLabel,
   getPriorityColor,
-  getCategoryLabel,
   TICKET_STATUS,
+  fetchTicketDepartments,
 } from '../utils/ticketManagement';
+import { getCategoryLabel } from '../utils/ticketDepartments';
 import { getAdminUsers } from '../utils/employees';
 import { useTheme } from '../contexts/ThemeContext';
 import { isTablet } from '../shared/utils/responsive';
@@ -45,6 +46,7 @@ export default function TicketManagementScreen({ navigation, route }) {
   const [responseMessage, setResponseMessage] = useState('');
   const [selectedStatus, setSelectedStatus] = useState(ticket?.status || TICKET_STATUS.OPEN);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [ticketDepartments, setTicketDepartments] = useState([]);
 
   useEffect(() => {
     loadData();
@@ -78,10 +80,18 @@ export default function TicketManagementScreen({ navigation, route }) {
   }, [navigation]);
 
   const loadData = async () => {
-    await Promise.all([
-      loadTicket(),
-      loadEmployees()
-    ]);
+    await Promise.all([loadTicket(), loadEmployees(), loadTicketDepartments()]);
+  };
+
+  const loadTicketDepartments = async () => {
+    try {
+      const result = await fetchTicketDepartments(user);
+      if (result.success) {
+        setTicketDepartments(result.data || []);
+      }
+    } catch (error) {
+      console.error('Error loading ticket departments:', error);
+    }
   };
 
   const loadTicket = async () => {
@@ -293,7 +303,7 @@ export default function TicketManagementScreen({ navigation, route }) {
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
               <Ionicons name="pricetag-outline" size={16} color={colors.textSecondary} />
               <Text style={{ fontSize: 14, color: colors.textSecondary, marginLeft: 6 }}>
-                {getCategoryLabel(ticket.category)}
+                {getCategoryLabel(ticket.category, ticketDepartments)}
               </Text>
               {ticket.assignedTo && (
                 <>

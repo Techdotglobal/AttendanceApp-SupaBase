@@ -12,17 +12,20 @@ function traceCreateUser(step, fields = {}) {
     JSON.stringify(fields, (_, v) => (v instanceof Error ? v.message : v))
   );
 }
-const { syncAuthMetadataForUid } = require('../lib/authMetadata');
+const { syncAuthMetadataForUid, syncAuthMetadataAndInvalidateSessions } = require('../lib/authMetadata');
 const {
   normalizeEmailForAuth,
   parseLoginIdentifier,
   usernameEqVariants,
+  normalizedUsernameKey,
 } = require('../lib/loginNormalize');
 const { normalizePosition, toLookupKey } = require('../lib/orgNormalize');
 const {
   listDepartmentsForCompany,
   ensureDepartmentForCompany,
 } = require('../lib/departmentService');
+const { isHrManager, canEditAnyProfile } = require('../lib/profileAccess');
+const { findUserByUsernameInCompany, updateUsernameForUid } = require('../lib/usernameUpdate');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PRIVILEGED_ROLES = new Set(['super_admin', 'manager']);
@@ -78,20 +81,99 @@ async function resolveScopedTargetByUsername(req, username) {
     return { errorStatus: 403, error: 'Caller is not bound to a tenant (company_id missing).' };
   }
 
+  const applyScope = (q) => {
+    if (requester.role === 'manager' && !isHrManager(requester)) {
+      return q.eq('department', requester.department).neq('role', 'super_admin');
+    }
+    if (requester.role === 'manager') {
+      return q.neq('role', 'super_admin');
+    }
+    return q;
+  };
+
+  const data = await findUserByUsernameInCompany(supabase, companyId, username, applyScope);
+  if (!data) return { errorStatus: 404, error: 'User not found' };
+  return { requester, companyId, target: data };
+}
+
+async function resolveScopedTargetByUid(req, uid) {
+  const requester = parseRequester(req);
+  if (!requester || !requester.role) {
+    return { errorStatus: 401, error: 'Missing requester identity (X-User-Context).' };
+  }
+  if (!PRIVILEGED_ROLES.has(String(requester.role))) {
+    return { errorStatus: 403, error: 'Only super admins or managers can update users.' };
+  }
+  const companyId = await resolveRequesterCompanyId(requester);
+  if (!companyId) {
+    return { errorStatus: 403, error: 'Caller is not bound to a tenant (company_id missing).' };
+  }
+
   let query = supabase
     .from('users')
     .select('uid, username, email, role, department, company_id')
-    .eq('normalized_username', toLookupKey(username))
+    .eq('uid', uid)
     .eq('company_id', companyId);
 
-  if (requester.role === 'manager') {
+  if (requester.role === 'manager' && !isHrManager(requester)) {
     query = query.eq('department', requester.department).neq('role', 'super_admin');
+  } else if (requester.role === 'manager') {
+    query = query.neq('role', 'super_admin');
   }
 
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
   if (!data) return { errorStatus: 404, error: 'User not found' };
   return { requester, companyId, target: data };
+}
+
+async function applyUserRoleChange(req, res, scope, role) {
+  const timestamp = new Date().toISOString();
+  if (
+    scope.requester.role === 'manager' &&
+    !isHrManager(scope.requester) &&
+    role !== scope.target.role
+  ) {
+    return res.status(403).json({ success: false, error: 'Managers cannot update roles.' });
+  }
+  if (scope.target.role === 'super_admin') {
+    return res.status(403).json({ success: false, error: 'Super admin role cannot be changed here.' });
+  }
+
+  const { data, error } = await supabase
+    .from('users')
+    .update({
+      role,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('uid', scope.target.uid)
+    .eq('company_id', scope.companyId)
+    .select('uid, username, role');
+
+  if (error) {
+    console.error('Update role error:', error);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+  if (!data || data.length === 0) {
+    return res.status(404).json({ success: false, error: 'User not found' });
+  }
+
+  const targetUid = data[0].uid;
+  const metaSync = await syncAuthMetadataAndInvalidateSessions(supabase, targetUid);
+  if (!metaSync.ok) {
+    console.error(`[${timestamp}] Auth Service: role updated in DB but auth sync failed:`, metaSync.error);
+    return res.status(500).json({
+      success: false,
+      error: metaSync.error || 'Role saved but failed to sync authentication profile',
+    });
+  }
+
+  console.log(`[${timestamp}] Auth Service: ✓ User role updated:`, data[0].username, '->', role);
+  return res.status(200).json({
+    success: true,
+    message: 'User role updated. They must sign in again on the mobile app to apply the change.',
+    user: data[0],
+  });
 }
 
 /**
@@ -148,11 +230,11 @@ router.post('/login', async (req, res) => {
     if (!isEmail) {
       try {
         let resolved = null;
-        const normalizedUsername = toLookupKey(ident);
+        const normalizedUsername = normalizedUsernameKey(ident);
         const variants = usernameEqVariants(ident);
         const { data: normalizedRow, error: normalizedErr } = await supabase
           .from('users')
-          .select('email, username')
+          .select('email, username, is_active')
           .eq('normalized_username', normalizedUsername)
           .maybeSingle();
         if (normalizedErr) {
@@ -161,6 +243,13 @@ router.post('/login', async (req, res) => {
             message: normalizedErr.message,
           });
         } else if (normalizedRow?.email) {
+          if (normalizedRow.is_active === false) {
+            console.log(`[${timestamp}] Auth Service: ✗ Inactive user (normalized username)`);
+            return res.status(401).json({
+              success: false,
+              error: 'Invalid username or password',
+            });
+          }
           resolved = normalizedRow;
         }
 
@@ -168,13 +257,20 @@ router.post('/login', async (req, res) => {
           if (resolved?.email) break;
           const { data: row, error: qErr } = await supabase
             .from('users')
-            .select('email, username')
+            .select('email, username, is_active')
             .eq('username', u)
             .maybeSingle();
           if (qErr) {
             console.warn(`[${timestamp}] Auth Service: username lookup error`, { username: u, message: qErr.message });
           }
           if (row?.email) {
+            if (row.is_active === false) {
+              console.log(`[${timestamp}] Auth Service: ✗ Inactive user (username variant)`);
+              return res.status(401).json({
+                success: false,
+                error: 'Invalid username or password',
+              });
+            }
             resolved = row;
             break;
           }
@@ -367,7 +463,7 @@ router.get('/check-username/:username', async (req, res) => {
       });
     }
 
-    const normalizedUsername = toLookupKey(username);
+    const normalizedUsername = normalizedUsernameKey(username);
     const { data, error } = await supabase
       .from('users')
       .select('username')
@@ -487,7 +583,7 @@ router.post('/users', async (req, res) => {
     const { data: dupUsername } = await supabase
       .from('users')
       .select('id')
-      .eq('normalized_username', toLookupKey(username))
+      .eq('normalized_username', normalizedUsernameKey(username))
       .maybeSingle();
     if (dupUsername) {
       return res.status(409).json({ success: false, error: 'Username already taken.' });
@@ -810,6 +906,37 @@ router.delete('/users/:uid', async (req, res) => {
 });
 
 /**
+ * PATCH /api/auth/users/uid/:uid/role
+ * Update user role by uid (preferred for admin web — avoids username lookup issues).
+ */
+router.patch('/users/uid/:uid/role', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  const { uid } = req.params;
+  const { role } = req.body;
+  console.log(`[${timestamp}] Auth Service: Update role by uid: ${uid} -> ${role}`);
+  try {
+    if (!uid || !role) {
+      return res.status(400).json({ success: false, error: 'User id and role are required' });
+    }
+    if (String(role).toLowerCase() === 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        error:
+          'Assigning super_admin is only supported via POST /api/auth/onboard-company (tenant onboarding).',
+      });
+    }
+    const scope = await resolveScopedTargetByUid(req, uid);
+    if (scope.errorStatus) {
+      return res.status(scope.errorStatus).json({ success: false, error: scope.error });
+    }
+    return applyUserRoleChange(req, res, scope, role);
+  } catch (error) {
+    console.error('Update role by uid error:', error);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+/**
  * PATCH /api/auth/users/:username/role
  * Update user role
  * Body: { role: string }
@@ -841,48 +968,7 @@ router.patch('/users/:username/role', async (req, res) => {
     if (scope.errorStatus) {
       return res.status(scope.errorStatus).json({ success: false, error: scope.error });
     }
-    if (scope.requester.role === 'manager' && role !== scope.target.role) {
-      return res.status(403).json({ success: false, error: 'Managers cannot update roles.' });
-    }
-
-    // Update role in Supabase database
-    const { data, error } = await supabase
-      .from('users')
-      .update({ 
-        role: role,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('uid', scope.target.uid)
-      .eq('company_id', scope.companyId)
-      .select();
-
-    if (error) {
-      console.error('Update role error:', error);
-      return res.status(500).json({
-        success: false,
-        error: 'Internal server error',
-      });
-    }
-
-    if (!data || data.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found',
-      });
-    }
-
-    const targetUid = data[0].uid;
-    const metaSync = await syncAuthMetadataForUid(supabase, targetUid);
-    if (!metaSync.ok) {
-      console.error(`[${timestamp}] Auth Service: JWT metadata sync failed after role update:`, metaSync.error);
-    }
-
-    console.log(`[${timestamp}] Auth Service: ✓ User role updated:`, username, 'to', role);
-
-    return res.status(200).json({
-      success: true,
-      message: 'User role updated successfully',
-    });
+    return applyUserRoleChange(req, res, scope, role);
   } catch (error) {
     console.error('Update role error:', error);
     res.status(500).json({
@@ -890,6 +976,140 @@ router.patch('/users/:username/role', async (req, res) => {
       error: 'Internal server error',
     });
   }
+});
+
+/**
+ * PATCH /api/auth/users/uid/:uid/username
+ * Body: { username: string }
+ */
+router.patch('/users/uid/:uid/username', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  const { uid } = req.params;
+  const { username } = req.body;
+  console.log(`[${timestamp}] Auth Service: Update username by uid: ${uid}`);
+  try {
+    if (!uid || username === undefined) {
+      return res.status(400).json({ success: false, error: 'User id and username are required' });
+    }
+    const scope = await resolveScopedTargetByUid(req, uid);
+    if (scope.errorStatus) {
+      return res.status(scope.errorStatus).json({ success: false, error: scope.error });
+    }
+    if (!canEditAnyProfile(scope.requester)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only super admins and HR managers can change usernames',
+      });
+    }
+    const result = await updateUsernameForUid(supabase, scope.companyId, uid, username);
+    if (!result.ok) {
+      return res.status(result.status).json({ success: false, error: result.error });
+    }
+    const metaSync = await syncAuthMetadataAndInvalidateSessions(supabase, uid);
+    if (!metaSync.ok) {
+      return res.status(500).json({
+        success: false,
+        error: metaSync.error || 'Username saved but failed to sync authentication',
+      });
+    }
+    return res.status(200).json({
+      success: true,
+      message: 'Username updated. User must sign in with the new username.',
+      data: { uid, username: result.username },
+    });
+  } catch (error) {
+    console.error('Update username by uid error:', error);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+/**
+ * PATCH /api/auth/users/uid/:uid/email
+ * Body: { email: string }
+ */
+router.patch('/users/uid/:uid/email', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  const { uid } = req.params;
+  const { email } = req.body;
+  console.log(`[${timestamp}] Auth Service: Update email by uid: ${uid}`);
+  try {
+    if (!uid || !email) {
+      return res.status(400).json({ success: false, error: 'User id and email are required' });
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(String(email).trim())) {
+      return res.status(400).json({ success: false, error: 'Invalid email format' });
+    }
+    const scope = await resolveScopedTargetByUid(req, uid);
+    if (scope.errorStatus) {
+      return res.status(scope.errorStatus).json({ success: false, error: scope.error });
+    }
+    if (!canEditAnyProfile(scope.requester)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only super admins and HR managers can change user email',
+      });
+    }
+    return applyUserEmailChange(res, scope, String(email).trim(), timestamp);
+  } catch (error) {
+    console.error('Update email by uid error:', error);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+/**
+ * PATCH /api/auth/users/uid/:uid/password
+ * Body: { password: string } (min 8 characters)
+ */
+router.patch('/users/uid/:uid/password', async (req, res) => {
+  return res.status(403).json({
+    success: false,
+    error: 'Admins cannot reset passwords. Users must change their password in the mobile app.',
+  });
+});
+
+async function applyUserEmailChange(res, scope, email, timestamp) {
+  const { error: authError } = await supabase.auth.admin.updateUserById(scope.target.uid, {
+    email,
+    email_confirm: true,
+  });
+  if (authError) {
+    return res.status(500).json({
+      success: false,
+      error: authError.message || 'Failed to update email in Auth',
+    });
+  }
+  const { error: dbError } = await supabase
+    .from('users')
+    .update({ email, updated_at: new Date().toISOString() })
+    .eq('uid', scope.target.uid)
+    .eq('company_id', scope.companyId);
+  if (dbError) {
+    return res.status(500).json({ success: false, error: 'Failed to update email in database' });
+  }
+  const metaSync = await syncAuthMetadataAndInvalidateSessions(supabase, scope.target.uid);
+  if (!metaSync.ok) {
+    return res.status(500).json({
+      success: false,
+      error: metaSync.error || 'Email saved but failed to sync authentication',
+    });
+  }
+  console.log(`[${timestamp}] Auth Service: ✓ User email updated:`, scope.target.username, '->', email);
+  return res.status(200).json({
+    success: true,
+    message: 'Email updated. User must sign in again with the new email.',
+    data: { uid: scope.target.uid, email },
+  });
+}
+
+/**
+ * PATCH /api/auth/users/:username/password — disabled for admin/HR
+ */
+router.patch('/users/:username/password', async (req, res) => {
+  return res.status(403).json({
+    success: false,
+    error: 'Admins cannot reset passwords. Users must change their password in the mobile app.',
+  });
 });
 
 /**
@@ -925,55 +1145,13 @@ router.patch('/users/:username/email', async (req, res) => {
     if (scope.errorStatus) {
       return res.status(scope.errorStatus).json({ success: false, error: scope.error });
     }
-    const userData = scope.target;
-
-    // Step 2: Update email in Supabase Auth (requires admin API)
-    const { data: authData, error: authError } = await supabase.auth.admin.updateUserById(
-      userData.uid,
-      {
-        email: email,
-        email_confirm: true, // Auto-confirm the new email
-      }
-    );
-
-    if (authError) {
-      console.error('Update email in Auth error:', authError);
-      return res.status(500).json({
+    if (!canEditAnyProfile(scope.requester)) {
+      return res.status(403).json({
         success: false,
-        error: authError.message || 'Failed to update email in Auth',
+        error: 'Only super admins and HR managers can change user email',
       });
     }
-
-    // Step 3: Update email in PostgreSQL users table
-    const { data: dbData, error: dbError } = await supabase
-      .from('users')
-      .update({
-        email: email,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('uid', userData.uid)
-      .eq('company_id', scope.companyId)
-      .select();
-
-    if (dbError) {
-      console.error('Update email in database error:', dbError);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to update email in database',
-      });
-    }
-
-    console.log(`[${timestamp}] Auth Service: ✓ User email updated: ${username} -> ${email}`);
-
-    return res.status(200).json({
-      success: true,
-      message: 'Email updated successfully',
-      data: {
-        username: username,
-        oldEmail: userData.email,
-        newEmail: email,
-      },
-    });
+    return applyUserEmailChange(res, scope, String(email).trim(), timestamp);
   } catch (error) {
     console.error('Update email error:', error);
     return res.status(500).json({
@@ -1044,10 +1222,25 @@ router.patch('/users/:username', async (req, res) => {
     if (scope.errorStatus) {
       return res.status(scope.errorStatus).json({ success: false, error: scope.error });
     }
+    const sensitiveTouched =
+      dbUpdates.name !== undefined ||
+      dbUpdates.email !== undefined ||
+      dbUpdates.username !== undefined;
+    if (sensitiveTouched && !canEditAnyProfile(scope.requester)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only super admins and HR managers can edit user profiles',
+      });
+    }
     if (scope.requester.role === 'manager' && dbUpdates.role !== undefined && dbUpdates.role !== scope.target.role) {
       return res.status(403).json({ success: false, error: 'Managers cannot update roles.' });
     }
-    if (scope.requester.role === 'manager' && dbUpdates.department !== undefined && dbUpdates.department !== scope.target.department) {
+    if (
+      scope.requester.role === 'manager' &&
+      !isHrManager(scope.requester) &&
+      dbUpdates.department !== undefined &&
+      dbUpdates.department !== scope.target.department
+    ) {
       return res.status(403).json({ success: false, error: 'Managers cannot change departments.' });
     }
 
@@ -1055,6 +1248,23 @@ router.patch('/users/:username', async (req, res) => {
       const resolved = await resolveDepartmentForUserCreate(scope.companyId, dbUpdates.department);
       dbUpdates.department = resolved.name || null;
       dbUpdates.department_id = resolved.id || null;
+    }
+
+    if (dbUpdates.username !== undefined) {
+      const usernameResult = await updateUsernameForUid(
+        supabase,
+        scope.companyId,
+        scope.target.uid,
+        dbUpdates.username
+      );
+      if (!usernameResult.ok) {
+        return res.status(usernameResult.status).json({
+          success: false,
+          error: usernameResult.error,
+        });
+      }
+      dbUpdates.username = usernameResult.username;
+      dbUpdates.normalized_username = usernameResult.normalized_username;
     }
 
     // Update user data in Supabase database
@@ -1081,9 +1291,12 @@ router.patch('/users/:username', async (req, res) => {
     }
 
     const targetUid = data[0].uid;
-    const metaSync = await syncAuthMetadataForUid(supabase, targetUid);
+    const metaSync = await syncAuthMetadataAndInvalidateSessions(supabase, targetUid);
     if (!metaSync.ok) {
-      console.error(`[${timestamp}] Auth Service: JWT metadata sync failed after profile update:`, metaSync.error);
+      return res.status(500).json({
+        success: false,
+        error: metaSync.error || 'Profile saved but failed to sync authentication',
+      });
     }
 
     console.log(`[${timestamp}] Auth Service: ✓ User info updated:`, username);
@@ -1091,6 +1304,7 @@ router.patch('/users/:username', async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'User information updated successfully',
+      user: data[0],
     });
   } catch (error) {
     console.error('Update user error:', error);

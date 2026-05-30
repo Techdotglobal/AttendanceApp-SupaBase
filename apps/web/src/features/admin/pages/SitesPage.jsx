@@ -69,13 +69,15 @@ export function SitesPage() {
         <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="longitude" value={form.longitude} onChange={(e) => setForm((p) => ({ ...p, longitude: e.target.value }))} />
         <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="radius" value={form.radius} onChange={(e) => setForm((p) => ({ ...p, radius: e.target.value }))} />
         <select
-          className="rounded bg-slate-800/80 p-2 text-slate-100"
+          className="glass-select rounded bg-slate-800/80 p-2 text-slate-100"
           value={form.department_id}
           onChange={(e) => setForm((p) => ({ ...p, department_id: e.target.value }))}
         >
-          <option value="">Select department</option>
+          <option value="" className="bg-slate-100 text-slate-900">Select department</option>
           {departments.map((d) => (
-            <option key={d.id} value={d.id}>{d.name}</option>
+            <option key={d.id} value={d.id} className="bg-slate-100 text-slate-900">
+              {d.name}
+            </option>
           ))}
         </select>
       </div>

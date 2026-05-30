@@ -34,9 +34,20 @@ function usernameEqVariants(ident) {
   return [...new Set(variants)];
 }
 
+/**
+ * Matches Postgres public.normalize_username (lower + btrim only).
+ * Do not collapse internal spaces — must stay aligned with users.normalized_username.
+ */
+function normalizedUsernameKey(username) {
+  const t = trimInput(username);
+  if (!t) return null;
+  return t.toLowerCase();
+}
+
 module.exports = {
   trimInput,
   normalizeEmailForAuth,
   parseLoginIdentifier,
   usernameEqVariants,
+  normalizedUsernameKey,
 };

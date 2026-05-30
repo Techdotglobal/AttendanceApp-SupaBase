@@ -286,6 +286,18 @@ export function AuthProvider({ children }) {
     return () => sub.remove();
   }, [user?.companyId]);
 
+  // Reload profile from public.users when app returns to foreground (picks up admin role/department changes).
+  useEffect(() => {
+    if (!user?.uid) return;
+    const handleAppStateChange = (nextState) => {
+      if (nextState === 'active') {
+        void loadUserData(user.uid);
+      }
+    };
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
+  }, [user?.uid]);
+
   const loadUserData = async (userId) => {
     const seq = ++loadUserDataSeqRef.current;
     const isStale = () => seq !== loadUserDataSeqRef.current;

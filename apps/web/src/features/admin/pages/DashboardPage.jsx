@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { adminService } from '../services/adminService';
 import { GlassCard } from '../../../shared/components/GlassCard';
 
@@ -21,21 +22,55 @@ function SkeletonCard() {
   return <div className="h-28 rounded-2xl border border-white/15 bg-white/10 skeleton" />;
 }
 
-function KPI({ label, value, trend, icon }) {
+function KPI({ label, value, trend, icon, onClick, hint }) {
+  const CardTag = onClick ? 'button' : 'div';
   return (
-    <GlassCard className="p-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-200">{label}</p>
-        <span className="grid h-8 w-8 place-items-center rounded-lg bg-blue-400/20 text-blue-100 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]">{icon}</span>
-      </div>
-      <p className="mt-4 text-3xl font-semibold text-white">{value}</p>
-      <p className="mt-2 text-xs text-slate-300">{trend}</p>
+    <GlassCard
+      hover={!onClick}
+      className={`p-4 text-left w-full ${onClick ? 'cursor-pointer hover:bg-white/15 transition-all duration-200 active:scale-[0.99]' : ''}`}
+    >
+      <CardTag type={onClick ? 'button' : undefined} onClick={onClick} className="w-full text-left">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-slate-200">{label}</p>
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-blue-400/20 text-blue-100 shadow-[0_0_0_1px_rgba(59,130,246,0.35)]">
+            {icon}
+          </span>
+        </div>
+        <p className="mt-4 text-3xl font-semibold text-white">{value}</p>
+        <p className="mt-2 text-xs text-slate-300">{trend}</p>
+        {onClick && hint && <p className="mt-2 text-[10px] text-blue-200/90">{hint}</p>}
+      </CardTag>
     </GlassCard>
   );
 }
 
+const downloadUsersCsv = (users) => {
+  const header = ['username', 'name', 'email', 'role', 'department', 'is_active'];
+  const lines = [header.join(',')];
+  for (const u of users || []) {
+    const row = [
+      u.username,
+      u.name,
+      u.email,
+      u.role,
+      u.department,
+      u.is_active ? 'active' : 'inactive',
+    ].map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`);
+    lines.push(row.join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `users-export-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
 export function DashboardPage() {
+  const navigate = useNavigate();
   const [stats, setStats] = useState(null);
+  const [cachedUsers, setCachedUsers] = useState([]);
   const [growthSeries, setGrowthSeries] = useState([]);
   const [activityItems, setActivityItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -53,6 +88,7 @@ export function DashboardPage() {
       ]);
 
       setStats(statsData);
+      setCachedUsers(users || []);
 
       const monthBuckets = new Map();
       for (let i = 0; i < 12; i += 1) {
@@ -172,24 +208,32 @@ export function DashboardPage() {
               label="Total Users"
               value={stats?.totalEmployees ?? 0}
               trend={`${growthRate >= 0 ? '+' : ''}${growthRate.toFixed(1)}% vs last month`}
+              hint="View all users →"
+              onClick={() => navigate('/users')}
               icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /></svg>}
             />
             <KPI
               label="Active Users Today"
               value={stats?.activeUsers ?? 0}
               trend={`${stats?.activeUsers ?? 0} currently active`}
+              hint="View active users →"
+              onClick={() => navigate('/users', { state: { statusFilter: 'active' } })}
               icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 12a9 9 0 1 1-9-9" /><path d="M21 3v9h-9" /></svg>}
             />
             <KPI
               label="Departments"
               value={stats?.totalDepartments ?? 0}
               trend="Synced with central department table"
+              hint="Manage departments →"
+              onClick={() => navigate('/departments', { state: { focusCreate: true } })}
               icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 21h18" /><path d="M5 21V7l7-4 7 4v14" /></svg>}
             />
             <KPI
               label="Pending Actions"
               value={unresolvedActions}
               trend={`${unresolvedActions} leave request${unresolvedActions === 1 ? '' : 's'} awaiting review`}
+              hint="Review leave requests →"
+              onClick={() => navigate('/leaves')}
               icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 6v6l3 3" /><circle cx="12" cy="12" r="9" /></svg>}
             />
           </>
@@ -259,9 +303,35 @@ export function DashboardPage() {
           <GlassCard className="p-5">
             <h2 className="text-sm font-medium text-white">Quick Actions</h2>
             <div className="mt-4 grid grid-cols-1 gap-2">
-              <button className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]">Add User</button>
-              <button className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]">Export Data</button>
-              <button className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]">Create Department</button>
+              <button
+                type="button"
+                onClick={() => navigate('/users', { state: { openCreate: true } })}
+                className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]"
+              >
+                Add User
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (cachedUsers.length) {
+                    downloadUsersCsv(cachedUsers);
+                  } else {
+                    adminService.getUsers().then(downloadUsersCsv).catch((err) => {
+                      setError(err?.message || 'Failed to export users');
+                    });
+                  }
+                }}
+                className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]"
+              >
+                Export Users (CSV)
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate('/departments', { state: { focusCreate: true } })}
+                className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]"
+              >
+                Create Department
+              </button>
             </div>
           </GlassCard>
         </div>

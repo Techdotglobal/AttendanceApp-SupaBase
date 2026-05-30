@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { adminService } from '../services/adminService';
 import { useAuthStore } from '../../auth/store/authStore';
 import { GlassCard } from '../../../shared/components/GlassCard';
 
 export function DepartmentsPage() {
   const { user } = useAuthStore();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const createInputRef = useRef(null);
   const [name, setName] = useState('');
   const [search, setSearch] = useState('');
   const [rows, setRows] = useState([]);
@@ -25,6 +29,14 @@ export function DepartmentsPage() {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    if (location.state?.focusCreate) {
+      createInputRef.current?.focus();
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   const isSuperAdmin = user?.role === 'super_admin';
   const filteredRows = useMemo(() => {
@@ -92,6 +104,7 @@ export function DepartmentsPage() {
         {isSuperAdmin && (
           <>
             <input
+              ref={createInputRef}
               className="rounded-lg border border-white/20 bg-white/10 p-2.5 md:w-72 text-sm text-slate-100 placeholder:text-slate-300"
               value={name}
               onChange={(e) => setName(e.target.value)}

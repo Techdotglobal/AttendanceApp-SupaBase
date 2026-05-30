@@ -28,7 +28,9 @@ const forward = async (req, res, method, path) => {
 };
 
 router.get('/dashboard/stats', (req, res) => forward(req, res, 'get', '/api/admin/dashboard/stats'));
+router.get('/analytics', (req, res) => forward(req, res, 'get', '/api/admin/analytics'));
 router.get('/users', (req, res) => forward(req, res, 'get', '/api/admin/users'));
+router.get('/users/:uid', (req, res) => forward(req, res, 'get', `/api/admin/users/${req.params.uid}`));
 router.patch('/users/:uid', (req, res) => forward(req, res, 'patch', `/api/admin/users/${req.params.uid}`));
 
 router.get('/departments', (req, res) => forward(req, res, 'get', '/api/admin/departments'));

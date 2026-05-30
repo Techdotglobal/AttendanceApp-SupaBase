@@ -105,10 +105,34 @@ async function syncAuthMetadataForUid(supabaseAdmin, uid) {
   return { ok: true, row };
 }
 
+/**
+ * After public.users changes (role, department, etc.), sync JWT user_metadata and
+ * end all Supabase sessions for that user so mobile/web pick up the new profile on next login.
+ * @param {*} supabaseAdmin
+ * @param {string} uid
+ * @returns {Promise<{ ok: true, row: object } | { ok: false, error: string }>}
+ */
+async function syncAuthMetadataAndInvalidateSessions(supabaseAdmin, uid) {
+  const metaSync = await syncAuthMetadataForUid(supabaseAdmin, uid);
+  if (!metaSync.ok) {
+    return metaSync;
+  }
+  try {
+    const { error: signOutErr } = await supabaseAdmin.auth.admin.signOut(uid, 'global');
+    if (signOutErr) {
+      console.warn('[authMetadata] signOut(global) after profile change:', signOutErr.message);
+    }
+  } catch (e) {
+    console.warn('[authMetadata] signOut(global) exception:', e?.message || e);
+  }
+  return metaSync;
+}
+
 module.exports = {
   buildUserMetadataFromUserRow,
   mergeTenantUserMetadata,
   tenantMetadataMatchesRow,
   isTenantMetadataComplete,
   syncAuthMetadataForUid,
+  syncAuthMetadataAndInvalidateSessions,
 };

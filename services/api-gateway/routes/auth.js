@@ -315,6 +315,38 @@ router.delete('/users/:uid', async (req, res) => {
 });
 
 /**
+ * PATCH /api/auth/users/uid/:uid/role — update role by user id (preferred)
+ */
+router.patch('/users/uid/:uid/role', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  const { uid } = req.params;
+  console.log(`[${timestamp}] API Gateway: Update role by uid: ${uid}`);
+  try {
+    const response = await axios.patch(
+      `${AUTH_SERVICE_URL}/api/auth/users/uid/${uid}/role`,
+      req.body,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
+        },
+        timeout: 10000,
+      }
+    );
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    console.error(`[${timestamp}] API Gateway - Update role by uid error:`, error.message);
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else if (error.request) {
+      res.status(503).json({ success: false, error: 'Auth service unavailable' });
+    } else {
+      res.status(500).json({ success: false, error: error.message || 'Internal server error' });
+    }
+  }
+});
+
+/**
  * Forward user role update request to auth-service
  * PATCH /api/auth/users/:username/role
  */
@@ -357,6 +389,131 @@ router.patch('/users/:username/role', async (req, res) => {
         message: error.message,
       });
     }
+  }
+});
+
+/**
+ * PATCH /api/auth/users/uid/:uid/username
+ */
+router.patch('/users/uid/:uid/username', async (req, res) => {
+  const { uid } = req.params;
+  try {
+    const response = await axios.patch(
+      `${AUTH_SERVICE_URL}/api/auth/users/uid/${uid}/username`,
+      req.body,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
+        },
+        timeout: 10000,
+      }
+    );
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    if (error.response) return res.status(error.response.status).json(error.response.data);
+    if (error.request) return res.status(503).json({ success: false, error: 'Auth service unavailable' });
+    return res.status(500).json({ success: false, error: error.message || 'Proxy error' });
+  }
+});
+
+/**
+ * PATCH /api/auth/users/uid/:uid/email
+ */
+router.patch('/users/uid/:uid/email', async (req, res) => {
+  const { uid } = req.params;
+  try {
+    const response = await axios.patch(
+      `${AUTH_SERVICE_URL}/api/auth/users/uid/${uid}/email`,
+      req.body,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
+        },
+        timeout: 10000,
+      }
+    );
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    if (error.response) return res.status(error.response.status).json(error.response.data);
+    if (error.request) return res.status(503).json({ success: false, error: 'Auth service unavailable' });
+    return res.status(500).json({ success: false, error: error.message || 'Proxy error' });
+  }
+});
+
+/**
+ * PATCH /api/auth/users/uid/:uid/password
+ */
+router.patch('/users/uid/:uid/password', async (req, res) => {
+  const { uid } = req.params;
+  try {
+    const response = await axios.patch(
+      `${AUTH_SERVICE_URL}/api/auth/users/uid/${uid}/password`,
+      req.body,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
+        },
+        timeout: 10000,
+      }
+    );
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    if (error.response) return res.status(error.response.status).json(error.response.data);
+    if (error.request) return res.status(503).json({ success: false, error: 'Auth service unavailable' });
+    return res.status(500).json({ success: false, error: error.message || 'Proxy error' });
+  }
+});
+
+/**
+ * PATCH /api/auth/users/:username/password
+ */
+router.patch('/users/:username/password', async (req, res) => {
+  const { username } = req.params;
+  try {
+    const response = await axios.patch(
+      `${AUTH_SERVICE_URL}/api/auth/users/${encodeURIComponent(username)}/password`,
+      req.body,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
+        },
+        timeout: 10000,
+      }
+    );
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    if (error.response) return res.status(error.response.status).json(error.response.data);
+    if (error.request) return res.status(503).json({ success: false, error: 'Auth service unavailable' });
+    return res.status(500).json({ success: false, error: error.message || 'Proxy error' });
+  }
+});
+
+/**
+ * PATCH /api/auth/users/:username/email
+ */
+router.patch('/users/:username/email', async (req, res) => {
+  const { username } = req.params;
+  try {
+    const response = await axios.patch(
+      `${AUTH_SERVICE_URL}/api/auth/users/${encodeURIComponent(username)}/email`,
+      req.body,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-context': req.get('x-user-context') || req.get('X-User-Context') || '',
+        },
+        timeout: 10000,
+      }
+    );
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    if (error.response) return res.status(error.response.status).json(error.response.data);
+    if (error.request) return res.status(503).json({ success: false, error: 'Auth service unavailable' });
+    return res.status(500).json({ success: false, error: error.message || 'Proxy error' });
   }
 });
 

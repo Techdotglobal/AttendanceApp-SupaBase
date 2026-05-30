@@ -2,6 +2,15 @@ const express = require('express');
 const { supabase } = require('../config/supabase');
 const { getTenantCompanyId, fetchCompanyUserUids } = require('../lib/tenantScope');
 const { normalizeDepartmentName, toLookupKey } = require('../lib/orgNormalize');
+const { normalizedUsernameKey } = require('../lib/loginNormalize');
+const { updateUsernameForUid } = require('../lib/usernameUpdate');
+const { syncAuthMetadataForUid, syncAuthMetadataAndInvalidateSessions } = require('../lib/authMetadata');
+const { ensureDepartmentForCompany } = require('../lib/departmentService');
+const {
+  assertCanManageUser,
+  isHrManager,
+  canEditAnyProfile,
+} = require('../lib/profileAccess');
 
 const router = express.Router();
 
@@ -77,17 +86,185 @@ const withTenantContext = async (req, res) => {
   return { requester, companyId };
 };
 
+const LEAVE_FALLBACK = { annual: 20, sick: 10, casual: 5 };
+
+const getCompanyLeaveDefaults = async (companyId) => {
+  const { data } = await supabase
+    .from('leave_settings')
+    .select('default_annual_leaves, default_sick_leaves, default_casual_leaves')
+    .eq('company_id', companyId)
+    .maybeSingle();
+  return {
+    annual_leaves: data?.default_annual_leaves ?? LEAVE_FALLBACK.annual,
+    sick_leaves: data?.default_sick_leaves ?? LEAVE_FALLBACK.sick,
+    casual_leaves: data?.default_casual_leaves ?? LEAVE_FALLBACK.casual,
+  };
+};
+
+const resolveLeaveBalanceForUser = async (uid, companyId) => {
+  const defaults = await getCompanyLeaveDefaults(companyId);
+  const { data } = await supabase
+    .from('leave_balances')
+    .select('annual_leaves, sick_leaves, casual_leaves, is_custom')
+    .eq('user_uid', uid)
+    .eq('company_id', companyId)
+    .maybeSingle();
+  if (!data) {
+    return { ...defaults, is_custom: false };
+  }
+  return {
+    annual_leaves: data.annual_leaves,
+    sick_leaves: data.sick_leaves,
+    casual_leaves: data.casual_leaves,
+    is_custom: Boolean(data.is_custom),
+  };
+};
+
 const getUsersBaseQuery = (requester, companyId) => {
   let query = supabase
     .from('users')
     .select('uid, username, email, name, role, department, department_id, position, work_mode, is_active, created_at, company_id')
     .eq('company_id', companyId)
     .order('created_at', { ascending: false });
-  if (requester.role === ROLES.MANAGER) {
+  if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
     query = query.eq('department', requester.department);
   }
   return query;
 };
+
+router.get('/analytics', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
+
+  try {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const sinceIso = sevenDaysAgo.toISOString();
+
+    let usersQuery = supabase
+      .from('users')
+      .select('uid, department, department_id, is_active')
+      .eq('company_id', companyId);
+    if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
+      usersQuery = usersQuery.eq('department', requester.department);
+    }
+
+    let departmentsQuery = supabase
+      .from('departments')
+      .select('id, name')
+      .eq('company_id', companyId)
+      .order('name', { ascending: true });
+    if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
+      const managerDept = await getRequesterDepartment(requester, companyId);
+      if (!managerDept) {
+        return res.status(200).json({
+          success: true,
+          data: {
+            departmentDistribution: [],
+            insights: {
+              totalUsers: 0,
+              activeUsers: 0,
+              attendanceLast7Days: 0,
+              avgAttendancePerActiveUser7d: 0,
+              trackedDepartments: 0,
+              unassignedUsers: 0,
+            },
+          },
+        });
+      }
+      departmentsQuery = departmentsQuery.eq('id', managerDept.id);
+    }
+
+    let attendance7dQuery = supabase
+      .from('attendance_records')
+      .select('id', { count: 'exact', head: true })
+      .eq('company_id', companyId)
+      .gte('timestamp', sinceIso);
+    if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
+      const { data: deptUsers } = await supabase
+        .from('users')
+        .select('uid')
+        .eq('company_id', companyId)
+        .eq('department', requester.department);
+      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
+      attendance7dQuery = attendance7dQuery.in(
+        'user_uid',
+        muids.length ? muids : ['00000000-0000-0000-0000-000000000000']
+      );
+    }
+
+    const [{ data: users, error: usersError }, { data: departments, error: deptError }, { count: attendance7d, error: attError }] =
+      await Promise.all([usersQuery, departmentsQuery, attendance7dQuery]);
+    if (usersError) throw usersError;
+    if (deptError) throw deptError;
+    if (attError) throw attError;
+
+    const userList = users || [];
+    const activeUsers = userList.filter((u) => u.is_active).length;
+    const departmentIdByName = new Map();
+    const distributionById = new Map();
+
+    for (const dept of departments || []) {
+      departmentIdByName.set(toLookupKey(dept.name), dept.id);
+      distributionById.set(dept.id, {
+        id: dept.id,
+        name: dept.name,
+        employeeCount: 0,
+        activeCount: 0,
+      });
+    }
+
+    let unassignedUsers = 0;
+    for (const user of userList) {
+      let deptId = user.department_id || null;
+      if (!deptId && user.department) {
+        deptId = departmentIdByName.get(toLookupKey(user.department)) || null;
+      }
+      if (!deptId || !distributionById.has(deptId)) {
+        unassignedUsers += 1;
+        continue;
+      }
+      const bucket = distributionById.get(deptId);
+      bucket.employeeCount += 1;
+      if (user.is_active) bucket.activeCount += 1;
+    }
+
+    const departmentDistribution = Array.from(distributionById.values())
+      .filter((d) => d.employeeCount > 0)
+      .sort((a, b) => b.employeeCount - a.employeeCount);
+
+    if (unassignedUsers > 0) {
+      departmentDistribution.push({
+        id: 'unassigned',
+        name: 'Unassigned',
+        employeeCount: unassignedUsers,
+        activeCount: unassignedUsers,
+      });
+    }
+
+    const attendanceLast7Days = attendance7d || 0;
+    const avgAttendancePerActiveUser7d =
+      activeUsers > 0 ? Math.round((attendanceLast7Days / activeUsers) * 100) / 100 : 0;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        departmentDistribution,
+        insights: {
+          totalUsers: userList.length,
+          activeUsers,
+          attendanceLast7Days,
+          avgAttendancePerActiveUser7d,
+          trackedDepartments: (departments || []).length,
+          unassignedUsers,
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || 'Failed to fetch analytics' });
+  }
+});
 
 router.get('/dashboard/stats', async (req, res) => {
   const ctx = await withTenantContext(req, res);
@@ -181,55 +358,229 @@ router.get('/users', async (req, res) => {
   }
 });
 
+router.get('/users/:uid', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
+  const { uid } = req.params;
+  try {
+    const { data: targetUser, error: targetError } = await supabase
+      .from('users')
+      .select('uid, username, email, name, role, department, department_id, position, work_mode, is_active, created_at, updated_at, company_id')
+      .eq('uid', uid)
+      .eq('company_id', companyId)
+      .single();
+    if (targetError || !targetUser) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    const access = assertCanManageUser(requester, targetUser);
+    if (!access.ok) {
+      return res.status(access.status).json({ success: false, error: access.error });
+    }
+    const leave_balance = await resolveLeaveBalanceForUser(uid, companyId);
+    res.status(200).json({
+      success: true,
+      data: { ...targetUser, leave_balance },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || 'Failed to fetch user' });
+  }
+});
+
 router.patch('/users/:uid', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
   const { uid } = req.params;
-  const { role, department, work_mode, is_active } = req.body;
+  const body = req.body || {};
+  const {
+    role,
+    department,
+    work_mode,
+    is_active,
+    username,
+    email,
+    name,
+    annual_leaves,
+    sick_leaves,
+    casual_leaves,
+    password,
+  } = body;
+
+  if (password !== undefined) {
+    return res.status(403).json({
+      success: false,
+      error: 'Admins cannot reset passwords. Users must change their password in the mobile app.',
+    });
+  }
+
   try {
     const { data: targetUser, error: targetError } = await supabase
       .from('users')
-      .select('uid, role, department, company_id')
+      .select('uid, username, email, role, department, company_id')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();
-    if (targetError || !targetUser) return res.status(404).json({ success: false, error: 'User not found' });
-
-    if (requester.role === ROLES.MANAGER && targetUser.department !== requester.department) {
-      return res.status(403).json({ success: false, error: 'Managers can only update users in their department' });
+    if (targetError || !targetUser) {
+      return res.status(404).json({ success: false, error: 'User not found' });
     }
-    if (requester.role === ROLES.MANAGER && role && role !== targetUser.role) {
+
+    const access = assertCanManageUser(requester, targetUser);
+    if (!access.ok) {
+      return res.status(access.status).json({ success: false, error: access.error });
+    }
+
+    const profileFieldsTouched =
+      username !== undefined ||
+      email !== undefined ||
+      name !== undefined ||
+      department !== undefined ||
+      annual_leaves !== undefined ||
+      sick_leaves !== undefined ||
+      casual_leaves !== undefined;
+
+    if (profileFieldsTouched && !canEditAnyProfile(requester)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only super admins and HR managers can edit user profiles',
+      });
+    }
+
+    if (
+      requester.role === ROLES.MANAGER &&
+      !isHrManager(requester) &&
+      role &&
+      role !== targetUser.role
+    ) {
       return res.status(403).json({ success: false, error: 'Managers cannot update roles' });
     }
-    if (requester.role === ROLES.MANAGER && department && department !== targetUser.department) {
-      return res.status(403).json({ success: false, error: 'Managers cannot change departments' });
+    if (targetUser.role === ROLES.SUPER_ADMIN && role && role !== targetUser.role) {
+      return res.status(403).json({ success: false, error: 'Super admin role cannot be changed here' });
+    }
+    if (role && String(role).toLowerCase() === 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Assigning super_admin is only supported via company onboarding',
+      });
     }
 
+    const authCredentialUpdates = {};
     const updates = { updated_at: new Date().toISOString() };
-    if (role !== undefined) updates.role = role;
-    if (department !== undefined) {
-      const normalizedDepartment = normalizeDepartmentName(department);
-      updates.department = normalizedDepartment;
-      if (normalizedDepartment) {
-        const { data: deptRecord, error: deptLookupError } = await supabase
-          .from('departments')
-          .select('id')
-          .eq('normalized_name', toLookupKey(normalizedDepartment))
-          .eq('company_id', companyId)
-          .maybeSingle();
-        if (deptLookupError) throw deptLookupError;
-        if (deptRecord?.id) {
-          updates.department_id = deptRecord.id;
-        }
+
+    if (username !== undefined) {
+      const usernameResult = await updateUsernameForUid(supabase, companyId, uid, username);
+      if (!usernameResult.ok) {
+        return res.status(usernameResult.status).json({
+          success: false,
+          error: usernameResult.error,
+        });
+      }
+      updates.username = usernameResult.username;
+      updates.normalized_username = usernameResult.normalized_username;
+    }
+
+    if (email !== undefined) {
+      const trimmedEmail = String(email).trim();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(trimmedEmail)) {
+        return res.status(400).json({ success: false, error: 'Invalid email format' });
+      }
+      authCredentialUpdates.email = trimmedEmail;
+      authCredentialUpdates.email_confirm = true;
+      updates.email = trimmedEmail;
+    }
+
+    if (Object.keys(authCredentialUpdates).length > 0) {
+      const { error: authError } = await supabase.auth.admin.updateUserById(uid, authCredentialUpdates);
+      if (authError) {
+        return res.status(500).json({
+          success: false,
+          error: authError.message || 'Failed to update credentials in Auth',
+        });
       }
     }
+
+    if (name !== undefined) {
+      updates.name = String(name).trim() || null;
+    }
+
+    if (role !== undefined) updates.role = role;
+
+    if (department !== undefined) {
+      const trimmedDept = department != null ? String(department).trim() : '';
+      if (!trimmedDept) {
+        updates.department = null;
+        updates.department_id = null;
+      } else {
+        const ensured = await ensureDepartmentForCompany(companyId, trimmedDept);
+        updates.department = ensured?.name || normalizeDepartmentName(trimmedDept);
+        updates.department_id = ensured?.id || null;
+      }
+    }
+
     if (work_mode !== undefined) updates.work_mode = work_mode;
     if (is_active !== undefined) updates.is_active = is_active;
 
-    const { error } = await supabase.from('users').update(updates).eq('uid', uid).eq('company_id', companyId);
-    if (error) throw error;
-    res.status(200).json({ success: true });
+    const profileRowTouched = Object.keys(updates).length > 1;
+    if (profileRowTouched) {
+      const { error: userUpdateError } = await supabase
+        .from('users')
+        .update(updates)
+        .eq('uid', uid)
+        .eq('company_id', companyId);
+      if (userUpdateError) throw userUpdateError;
+    }
+
+    const authNeedsSync =
+      profileRowTouched || (role !== undefined && role !== targetUser.role);
+    if (authNeedsSync) {
+      const metaSync = await syncAuthMetadataAndInvalidateSessions(supabase, uid);
+      if (!metaSync.ok) {
+        return res.status(500).json({
+          success: false,
+          error: metaSync.error || 'Profile saved but failed to sync authentication',
+        });
+      }
+    }
+
+    const leaveTouched =
+      annual_leaves !== undefined || sick_leaves !== undefined || casual_leaves !== undefined;
+    if (leaveTouched) {
+      const parseLeave = (v, fallback) => {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) return fallback;
+        return Math.floor(n);
+      };
+      const current = await resolveLeaveBalanceForUser(uid, companyId);
+      const annual = parseLeave(annual_leaves, current.annual_leaves);
+      const sick = parseLeave(sick_leaves, current.sick_leaves);
+      const casual = parseLeave(casual_leaves, current.casual_leaves);
+      const { error: leaveError } = await supabase.from('leave_balances').upsert(
+        {
+          user_uid: uid,
+          company_id: companyId,
+          annual_leaves: annual,
+          sick_leaves: sick,
+          casual_leaves: casual,
+          is_custom: true,
+        },
+        { onConflict: 'user_uid' }
+      );
+      if (leaveError) throw leaveError;
+    }
+
+    const leave_balance = await resolveLeaveBalanceForUser(uid, companyId);
+    const { data: refreshed } = await supabase
+      .from('users')
+      .select('uid, username, email, name, role, department, department_id, position, work_mode, is_active, updated_at')
+      .eq('uid', uid)
+      .eq('company_id', companyId)
+      .single();
+
+    res.status(200).json({
+      success: true,
+      data: refreshed ? { ...refreshed, leave_balance } : { leave_balance },
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to update user' });
   }
@@ -240,7 +591,7 @@ router.get('/departments', async (req, res) => {
   if (!ctx) return;
   const { requester, companyId } = ctx;
   try {
-    if (requester.role === ROLES.MANAGER) {
+    if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
       const managerDept = await getRequesterDepartment(requester, companyId);
       const { data } = managerDept
         ? await supabase.from('departments').select('*').eq('id', managerDept.id).eq('company_id', companyId)

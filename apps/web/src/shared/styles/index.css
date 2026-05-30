@@ -74,7 +74,23 @@ body {
   animation: shimmer 1.4s ease infinite;
 }
 
+/* Native <select> menus use OS styling; force readable option contrast */
+select option {
+  color: #0f172a;
+  background-color: #f1f5f9;
+}
+
+select option:checked,
+select option:hover {
+  color: #ffffff;
+  background-color: #2563eb;
+}
+
+.glass-select {
+  color-scheme: dark;
+}
+
 .glass-select option {
   color: #0f172a;
-  background-color: #f8fafc;
+  background-color: #f1f5f9;
 }

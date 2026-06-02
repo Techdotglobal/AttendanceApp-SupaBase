@@ -1,26 +1,32 @@
 /**
- * Email Service - Sends reports via email using Resend API
+ * Email Service - Sends reports via Gmail SMTP using Nodemailer
  */
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const fs = require('fs');
 require('dotenv').config();
 
-// Resend API configuration
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || process.env.EMAIL_FROM || 'reports@hadir.ai';
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587', 10);
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const EMAIL_FROM = process.env.EMAIL_FROM || SMTP_USER;
 
-/**
- * Initialize Resend client
- * @returns {Resend|null} Resend client instance or null if not configured
- */
-function createResendClient() {
-  if (!RESEND_API_KEY) {
-    console.warn('⚠ Resend API key not configured. Email sending will be disabled.');
-    console.warn('⚠ Please set RESEND_API_KEY environment variable.');
+function createTransporter() {
+  if (!SMTP_USER || !SMTP_PASS) {
+    console.warn('⚠ SMTP credentials not configured. Email sending will be disabled.');
+    console.warn('⚠ Please set SMTP_USER and SMTP_PASS environment variables.');
     return null;
   }
 
-  return new Resend(RESEND_API_KEY);
+  return nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465,
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
+  });
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -36,7 +42,7 @@ function validateRecipients(recipients) {
 }
 
 /**
- * Send report via email using Resend API.
+ * Send report via Gmail SMTP.
  * @param {string|string[]} to - One or more recipient email addresses
  * @param {string} subject - Email subject
  * @param {string} body - Email body (HTML)
@@ -45,10 +51,10 @@ function validateRecipients(recipients) {
  * @returns {Promise<Object>} Email send result
  */
 async function sendReportEmail(to, subject, body, pdfPath, pdfFilename) {
-  const resend = createResendClient();
+  const transporter = createTransporter();
 
-  if (!resend) {
-    throw new Error('Email service not configured. Please set RESEND_API_KEY environment variable.');
+  if (!transporter) {
+    throw new Error('Email service not configured. Please set SMTP_USER and SMTP_PASS environment variables.');
   }
 
   const recipients = validateRecipients(to);
@@ -60,42 +66,35 @@ async function sendReportEmail(to, subject, body, pdfPath, pdfFilename) {
     throw new Error(`PDF file not found: ${pdfPath}`);
   }
 
-  try {
-    const pdfBuffer = fs.readFileSync(pdfPath);
-    const pdfBase64 = pdfBuffer.toString('base64');
+  const fromAddress = EMAIL_FROM ? `Hadir.AI Reports <${EMAIL_FROM}>` : `Hadir.AI Reports <${SMTP_USER}>`;
+  const recipientList = recipients.join(', ');
+  const sentAt = new Date().toISOString();
 
-    const { data, error } = await resend.emails.send({
-      from: `Hadir.AI Reports <${RESEND_FROM_EMAIL}>`,
-      to: recipients,
-      subject: subject,
+  console.log(`[emailService] Sending report email`);
+  console.log(`[emailService]   From:       ${fromAddress}`);
+  console.log(`[emailService]   To:         ${recipientList}`);
+  console.log(`[emailService]   Subject:    ${subject}`);
+  console.log(`[emailService]   Attachment: ${pdfFilename}`);
+  console.log(`[emailService]   Timestamp:  ${sentAt}`);
+
+  try {
+    const info = await transporter.sendMail({
+      from: fromAddress,
+      to: recipientList,
+      subject,
       html: body,
       attachments: [
         {
           filename: pdfFilename,
-          content: pdfBase64,
+          path: pdfPath,
         },
       ],
     });
 
-    if (error) {
-      console.error('✗ Resend API error:', error);
-      throw new Error(`Resend API error: ${error.message || JSON.stringify(error)}`);
-    }
-
-    if (!data || !data.id) {
-      throw new Error('Resend API returned no email ID');
-    }
-
-    console.log(`✓ Report email sent via Resend (id=${data.id}) to: ${recipients.join(', ')}`);
-    return { success: true, messageId: data.id, recipients };
+    console.log(`✓ Report email sent via Gmail SMTP (messageId=${info.messageId}) to: ${recipientList}`);
+    return { success: true, messageId: info.messageId, recipients };
   } catch (error) {
-    console.error('✗ Error sending report email:', error);
-    if (error.message?.includes('API key')) {
-      throw new Error('Invalid Resend API key. Please check RESEND_API_KEY environment variable.');
-    }
-    if (error.message?.includes('domain')) {
-      throw new Error('Resend domain not verified. Please verify your sending domain in Resend dashboard.');
-    }
+    console.error(`✗ Error sending report email to ${recipientList} at ${sentAt}:`, error.message);
     throw error;
   }
 }
@@ -197,4 +196,3 @@ module.exports = {
   generateMonthlyReportEmailBody,
   generateManualReportEmailBody,
 };
-

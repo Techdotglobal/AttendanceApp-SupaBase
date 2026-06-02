@@ -6,6 +6,7 @@ const {
   getAttendanceRecords,
   getLeaveRequests,
   getTickets,
+  getCompany,
 } = require('./queryService');
 const { getDateRange, formatDate, getPeriodLabel } = require('../utils/dateUtils');
 
@@ -89,8 +90,9 @@ async function generateReportData(range, from = null, to = null, companyId = nul
     const dateRange = getDateRange(range, from, to);
     const { from: fromDate, to: toDate } = dateRange;
 
-    // Fetch all data in parallel
-    const [allEmployees, attendanceRecords, leaveRequests, tickets] = await Promise.all([
+    // Fetch company metadata and all tenant-scoped data in parallel
+    const [company, allEmployees, attendanceRecords, leaveRequests, tickets] = await Promise.all([
+      getCompany(companyId),
       getAllEmployees(companyId),
       getAttendanceRecords(fromDate, toDate, companyId),
       getLeaveRequests(fromDate, toDate, companyId),
@@ -172,6 +174,10 @@ async function generateReportData(range, from = null, to = null, companyId = nul
 
     // Build report data structure
     const reportData = {
+      company: {
+        id: companyId,
+        name: company?.name || `Company ${companyId.slice(0, 8)}`,
+      },
       period: {
         type: range,
         from: formatDate(fromDate),

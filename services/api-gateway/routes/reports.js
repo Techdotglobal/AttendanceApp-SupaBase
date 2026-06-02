@@ -175,6 +175,60 @@ router.get('/download/:reportId', async (req, res) => {
 });
 
 /**
+ * Get report schedule for the caller's company
+ * GET /api/reports/schedule
+ */
+router.get('/schedule', async (req, res) => {
+  try {
+    const headers = {};
+    if (req.headers['x-user-id']) headers['x-user-id'] = req.headers['x-user-id'];
+    if (req.headers['x-user-email']) headers['x-user-email'] = req.headers['x-user-email'];
+
+    const response = await axios.get(`${REPORTING_SERVICE_URL}/api/reports/schedule`, { headers, timeout: 10000 });
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    if (error.response) return res.status(error.response.status).json(error.response.data);
+    res.status(503).json({ success: false, error: 'Reporting service unavailable' });
+  }
+});
+
+/**
+ * Update report schedule for the caller's company
+ * PUT /api/reports/schedule
+ */
+router.put('/schedule', async (req, res) => {
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (req.headers['x-user-id']) headers['x-user-id'] = req.headers['x-user-id'];
+    if (req.headers['x-user-email']) headers['x-user-email'] = req.headers['x-user-email'];
+
+    const response = await axios.put(`${REPORTING_SERVICE_URL}/api/reports/schedule`, req.body, { headers, timeout: 10000 });
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    if (error.response) return res.status(error.response.status).json(error.response.data);
+    res.status(503).json({ success: false, error: 'Reporting service unavailable' });
+  }
+});
+
+/**
+ * Send report now for the caller's company
+ * POST /api/reports/send-now
+ */
+router.post('/send-now', async (req, res) => {
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (req.headers['x-user-id']) headers['x-user-id'] = req.headers['x-user-id'];
+    if (req.headers['x-user-email']) headers['x-user-email'] = req.headers['x-user-email'];
+
+    const response = await axios.post(`${REPORTING_SERVICE_URL}/api/reports/send-now`, {}, { headers, timeout: 30000 });
+    res.status(response.status).json(response.data);
+  } catch (error) {
+    if (error.response) return res.status(error.response.status).json(error.response.data);
+    res.status(503).json({ success: false, error: 'Reporting service unavailable' });
+  }
+});
+
+/**
  * Health check
  * GET /api/reports/health
  */

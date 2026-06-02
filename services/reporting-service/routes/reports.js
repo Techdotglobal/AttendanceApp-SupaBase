@@ -9,7 +9,7 @@ const path = require('path');
 const { generateReportData } = require('../services/reportFormatter');
 const { generatePDF, savePDFToFile, deletePDFFile } = require('../services/pdfGenerator');
 const { sendReportEmail, generateManualReportEmailBody } = require('../services/emailService');
-const { getSuperAdminEmail } = require('../services/queryService');
+const { getSuperAdminEmails, getReportSchedule, setReportSchedule } = require('../services/queryService');
 const { supabase } = require('../config/supabase');
 const { 
   generateReportId, 
@@ -187,19 +187,18 @@ router.post('/generate', verifySuperAdmin, async (req, res) => {
           storeReport(reportId, pdfPath, reportData);
           console.log(`[${timestamp}] Report metadata stored for download: ${reportId}`);
 
-          // Get super admin email
-          const superAdminEmail = await getSuperAdminEmail(req.user.company_id);
-          if (!superAdminEmail) {
-            throw new Error('Super admin email not found');
+          // Get all super admin emails for THIS company only
+          const recipients = await getSuperAdminEmails(req.user.company_id);
+          if (recipients.length === 0) {
+            throw new Error('No active super admin with a valid email found for this company');
           }
 
-          // Generate email content
-          const emailSubject = `Attendance Report - ${reportData.period.label}`;
+          const companyName = reportData.company?.name || req.user.company_id;
+          const emailSubject = `Attendance Report — ${companyName} — ${reportData.period.label}`;
           const emailBody = generateManualReportEmailBody(reportData);
 
-          // Send email (with PDF attachment)
-          await sendReportEmail(superAdminEmail, emailSubject, emailBody, pdfPath, filename);
-          console.log(`[${timestamp}] ✓ Report sent successfully to ${superAdminEmail}`);
+          await sendReportEmail(recipients, emailSubject, emailBody, pdfPath, filename);
+          console.log(`[${timestamp}] ✓ Report sent to: ${recipients.join(', ')}`);
 
           // NOTE: Do NOT delete PDF immediately - it's needed for download
           // PDF will be cleaned up by expiration mechanism
@@ -319,39 +318,89 @@ router.get('/health', (req, res) => {
 });
 
 /**
- * TEST ENDPOINT: Trigger monthly report manually
+ * Get report schedule settings for the authenticated super admin's company.
+ * GET /api/reports/schedule
+ */
+router.get('/schedule', verifySuperAdmin, async (req, res) => {
+  try {
+    const schedule = await getReportSchedule(req.user.company_id);
+    res.json({ success: true, schedule });
+  } catch (error) {
+    console.error('[reports/schedule GET]', error);
+    res.status(500).json({ success: false, error: 'Failed to load schedule settings' });
+  }
+});
+
+/**
+ * Update report schedule settings for the authenticated super admin's company.
+ * PUT /api/reports/schedule
+ * Body: { day?: number (1-28), autoSend?: boolean }
+ */
+router.put('/schedule', verifySuperAdmin, async (req, res) => {
+  try {
+    const { day, autoSend } = req.body;
+    await setReportSchedule(req.user.company_id, { day, autoSend });
+    const updated = await getReportSchedule(req.user.company_id);
+    res.json({ success: true, schedule: updated });
+  } catch (error) {
+    console.error('[reports/schedule PUT]', error);
+    res.status(400).json({ success: false, error: error.message || 'Failed to update schedule settings' });
+  }
+});
+
+/**
+ * Send report immediately for the authenticated super admin's company.
+ * POST /api/reports/send-now
+ */
+router.post('/send-now', verifySuperAdmin, async (req, res) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] Send-now triggered by ${req.user.email} for company ${req.user.company_id}`);
+
+  try {
+    const { triggerReportForCompany } = require('../jobs/monthlyReportJob');
+
+    triggerReportForCompany(req.user.company_id)
+      .then((result) => {
+        console.log(`[${timestamp}] Send-now completed for company ${req.user.company_id}:`, result.status);
+      })
+      .catch((error) => {
+        console.error(`[${timestamp}] Send-now failed for company ${req.user.company_id}:`, error);
+      });
+
+    res.status(202).json({
+      success: true,
+      message: 'Report generation started. You will receive the report via email shortly.',
+      timestamp,
+    });
+  } catch (error) {
+    console.error(`[${timestamp}] Error in send-now:`, error);
+    res.status(500).json({ success: false, error: 'Failed to trigger report' });
+  }
+});
+
+/**
+ * TEST ENDPOINT: Trigger monthly report manually for all companies.
  * GET /api/reports/test/monthly
- * 
- * WARNING: This is for testing only. In production, remove or protect this endpoint.
  */
 router.get('/test/monthly', verifySuperAdmin, async (req, res) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] TEST: Manual monthly report trigger requested`);
-  
+
   try {
     const { triggerMonthlyReport } = require('../jobs/monthlyReportJob');
-    
-    // Trigger report generation (async - don't wait)
+
     triggerMonthlyReport()
-      .then(() => {
-        console.log(`[${timestamp}] TEST: Monthly report generation completed`);
-      })
-      .catch((error) => {
-        console.error(`[${timestamp}] TEST: Monthly report generation failed:`, error);
-      });
-    
+      .then(() => console.log(`[${timestamp}] TEST: Monthly report generation completed`))
+      .catch((error) => console.error(`[${timestamp}] TEST: Monthly report generation failed:`, error));
+
     res.status(202).json({
       success: true,
       message: 'Monthly report generation triggered. Check server logs and email for results.',
-      timestamp: timestamp,
+      timestamp,
     });
   } catch (error) {
     console.error(`[${timestamp}] TEST: Error triggering monthly report:`, error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      message: 'Failed to trigger monthly report',
-    });
+    res.status(500).json({ success: false, error: 'Failed to trigger monthly report' });
   }
 });
 

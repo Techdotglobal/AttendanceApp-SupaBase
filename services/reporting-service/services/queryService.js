@@ -6,11 +6,16 @@
 const { supabase } = require('../config/supabase');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function normalizeCompanyId(raw) {
   if (raw == null || String(raw).trim() === '') return null;
   const id = String(raw).trim();
   return UUID_RE.test(id) ? id : null;
+}
+
+function isValidEmail(email) {
+  return typeof email === 'string' && EMAIL_RE.test(email.trim());
 }
 
 async function fetchCompanyUserUids(companyId) {
@@ -173,37 +178,177 @@ async function getTickets(from, to, companyId) {
 }
 
 /**
- * Super admin email for a tenant (for scheduled / per-tenant reports).
+ * Fetch ALL active super admin email addresses for a tenant.
+ * Returns an array (never a single string) so callers must handle zero, one, or many.
+ * The REPORT_RECIPIENT_EMAIL / SUPER_ADMIN_EMAIL env-var overrides are intentionally
+ * removed here — they caused every company's report to go to one hardcoded address.
+ *
  * @param {string} companyId
+ * @returns {Promise<string[]>} Validated email addresses
  */
-async function getSuperAdminEmail(companyId) {
-  const envEmail = process.env.REPORT_RECIPIENT_EMAIL || process.env.SUPER_ADMIN_EMAIL;
-  if (envEmail) {
-    console.log('Using email from environment variable:', envEmail);
-    return envEmail;
-  }
-
+async function getSuperAdminEmails(companyId) {
   const cid = normalizeCompanyId(companyId);
   if (!cid) {
-    console.warn('[queryService] getSuperAdminEmail: company_id required when REPORT_RECIPIENT_EMAIL is unset');
-    return null;
+    console.warn('[queryService] getSuperAdminEmails: valid company_id is required');
+    return [];
   }
 
   try {
     const { data, error } = await supabase
       .from('users')
-      .select('email')
+      .select('email, name')
       .eq('role', 'super_admin')
       .eq('is_active', true)
-      .eq('company_id', cid)
-      .limit(1)
+      .eq('company_id', cid);
+
+    if (error) throw error;
+
+    const emails = (data || [])
+      .map((r) => r.email)
+      .filter(isValidEmail)
+      .map((e) => e.trim());
+
+    if (emails.length === 0) {
+      console.warn(`[queryService] getSuperAdminEmails: no valid super_admin emails found for company ${cid}`);
+    }
+
+    return emails;
+  } catch (error) {
+    console.error(`[queryService] getSuperAdminEmails error for company ${cid}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Fetch company record (id + name) for a given UUID.
+ * @param {string} companyId
+ * @returns {Promise<{id: string, name: string}|null>}
+ */
+async function getCompany(companyId) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from('companies')
+      .select('id, name')
+      .eq('id', cid)
       .maybeSingle();
 
     if (error) throw error;
-    return data?.email || null;
+    return data || null;
   } catch (error) {
-    console.error('Error fetching super admin email:', error);
+    console.error(`[queryService] getCompany error for ${cid}:`, error);
     throw error;
+  }
+}
+
+/**
+ * Fetch all active companies (id + name).
+ * @returns {Promise<Array<{id: string, name: string}>>}
+ */
+async function getAllCompanies() {
+  try {
+    const { data, error } = await supabase
+      .from('companies')
+      .select('id, name')
+      .order('name', { ascending: true });
+
+    if (error) throw error;
+    return data || [];
+  } catch (error) {
+    console.error('[queryService] getAllCompanies error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get a company's report schedule settings from company_settings.
+ * Falls back to { day: 1, autoSend: true } if no row exists.
+ * @param {string} companyId
+ * @returns {Promise<{day: number, autoSend: boolean}>}
+ */
+async function getReportSchedule(companyId) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) return { day: 1, autoSend: true };
+
+  try {
+    const { data, error } = await supabase
+      .from('company_settings')
+      .select('report_schedule_day, report_auto_send')
+      .eq('company_id', cid)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return { day: 1, autoSend: true };
+
+    const day = data.report_schedule_day ?? 1;
+    return {
+      day: Number.isFinite(day) && day >= 1 && day <= 28 ? day : 1,
+      autoSend: data.report_auto_send ?? true,
+    };
+  } catch (err) {
+    console.warn(`[queryService] getReportSchedule error for ${cid} (using defaults):`, err.message);
+    return { day: 1, autoSend: true };
+  }
+}
+
+/**
+ * Persist report schedule settings for a company.
+ * Updates the existing company_settings row (one row per company).
+ * @param {string} companyId
+ * @param {{ day?: number, autoSend?: boolean }} settings
+ */
+async function setReportSchedule(companyId, settings) {
+  const cid = normalizeCompanyId(companyId);
+  if (!cid) throw new Error('setReportSchedule: valid company_id required');
+
+  const updates = {};
+
+  if (settings.day !== undefined) {
+    const day = parseInt(settings.day, 10);
+    if (!Number.isFinite(day) || day < 1 || day > 28) {
+      throw new Error('report_schedule_day must be between 1 and 28');
+    }
+    updates.report_schedule_day = day;
+  }
+
+  if (settings.autoSend !== undefined) {
+    updates.report_auto_send = Boolean(settings.autoSend);
+  }
+
+  if (Object.keys(updates).length === 0) return;
+
+  const { error } = await supabase
+    .from('company_settings')
+    .update(updates)
+    .eq('company_id', cid);
+
+  if (error) throw error;
+}
+
+/**
+ * Write a report audit log entry to the database.
+ * Fails silently so a logging error never blocks the delivery pipeline.
+ * @param {Object} entry
+ */
+async function logReportAudit(entry) {
+  try {
+    const { error } = await supabase.from('report_audit_logs').insert({
+      company_id: entry.companyId,
+      company_name: entry.companyName || null,
+      report_period: entry.reportPeriod || null,
+      recipients: entry.recipients || [],
+      status: entry.status || 'unknown',
+      error_message: entry.errorMessage || null,
+      created_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      console.warn('[queryService] logReportAudit DB insert failed (non-fatal):', error.message);
+    }
+  } catch (err) {
+    console.warn('[queryService] logReportAudit unexpected error (non-fatal):', err.message);
   }
 }
 
@@ -213,6 +358,7 @@ function formatDate(date) {
 
 module.exports = {
   normalizeCompanyId,
+  isValidEmail,
   fetchCompanyUserUids,
   fetchCompanyUsernames,
   getAllEmployees,
@@ -220,5 +366,10 @@ module.exports = {
   getAttendanceRecords,
   getLeaveRequests,
   getTickets,
-  getSuperAdminEmail,
+  getSuperAdminEmails,
+  getCompany,
+  getAllCompanies,
+  getReportSchedule,
+  setReportSchedule,
+  logReportAudit,
 };

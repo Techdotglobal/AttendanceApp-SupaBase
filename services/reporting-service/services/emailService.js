@@ -23,20 +23,37 @@ function createResendClient() {
   return new Resend(RESEND_API_KEY);
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateRecipients(recipients) {
+  const list = Array.isArray(recipients) ? recipients : [recipients];
+  const valid = list.map((e) => String(e).trim()).filter((e) => EMAIL_RE.test(e));
+  const invalid = list.filter((e) => !EMAIL_RE.test(String(e).trim()));
+  if (invalid.length > 0) {
+    console.warn('⚠ sendReportEmail: skipping invalid addresses:', invalid);
+  }
+  return valid;
+}
+
 /**
- * Send report via email using Resend API
- * @param {string} to - Recipient email address
+ * Send report via email using Resend API.
+ * @param {string|string[]} to - One or more recipient email addresses
  * @param {string} subject - Email subject
- * @param {string} body - Email body (HTML or plain text)
+ * @param {string} body - Email body (HTML)
  * @param {string} pdfPath - Path to PDF file
  * @param {string} pdfFilename - PDF filename for attachment
  * @returns {Promise<Object>} Email send result
  */
 async function sendReportEmail(to, subject, body, pdfPath, pdfFilename) {
   const resend = createResendClient();
-  
+
   if (!resend) {
     throw new Error('Email service not configured. Please set RESEND_API_KEY environment variable.');
+  }
+
+  const recipients = validateRecipients(to);
+  if (recipients.length === 0) {
+    throw new Error('sendReportEmail: no valid recipient email addresses provided');
   }
 
   if (!fs.existsSync(pdfPath)) {
@@ -44,21 +61,18 @@ async function sendReportEmail(to, subject, body, pdfPath, pdfFilename) {
   }
 
   try {
-    // Read PDF file as base64 for attachment
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfBase64 = pdfBuffer.toString('base64');
 
-    // Send email via Resend API
-    // Resend expects attachments as base64 strings
     const { data, error } = await resend.emails.send({
       from: `Hadir.AI Reports <${RESEND_FROM_EMAIL}>`,
-      to: [to],
+      to: recipients,
       subject: subject,
       html: body,
       attachments: [
         {
           filename: pdfFilename,
-          content: pdfBase64, // Base64 encoded PDF content
+          content: pdfBase64,
         },
       ],
     });
@@ -72,11 +86,10 @@ async function sendReportEmail(to, subject, body, pdfPath, pdfFilename) {
       throw new Error('Resend API returned no email ID');
     }
 
-    console.log('✓ Report email sent successfully via Resend:', data.id);
-    return { success: true, messageId: data.id };
+    console.log(`✓ Report email sent via Resend (id=${data.id}) to: ${recipients.join(', ')}`);
+    return { success: true, messageId: data.id, recipients };
   } catch (error) {
     console.error('✗ Error sending report email:', error);
-    // Provide more helpful error messages
     if (error.message?.includes('API key')) {
       throw new Error('Invalid Resend API key. Please check RESEND_API_KEY environment variable.');
     }
@@ -89,10 +102,11 @@ async function sendReportEmail(to, subject, body, pdfPath, pdfFilename) {
 
 /**
  * Generate email body for monthly report
- * @param {Object} reportData - Report data
+ * @param {Object} reportData - Report data (must include reportData.company)
  * @returns {string} HTML email body
  */
 function generateMonthlyReportEmailBody(reportData) {
+  const companyName = reportData.company?.name || 'Your Company';
   return `
     <!DOCTYPE html>
     <html>
@@ -108,11 +122,13 @@ function generateMonthlyReportEmailBody(reportData) {
     <body>
       <div class="header">
         <h1>Monthly Attendance Report</h1>
+        <h2 style="margin:4px 0;">${companyName}</h2>
         <p>${reportData.period.label}</p>
       </div>
       <div class="content">
         <h2>Report Summary</h2>
         <div class="summary">
+          <p><strong>Company:</strong> ${companyName}</p>
           <p><strong>Total Employees:</strong> ${reportData.overall.totalEmployees}</p>
           <p><strong>Attendance Rate:</strong> ${reportData.overall.attendanceRate}</p>
           <p><strong>Pending Leave Requests:</strong> ${reportData.overall.pendingLeaves}</p>
@@ -132,10 +148,11 @@ function generateMonthlyReportEmailBody(reportData) {
 
 /**
  * Generate email body for manual report
- * @param {Object} reportData - Report data
+ * @param {Object} reportData - Report data (must include reportData.company)
  * @returns {string} HTML email body
  */
 function generateManualReportEmailBody(reportData) {
+  const companyName = reportData.company?.name || 'Your Company';
   return `
     <!DOCTYPE html>
     <html>
@@ -151,11 +168,13 @@ function generateManualReportEmailBody(reportData) {
     <body>
       <div class="header">
         <h1>Attendance Report</h1>
+        <h2 style="margin:4px 0;">${companyName}</h2>
         <p>${reportData.period.label}</p>
       </div>
       <div class="content">
         <h2>Report Summary</h2>
         <div class="summary">
+          <p><strong>Company:</strong> ${companyName}</p>
           <p><strong>Total Employees:</strong> ${reportData.overall.totalEmployees}</p>
           <p><strong>Attendance Rate:</strong> ${reportData.overall.attendanceRate}</p>
           <p><strong>Pending Leave Requests:</strong> ${reportData.overall.pendingLeaves}</p>

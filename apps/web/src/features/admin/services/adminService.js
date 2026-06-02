@@ -235,4 +235,15 @@ export const adminService = {
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/leaves'))).data.data, 'Failed to load leaves'),
   processLeave: async (id, payload) =>
     executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/leaves/${id}`), payload)).data, 'Failed to process leave request'),
+
+  // Reports
+  generateReport: async (payload) =>
+    executeApiCall(async () => (await api.post(apiUrl('/api/reports/generate'), payload)).data, 'Failed to generate report'),
+  sendReportNow: async () =>
+    executeApiCall(async () => (await api.post(apiUrl('/api/reports/send-now'), {})).data, 'Failed to send report'),
+  getReportSchedule: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/reports/schedule'))).data.schedule, 'Failed to load report schedule'),
+  updateReportSchedule: async (payload) =>
+    executeApiCall(async () => (await api.put(apiUrl('/api/reports/schedule'), payload)).data.schedule, 'Failed to update report schedule'),
+  downloadReport: (reportId) => apiUrl(`/api/reports/download/${reportId}`),
 };

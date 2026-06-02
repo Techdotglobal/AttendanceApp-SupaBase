@@ -28,7 +28,14 @@ async function generatePDF(reportData) {
       doc.fontSize(24)
          .font('Helvetica-Bold')
          .text('Attendance Management Report', { align: 'center' })
-         .moveDown(0.5);
+         .moveDown(0.3);
+
+      if (reportData.company?.name) {
+        doc.fontSize(14)
+           .font('Helvetica-Bold')
+           .text(reportData.company.name, { align: 'center' })
+           .moveDown(0.3);
+      }
 
       doc.fontSize(12)
          .font('Helvetica')

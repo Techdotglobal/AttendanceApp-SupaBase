@@ -11,6 +11,7 @@ import { SitesPage } from '../../features/admin/pages/SitesPage';
 import { AttendancePage } from '../../features/admin/pages/AttendancePage';
 import { LeavesPage } from '../../features/admin/pages/LeavesPage';
 import { AnalyticsPage } from '../../features/admin/pages/AnalyticsPage';
+import { ReportsPage } from '../../features/admin/pages/ReportsPage';
 import { SettingsPage } from '../../features/admin/pages/SettingsPage';
 
 function Protected({ children }) {
@@ -39,6 +40,7 @@ export function AppRouter() {
         <Route path="users" element={<UsersPage />} />
         <Route path="departments" element={<DepartmentsPage />} />
         <Route path="analytics" element={<AnalyticsPage />} />
+        <Route path="reports" element={<ReportsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="sites" element={<SitesPage />} />
         <Route path="attendance" element={<AttendancePage />} />

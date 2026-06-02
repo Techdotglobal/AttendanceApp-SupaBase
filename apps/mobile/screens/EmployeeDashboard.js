@@ -317,9 +317,15 @@ export default function EmployeeDashboard({ route }) {
 
   const canCheckIn = !lastRecord || lastRecord.type === 'checkout';
   const canCheckOut = lastRecord && lastRecord.type === 'checkin';
-  
+
   // Track location state when checked in
   const locationState = useLocationState(user, canCheckOut, 30000); // Poll every 30 seconds
+
+  // When auto-checkout is OFF and user is outside the radius, block the manual checkout button
+  const isCheckoutLocationBlocked =
+    canCheckOut &&
+    locationState.isInside === false &&
+    !locationState.autoCheckoutEnabled;
 
   return (
     <SafeAreaView className="flex-1" style={{ backgroundColor: colors.background }} edges={['top']}>
@@ -778,15 +784,15 @@ export default function EmployeeDashboard({ route }) {
           <TouchableOpacity
             className="rounded-2xl shadow-sm"
             style={{
-              backgroundColor: canCheckOut ? colors.error : colors.border,
+              backgroundColor: !canCheckOut || isCheckoutLocationBlocked ? colors.border : colors.error,
               padding: responsivePadding(24),
               marginBottom: spacing.md,
             }}
             onPress={handleCheckOut}
-            disabled={!canCheckOut}
+            disabled={!canCheckOut || isCheckoutLocationBlocked}
           >
             <View className="flex-row items-center">
-              <View 
+              <View
                 className="rounded-full items-center justify-center"
                 style={{
                   backgroundColor: colors.surface,
@@ -795,40 +801,42 @@ export default function EmployeeDashboard({ route }) {
                   marginRight: spacing.md,
                 }}
               >
-                <Ionicons 
-                  name="log-out-outline" 
-                  size={iconSize.lg} 
-                  color={canCheckOut ? colors.error : colors.textTertiary} 
+                <Ionicons
+                  name="log-out-outline"
+                  size={iconSize.lg}
+                  color={!canCheckOut || isCheckoutLocationBlocked ? colors.textTertiary : colors.error}
                 />
               </View>
               <View className="flex-1" style={{ flexShrink: 1 }}>
-                <Text 
+                <Text
                   className="font-semibold"
-                  style={{ 
-                    color: canCheckOut ? '#ffffff' : colors.textTertiary,
-                    fontSize: responsiveFont(18) 
+                  style={{
+                    color: !canCheckOut || isCheckoutLocationBlocked ? colors.textTertiary : '#ffffff',
+                    fontSize: responsiveFont(18)
                   }}
                 >
                   Check Out
                 </Text>
-                <Text 
-                  style={{ 
-                    color: canCheckOut ? colors.errorLight : colors.textTertiary,
+                <Text
+                  style={{
+                    color: colors.textTertiary,
                     fontSize: responsiveFont(12),
                     marginTop: spacing.xs / 2,
                   }}
                 >
-                  {canCheckOut 
-                    ? (biometricAvailable 
-                        ? `Use ${biometricType.toLowerCase()}` 
-                        : 'Use Face ID or fingerprint')
-                    : 'Must check in first'}
+                  {!canCheckOut
+                    ? 'Must check in first'
+                    : isCheckoutLocationBlocked
+                    ? 'Return to office area to check out'
+                    : (biometricAvailable
+                        ? `Use ${biometricType.toLowerCase()}`
+                        : 'Use Face ID or fingerprint')}
                 </Text>
               </View>
-              <Ionicons 
-                name="chevron-forward" 
-                size={iconSize.md} 
-                color={canCheckOut ? "white" : colors.textTertiary} 
+              <Ionicons
+                name="chevron-forward"
+                size={iconSize.md}
+                color={!canCheckOut || isCheckoutLocationBlocked ? colors.textTertiary : 'white'}
               />
             </View>
           </TouchableOpacity>

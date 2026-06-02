@@ -252,7 +252,7 @@ async function getAllCompanies() {
   try {
     const { data, error } = await supabase
       .from('companies')
-      .select('id, name')
+      .select('id, name, report_schedule_day, report_auto_send')
       .order('name', { ascending: true });
 
     if (error) throw error;
@@ -275,9 +275,9 @@ async function getReportSchedule(companyId) {
 
   try {
     const { data, error } = await supabase
-      .from('company_settings')
+      .from('companies')
       .select('report_schedule_day, report_auto_send')
-      .eq('company_id', cid)
+      .eq('id', cid)
       .maybeSingle();
 
     if (error) throw error;
@@ -296,7 +296,7 @@ async function getReportSchedule(companyId) {
 
 /**
  * Persist report schedule settings for a company.
- * Updates the existing company_settings row (one row per company).
+ * Updates the companies row directly (one row per company).
  * @param {string} companyId
  * @param {{ day?: number, autoSend?: boolean }} settings
  */
@@ -321,9 +321,9 @@ async function setReportSchedule(companyId, settings) {
   if (Object.keys(updates).length === 0) return;
 
   const { error } = await supabase
-    .from('company_settings')
+    .from('companies')
     .update(updates)
-    .eq('company_id', cid);
+    .eq('id', cid);
 
   if (error) throw error;
 }

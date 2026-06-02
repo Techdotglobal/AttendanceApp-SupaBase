@@ -196,15 +196,16 @@ async function getSuperAdminEmails(companyId) {
   try {
     const { data, error } = await supabase
       .from('users')
-      .select('email, name')
+      .select('email, report_email, name')
       .eq('role', 'super_admin')
       .eq('is_active', true)
       .eq('company_id', cid);
 
     if (error) throw error;
 
+    // Prefer report_email if set; fall back to login email
     const emails = (data || [])
-      .map((r) => r.email)
+      .map((r) => (r.report_email && r.report_email.trim()) || r.email)
       .filter(isValidEmail)
       .map((e) => e.trim());
 

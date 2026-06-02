@@ -123,7 +123,7 @@ const resolveLeaveBalanceForUser = async (uid, companyId) => {
 const getUsersBaseQuery = (requester, companyId) => {
   let query = supabase
     .from('users')
-    .select('uid, username, email, name, role, department, department_id, position, work_mode, is_active, created_at, company_id')
+    .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, is_active, created_at, company_id')
     .eq('company_id', companyId)
     .order('created_at', { ascending: false });
   if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
@@ -366,7 +366,7 @@ router.get('/users/:uid', async (req, res) => {
   try {
     const { data: targetUser, error: targetError } = await supabase
       .from('users')
-      .select('uid, username, email, name, role, department, department_id, position, work_mode, is_active, created_at, updated_at, company_id')
+      .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, is_active, created_at, updated_at, company_id')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();
@@ -400,6 +400,7 @@ router.patch('/users/:uid', async (req, res) => {
     is_active,
     username,
     email,
+    report_email,
     name,
     annual_leaves,
     sick_leaves,
@@ -433,6 +434,7 @@ router.patch('/users/:uid', async (req, res) => {
     const profileFieldsTouched =
       username !== undefined ||
       email !== undefined ||
+      report_email !== undefined ||
       name !== undefined ||
       department !== undefined ||
       annual_leaves !== undefined ||
@@ -504,6 +506,19 @@ router.patch('/users/:uid', async (req, res) => {
       updates.name = String(name).trim() || null;
     }
 
+    if (report_email !== undefined) {
+      if (report_email === null || String(report_email).trim() === '') {
+        updates.report_email = null;
+      } else {
+        const trimmed = String(report_email).trim();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(trimmed)) {
+          return res.status(400).json({ success: false, error: 'Invalid report_email format' });
+        }
+        updates.report_email = trimmed;
+      }
+    }
+
     if (role !== undefined) updates.role = role;
 
     if (department !== undefined) {
@@ -572,7 +587,7 @@ router.patch('/users/:uid', async (req, res) => {
     const leave_balance = await resolveLeaveBalanceForUser(uid, companyId);
     const { data: refreshed } = await supabase
       .from('users')
-      .select('uid, username, email, name, role, department, department_id, position, work_mode, is_active, updated_at')
+      .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, is_active, updated_at')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();

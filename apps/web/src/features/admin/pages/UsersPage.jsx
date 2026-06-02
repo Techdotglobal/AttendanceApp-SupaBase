@@ -275,6 +275,7 @@ export function UsersPage() {
         username: (profile?.username || u.username) ?? '',
         name: (profile?.name || u.name) ?? '',
         email: (profile?.email || u.email) ?? '',
+        report_email: (profile?.report_email || u.report_email) ?? '',
         department: (profile?.department || u.department) ?? '',
         annual_leaves: lb.annual_leaves ?? 20,
         sick_leaves: lb.sick_leaves ?? 10,
@@ -290,6 +291,7 @@ export function UsersPage() {
         username: u.username || '',
         name: u.name || '',
         email: u.email || '',
+        report_email: u.report_email ?? '',
         department: u.department || '',
         annual_leaves: 20,
         sick_leaves: 10,
@@ -309,6 +311,7 @@ export function UsersPage() {
         username: editForm.username.trim(),
         name: editForm.name.trim(),
         email: editForm.email.trim(),
+        report_email: editForm.report_email?.trim() || null,
         department: editForm.department || '',
         annual_leaves: Number(editForm.annual_leaves),
         sick_leaves: Number(editForm.sick_leaves),
@@ -708,6 +711,18 @@ export function UsersPage() {
                               className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-slate-100"
                             />
                           </label>
+                          {activeUser?.role === 'super_admin' && (
+                            <label className="block space-y-1">
+                              <span className="text-xs text-slate-300">Report email <span className="text-slate-400">(optional — overrides login email for reports)</span></span>
+                              <input
+                                type="email"
+                                value={editForm.report_email || ''}
+                                onChange={(e) => setEditForm((f) => ({ ...f, report_email: e.target.value }))}
+                                placeholder="reports@company.com"
+                                className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-slate-100 placeholder:text-slate-400"
+                              />
+                            </label>
+                          )}
                           <label className="block space-y-1">
                             <span className="text-xs text-slate-300">Department</span>
                             <select

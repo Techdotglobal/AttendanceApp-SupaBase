@@ -3,8 +3,9 @@ import React from 'react';
 import { createStackNavigator } from '@react-navigation/stack';
 import { TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { ROLES, isHRAdmin } from '../../shared/constants/roles';
+import { ROLES } from '../../shared/constants/roles';
 import { ROUTES } from '../../shared/constants/routes';
+import { MANAGER_PERMISSIONS, hasAnyPermission, hasPermission } from '../../shared/constants/permissions';
 import { useTheme } from '../contexts/ThemeContext';
 
 // Import screens
@@ -35,6 +36,8 @@ const Stack = createStackNavigator();
 
 export default function MainNavigator({ user }) {
   const { colors } = useTheme();
+  const can = (permissionKey) => hasPermission(user, permissionKey);
+  const canAny = (permissionKeys) => hasAnyPermission(user, permissionKeys);
 
   // Hamburger menu icon component
   const HamburgerMenu = ({ navigation }) => (
@@ -159,44 +162,56 @@ export default function MainNavigator({ user }) {
           options={{ title: 'Notifications' }}
           initialParams={{ user }}
         />
-        <Stack.Screen 
-          name={ROUTES.HR_DASHBOARD} 
-          component={HRDashboard}
-          options={{ title: 'HR Dashboard' }}
-          initialParams={{ user }}
-        />
-        <Stack.Screen 
-          name={ROUTES.TICKET_MANAGEMENT} 
-          component={TicketManagementScreen}
-          options={{ title: 'Ticket Management' }}
-          initialParams={{ user }}
-        />
-        <Stack.Screen 
-          name={ROUTES.MANUAL_ATTENDANCE} 
-          component={ManualAttendanceScreen}
-          options={{ title: 'Manual Attendance' }}
-          initialParams={{ user }}
-        />
-        <Stack.Screen 
-          name={ROUTES.EMPLOYEE_MANAGEMENT} 
-          component={EmployeeManagement}
-          options={{ title: 'Employee Management' }}
-          initialParams={{ user }}
-        />
-        {(user.role === ROLES.SUPER_ADMIN || isHRAdmin(user)) && (
+        {can(MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD) && (
+          <Stack.Screen
+            name={ROUTES.HR_DASHBOARD}
+            component={HRDashboard}
+            options={{ title: 'HR Dashboard' }}
+            initialParams={{ user }}
+          />
+        )}
+        {canAny([MANAGER_PERMISSIONS.MANAGE_TICKETS, MANAGER_PERMISSIONS.VIEW_TICKETS]) && (
+          <Stack.Screen
+            name={ROUTES.TICKET_MANAGEMENT}
+            component={TicketManagementScreen}
+            options={{ title: 'Ticket Management' }}
+            initialParams={{ user }}
+          />
+        )}
+        {can(MANAGER_PERMISSIONS.MANUAL_ATTENDANCE) && (
+          <Stack.Screen
+            name={ROUTES.MANUAL_ATTENDANCE}
+            component={ManualAttendanceScreen}
+            options={{ title: 'Manual Attendance' }}
+            initialParams={{ user }}
+          />
+        )}
+        {can(MANAGER_PERMISSIONS.VIEW_EMPLOYEES) && (
+          <Stack.Screen
+            name={ROUTES.EMPLOYEE_MANAGEMENT}
+            component={EmployeeManagement}
+            options={{ title: 'Employee Management' }}
+            initialParams={{ user }}
+          />
+        )}
+        {(user.role === ROLES.SUPER_ADMIN || can(MANAGER_PERMISSIONS.CREATE_USER) || can(MANAGER_PERMISSIONS.DELETE_USER)) && (
           <>
-            <Stack.Screen 
-              name={ROUTES.CREATE_USER} 
-              component={CreateUserScreen}
-              options={{ title: 'Create User' }}
-              initialParams={{ user }}
-            />
-            <Stack.Screen
-              name={ROUTES.DELETE_USER}
-              component={DeleteUserScreen}
-              options={{ title: 'Delete User' }}
-              initialParams={{ user }}
-            />
+            {(user.role === ROLES.SUPER_ADMIN || can(MANAGER_PERMISSIONS.CREATE_USER)) && (
+              <Stack.Screen
+                name={ROUTES.CREATE_USER}
+                component={CreateUserScreen}
+                options={{ title: 'Create User' }}
+                initialParams={{ user }}
+              />
+            )}
+            {(user.role === ROLES.SUPER_ADMIN || can(MANAGER_PERMISSIONS.DELETE_USER)) && (
+              <Stack.Screen
+                name={ROUTES.DELETE_USER}
+                component={DeleteUserScreen}
+                options={{ title: 'Delete User' }}
+                initialParams={{ user }}
+              />
+            )}
           </>
         )}
         {user.role === ROLES.SUPER_ADMIN && (
@@ -227,12 +242,14 @@ export default function MainNavigator({ user }) {
           options={{ title: 'Help & Support' }}
           initialParams={{ user }}
         />
-        <Stack.Screen 
-          name={ROUTES.GEO_FENCING} 
-          component={GeoFencingScreen}
-          options={{ title: 'GeoFencing' }}
-          initialParams={{ user }}
-        />
+        {can(MANAGER_PERMISSIONS.MANAGE_GEOFENCING) && (
+          <Stack.Screen
+            name={ROUTES.GEO_FENCING}
+            component={GeoFencingScreen}
+            options={{ title: 'GeoFencing' }}
+            initialParams={{ user }}
+          />
+        )}
       </Stack.Navigator>
     );
   }
@@ -251,4 +268,3 @@ export default function MainNavigator({ user }) {
     </Stack.Navigator>
   );
 }
-

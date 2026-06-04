@@ -11,6 +11,15 @@ const {
   isHrManager,
   canEditAnyProfile,
 } = require('../lib/profileAccess');
+const {
+  MANAGER_PERMISSION_GROUPS,
+  ALL_MANAGER_PERMISSIONS,
+  DEFAULT_MANAGER_PERMISSIONS,
+  getManagerPermissions,
+  requirePermission,
+  rejectSelfAdministrativeChange,
+  writeAuditLog,
+} = require('../lib/permissions');
 
 const router = express.Router();
 
@@ -64,6 +73,9 @@ const requireSuperAdmin = (requester, res) => {
   }
   return true;
 };
+
+const requireAdminPermission = async (requester, permissionKey, res) =>
+  requirePermission(supabase, requester, permissionKey, res);
 
 /**
  * Resolves tenant from X-User-Context (company_id) or users row by uid.
@@ -136,6 +148,7 @@ router.get('/analytics', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  if (!(await requireAdminPermission(requester, 'view_analytics', res))) return;
 
   try {
     const sevenDaysAgo = new Date();
@@ -270,6 +283,7 @@ router.get('/dashboard/stats', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  if (!(await requireAdminPermission(requester, 'view_hr_dashboard', res))) return;
   try {
     let usersQuery = supabase
       .from('users')
@@ -349,6 +363,7 @@ router.get('/users', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  if (!(await requireAdminPermission(requester, 'view_employees', res))) return;
   try {
     const { data, error } = await getUsersBaseQuery(requester, companyId);
     if (error) throw error;
@@ -363,6 +378,7 @@ router.get('/users/:uid', async (req, res) => {
   if (!ctx) return;
   const { requester, companyId } = ctx;
   const { uid } = req.params;
+  if (!(await requireAdminPermission(requester, 'view_employees', res))) return;
   try {
     const { data: targetUser, error: targetError } = await supabase
       .from('users')
@@ -408,6 +424,8 @@ router.patch('/users/:uid', async (req, res) => {
     password,
   } = body;
 
+  if (rejectSelfAdministrativeChange(requester, uid, res)) return;
+
   if (password !== undefined) {
     return res.status(403).json({
       success: false,
@@ -418,7 +436,7 @@ router.patch('/users/:uid', async (req, res) => {
   try {
     const { data: targetUser, error: targetError } = await supabase
       .from('users')
-      .select('uid, username, email, role, department, company_id')
+      .select('uid, username, email, role, department, company_id, is_active')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();
@@ -447,6 +465,15 @@ router.patch('/users/:uid', async (req, res) => {
         error: 'Only super admins and HR managers can edit user profiles',
       });
     }
+    if (profileFieldsTouched && !(await requireAdminPermission(requester, 'edit_user', res))) return;
+    if (role !== undefined && role !== targetUser.role && !(await requireAdminPermission(requester, 'change_user_role', res))) return;
+    if (is_active !== undefined && Boolean(is_active) !== Boolean(targetUser.is_active)) {
+      const key = is_active ? 'activate_user' : 'deactivate_user';
+      if (!(await requireAdminPermission(requester, key, res))) return;
+    }
+    const leaveTouched =
+      annual_leaves !== undefined || sick_leaves !== undefined || casual_leaves !== undefined;
+    if (leaveTouched && !(await requireAdminPermission(requester, 'edit_leave_balance', res))) return;
 
     if (
       requester.role === ROLES.MANAGER &&
@@ -558,8 +585,6 @@ router.patch('/users/:uid', async (req, res) => {
       }
     }
 
-    const leaveTouched =
-      annual_leaves !== undefined || sick_leaves !== undefined || casual_leaves !== undefined;
     if (leaveTouched) {
       const parseLeave = (v, fallback) => {
         const n = Number(v);
@@ -582,6 +607,21 @@ router.patch('/users/:uid', async (req, res) => {
         { onConflict: 'user_uid' }
       );
       if (leaveError) throw leaveError;
+    }
+
+    if (is_active !== undefined && Boolean(is_active) !== Boolean(targetUser.is_active)) {
+      await writeAuditLog(supabase, {
+        actorUid: requester.uid,
+        targetUid: uid,
+        action: Boolean(is_active) ? 'user_activated' : 'user_deactivated',
+      });
+    }
+    if (role !== undefined && role !== targetUser.role) {
+      await writeAuditLog(supabase, {
+        actorUid: requester.uid,
+        targetUid: uid,
+        action: 'role_changed',
+      });
     }
 
     const leave_balance = await resolveLeaveBalanceForUser(uid, companyId);
@@ -627,7 +667,8 @@ router.get('/departments', async (req, res) => {
 
 router.post('/departments', async (req, res) => {
   const ctx = await withTenantContext(req, res);
-  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  if (!ctx) return;
+  if (!(await requireAdminPermission(ctx.requester, 'manage_departments', res))) return;
   const { companyId } = ctx;
   try {
     const { name } = req.body;
@@ -652,7 +693,8 @@ router.post('/departments', async (req, res) => {
 
 router.patch('/departments/:id', async (req, res) => {
   const ctx = await withTenantContext(req, res);
-  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  if (!ctx) return;
+  if (!(await requireAdminPermission(ctx.requester, 'manage_departments', res))) return;
   const { companyId } = ctx;
   try {
     const { id } = req.params;
@@ -707,7 +749,8 @@ router.patch('/departments/:id', async (req, res) => {
 
 router.delete('/departments/:id', async (req, res) => {
   const ctx = await withTenantContext(req, res);
-  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  if (!ctx) return;
+  if (!(await requireAdminPermission(ctx.requester, 'manage_departments', res))) return;
   const { companyId } = ctx;
   try {
     const { id } = req.params;
@@ -868,6 +911,7 @@ router.get('/sites', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  if (!(await requireAdminPermission(requester, 'manage_geofencing', res))) return;
   try {
     let query = supabase
       .from('sites')
@@ -896,6 +940,7 @@ router.post('/sites', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  if (!(await requireAdminPermission(requester, 'manage_geofencing', res))) return;
   try {
     const payload = { ...req.body };
     if (requester.role === ROLES.MANAGER) {
@@ -928,6 +973,7 @@ router.post('/employee-sites', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  if (!(await requireAdminPermission(requester, 'manage_geofencing', res))) return;
   try {
     const { employee_uid, site_id } = req.body;
     const { data: employee } = await supabase
@@ -969,6 +1015,7 @@ router.get('/attendance', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  if (!(await requireAdminPermission(requester, 'view_attendance', res))) return;
   try {
     let query = supabase
       .from('attendance_records')
@@ -1002,6 +1049,7 @@ router.get('/leaves', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  if (!(await requireAdminPermission(requester, 'view_leave_requests', res))) return;
   try {
     let query = supabase
       .from('leave_requests')
@@ -1038,6 +1086,11 @@ router.patch('/leaves/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { status, admin_notes } = req.body;
+    const permissionKey = status === 'approved' ? 'approve_leave' : status === 'rejected' ? 'reject_leave' : null;
+    if (!permissionKey) {
+      return res.status(400).json({ success: false, error: 'Unsupported leave status' });
+    }
+    if (!(await requireAdminPermission(requester, permissionKey, res))) return;
     const tenantUids = await fetchCompanyUserUids(supabase, companyId);
     const { data: requestRow } = await supabase
       .from('leave_requests')
@@ -1075,6 +1128,134 @@ router.patch('/leaves/:id', async (req, res) => {
     res.status(200).json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to process leave request' });
+  }
+});
+
+router.get('/permissions/meta', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  res.status(200).json({
+    success: true,
+    data: {
+      groups: MANAGER_PERMISSION_GROUPS,
+      all: ALL_MANAGER_PERMISSIONS,
+      defaults: DEFAULT_MANAGER_PERMISSIONS,
+    },
+  });
+});
+
+router.get('/managers', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const { companyId } = ctx;
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('uid, username, email, name, role, department, is_active, created_at')
+      .eq('company_id', companyId)
+      .eq('role', ROLES.MANAGER)
+      .order('name', { ascending: true });
+    if (error) throw error;
+    const rows = await Promise.all((data || []).map(async (manager) => ({
+      ...manager,
+      permissions: await getManagerPermissions(supabase, manager.uid),
+    })));
+    res.status(200).json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || 'Failed to fetch managers' });
+  }
+});
+
+router.get('/managers/:uid/permissions', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const { companyId } = ctx;
+  const { uid } = req.params;
+  try {
+    const { data: manager } = await supabase
+      .from('users')
+      .select('uid, role')
+      .eq('uid', uid)
+      .eq('company_id', companyId)
+      .eq('role', ROLES.MANAGER)
+      .maybeSingle();
+    if (!manager) return res.status(404).json({ success: false, error: 'Manager not found' });
+    const permissions = await getManagerPermissions(supabase, uid);
+    res.status(200).json({ success: true, data: permissions });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || 'Failed to fetch permissions' });
+  }
+});
+
+router.put('/managers/:uid/permissions', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const { requester, companyId } = ctx;
+  const { uid } = req.params;
+  if (rejectSelfAdministrativeChange(requester, uid, res)) return;
+  try {
+    const { data: manager } = await supabase
+      .from('users')
+      .select('uid, role')
+      .eq('uid', uid)
+      .eq('company_id', companyId)
+      .eq('role', ROLES.MANAGER)
+      .maybeSingle();
+    if (!manager) return res.status(404).json({ success: false, error: 'Manager not found' });
+
+    const requested = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
+    const requestedSet = new Set(requested.filter((key) => ALL_MANAGER_PERMISSIONS.includes(key)));
+    const rows = ALL_MANAGER_PERMISSIONS.map((permissionKey) => ({
+      manager_uid: uid,
+      permission_key: permissionKey,
+      granted: requestedSet.has(permissionKey),
+      updated_at: new Date().toISOString(),
+    }));
+    const { error } = await supabase
+      .from('manager_permissions')
+      .upsert(rows, { onConflict: 'manager_uid,permission_key' });
+    if (error) throw error;
+    await writeAuditLog(supabase, {
+      actorUid: requester.uid,
+      targetUid: uid,
+      action: 'permissions_changed',
+    });
+    res.status(200).json({ success: true, data: Array.from(requestedSet) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || 'Failed to update permissions' });
+  }
+});
+
+router.get('/audit-logs', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const { companyId } = ctx;
+  try {
+    const { data: tenantUsers, error: usersError } = await supabase
+      .from('users')
+      .select('uid, username, name')
+      .eq('company_id', companyId);
+    if (usersError) throw usersError;
+    const uidSet = (tenantUsers || []).map((u) => u.uid);
+    const userMap = new Map((tenantUsers || []).map((u) => [u.uid, u]));
+    if (uidSet.length === 0) return res.status(200).json({ success: true, data: [] });
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('id, actor_uid, target_uid, action, timestamp')
+      .in('target_uid', uidSet)
+      .order('timestamp', { ascending: false })
+      .limit(100);
+    if (error) throw error;
+    res.status(200).json({
+      success: true,
+      data: (data || []).map((row) => ({
+        ...row,
+        actor: userMap.get(row.actor_uid) || null,
+        target: userMap.get(row.target_uid) || null,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || 'Failed to fetch audit logs' });
   }
 });
 

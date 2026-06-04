@@ -68,6 +68,17 @@ const navItems = [
       </svg>
     ),
   },
+  {
+    to: '/manager-permissions',
+    label: 'Permissions',
+    superAdminOnly: true,
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3Z" />
+        <path d="m9 12 2 2 4-5" />
+      </svg>
+    ),
+  },
 ];
 
 export function AppShell() {
@@ -78,10 +89,11 @@ export function AppShell() {
   const [search, setSearch] = useState('');
 
   const items = useMemo(() => {
-    if (user?.role === 'manager') {
-      return navItems.filter((i) => i.to !== '/settings');
-    }
-    return navItems;
+    return navItems.filter((item) => {
+      if (user?.role === 'manager' && item.to === '/settings') return false;
+      if (item.superAdminOnly && user?.role !== 'super_admin') return false;
+      return true;
+    });
   }, [user?.role]);
 
   const pageTitle = useMemo(() => {

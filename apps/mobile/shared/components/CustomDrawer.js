@@ -13,7 +13,7 @@ import { useTheme } from '../../core/contexts/ThemeContext';
 import { getUnreadNotificationCount } from '../../utils/notifications';
 import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp, isTablet } from '../../utils/responsive';
 import { ROUTES } from '../constants/routes';
-import { isHRAdmin } from '../constants/roles';
+import { MANAGER_PERMISSIONS, hasAnyPermission, hasPermission } from '../constants/permissions';
 import { getOfficeLocation } from '../../features/geofencing';
 import { getCurrentLocation } from '../../features/geofencing';
 import { isWithin1km } from '../../features/geofencing';
@@ -190,36 +190,46 @@ export default function CustomDrawer({ navigation, state }) {
         icon: 'people-outline',
         screen: ROUTES.EMPLOYEE_MANAGEMENT,
         roles: ['super_admin', 'manager'],
+        permissions: [MANAGER_PERMISSIONS.VIEW_EMPLOYEES],
       },
       {
         name: 'HR Dashboard',
         icon: 'briefcase-outline',
         screen: ROUTES.HR_DASHBOARD,
         roles: ['super_admin', 'manager'],
+        permissions: [MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD],
       },
       {
         name: 'Ticket Management',
         icon: 'ticket-outline',
         screen: ROUTES.TICKET_MANAGEMENT,
         roles: ['super_admin', 'manager'],
+        permissions: [MANAGER_PERMISSIONS.MANAGE_TICKETS, MANAGER_PERMISSIONS.VIEW_TICKETS],
       },
       {
         name: 'Manual Attendance',
         icon: 'create-outline',
         screen: ROUTES.MANUAL_ATTENDANCE,
         roles: ['super_admin', 'manager'],
+        permissions: [MANAGER_PERMISSIONS.MANUAL_ATTENDANCE],
       },
       {
         name: 'Calendar View',
         icon: 'calendar-outline',
         screen: ROUTES.CALENDAR,
         roles: ['super_admin', 'manager'],
+        permissions: [
+          MANAGER_PERMISSIONS.CREATE_EVENTS,
+          MANAGER_PERMISSIONS.EDIT_EVENTS,
+          MANAGER_PERMISSIONS.DELETE_EVENTS,
+        ],
       },
       {
         name: 'Notifications',
         icon: 'notifications-outline',
         screen: ROUTES.NOTIFICATIONS,
         roles: ['super_admin', 'manager'],
+        permissions: [MANAGER_PERMISSIONS.MANAGE_NOTIFICATIONS],
         badge: unreadNotificationCount,
       },
     ];
@@ -266,7 +276,9 @@ export default function CustomDrawer({ navigation, state }) {
     const filteredSuperAdminItems = superAdminItems.filter(item => {
       if (item.screen === ROUTES.CREATE_USER || item.screen === ROUTES.DELETE_USER) {
         // Allow HR admins to see Create User and Delete User
-        return user.role === 'super_admin' || isHRAdmin(user);
+        if (user.role === 'super_admin') return true;
+        if (item.screen === ROUTES.CREATE_USER) return hasPermission(user, MANAGER_PERMISSIONS.CREATE_USER);
+        return hasPermission(user, MANAGER_PERMISSIONS.DELETE_USER);
       }
       // Other super admin items (like Reports) are super_admin only
       return user.role === 'super_admin';
@@ -274,13 +286,17 @@ export default function CustomDrawer({ navigation, state }) {
 
     const adminMenuItems = [
       ...baseItems,
-      ...adminItems,
+      ...adminItems.filter((item) => {
+        if (user.role === 'super_admin') return true;
+        if (!item.permissions) return true;
+        return hasAnyPermission(user, item.permissions);
+      }),
       ...filteredSuperAdminItems,
       ...(user.role === 'manager' ? managerItems : []),
     ];
 
     // Geo-fencing: super admins (all departments) and managers (own department)
-    if (user.role === 'super_admin' || user.role === 'manager') {
+    if (user.role === 'super_admin' || hasPermission(user, MANAGER_PERMISSIONS.MANAGE_GEOFENCING)) {
       adminMenuItems.push({
         name: 'GeoFencing',
         icon: 'location-outline',
@@ -551,5 +567,3 @@ const styles = StyleSheet.create({
     marginLeft: spacing.sm,
   },
 });
-
-

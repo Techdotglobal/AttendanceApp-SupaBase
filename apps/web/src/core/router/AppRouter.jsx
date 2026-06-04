@@ -13,6 +13,7 @@ import { LeavesPage } from '../../features/admin/pages/LeavesPage';
 import { AnalyticsPage } from '../../features/admin/pages/AnalyticsPage';
 import { ReportsPage } from '../../features/admin/pages/ReportsPage';
 import { SettingsPage } from '../../features/admin/pages/SettingsPage';
+import { ManagerPermissionsPage } from '../../features/admin/pages/ManagerPermissionsPage';
 
 function Protected({ children }) {
   const { user, loading } = useAuthStore();
@@ -24,6 +25,12 @@ function Protected({ children }) {
 
 function Unauthorized() {
   return <div className="min-h-screen bg-slate-50 text-red-500 p-8">You do not have portal access.</div>;
+}
+
+function SuperAdminOnly({ children }) {
+  const { user } = useAuthStore();
+  if (user?.role !== 'super_admin') return <Navigate to="/unauthorized" replace />;
+  return children;
 }
 
 export function AppRouter() {
@@ -42,6 +49,7 @@ export function AppRouter() {
         <Route path="analytics" element={<AnalyticsPage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="manager-permissions" element={<SuperAdminOnly><ManagerPermissionsPage /></SuperAdminOnly>} />
         <Route path="sites" element={<SitesPage />} />
         <Route path="attendance" element={<AttendancePage />} />
         <Route path="leaves" element={<LeavesPage />} />

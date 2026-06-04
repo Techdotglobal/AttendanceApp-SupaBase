@@ -56,6 +56,22 @@ export const adminService = {
       throw new Error(extractApiMessage(error, 'Failed to load analytics'));
     }
   },
+  getPermissionMeta: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/permissions/meta'))).data.data, 'Failed to load permissions'),
+  getManagers: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/managers'))).data.data, 'Failed to load managers'),
+  getManagerPermissions: async (uid) =>
+    executeApiCall(
+      async () => (await api.get(apiUrl(`/api/admin/managers/${uid}/permissions`))).data.data,
+      'Failed to load manager permissions'
+    ),
+  updateManagerPermissions: async (uid, permissions) =>
+    executeApiCall(
+      async () => (await api.put(apiUrl(`/api/admin/managers/${uid}/permissions`), { permissions })).data,
+      'Failed to save manager permissions'
+    ),
+  getAuditLogs: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/audit-logs'))).data.data, 'Failed to load audit logs'),
   getUsers: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/users'))).data.data, 'Failed to load users'),
   getUserProfile: async (uid) => {

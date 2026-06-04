@@ -13,6 +13,19 @@ import {
 const extractErrorMessage = (error, fallbackMessage) =>
   error?.response?.data?.error || error?.message || fallbackMessage;
 
+const fetchManagerPermissions = async (uid, role) => {
+  if (!uid || role !== 'manager') return [];
+  const { data, error } = await supabase
+    .from('manager_permissions')
+    .select('permission_key, granted')
+    .eq('manager_uid', uid);
+  if (error) {
+    console.warn('[authStore] permissions load failed:', error.message);
+    return [];
+  }
+  return (data || []).filter((row) => row.granted === true).map((row) => row.permission_key);
+};
+
 export const useAuthStore = create((set) => ({
   user: null,
   loading: true,
@@ -28,6 +41,7 @@ export const useAuthStore = create((set) => ({
           console.warn('[authStore] bootstrap tenant metadata sync:', syncRes.error);
         }
       }
+      const permissions = data ? await fetchManagerPermissions(data.uid, data.role) : [];
       set({
         loading: false,
         user: data
@@ -40,6 +54,7 @@ export const useAuthStore = create((set) => ({
               companyId: data.company_id != null ? String(data.company_id) : null,
               company_id: data.company_id != null ? String(data.company_id) : null,
               departmentId: data.department_id != null ? String(data.department_id) : null,
+              permissions,
             }
           : null,
       });
@@ -72,6 +87,7 @@ export const useAuthStore = create((set) => ({
         companyId: data.user.company_id != null ? String(data.user.company_id) : null,
         company_id: data.user.company_id != null ? String(data.user.company_id) : null,
         departmentId: data.user.department_id != null ? String(data.user.department_id) : null,
+        permissions: data.user.permissions || [],
       };
       if (session && shouldSyncTenantMetadata(session, { ...profile, company_id: profile.companyId, department: profile.department, role: profile.role })) {
         const syncRes = await syncTenantMetadataViaGateway();
@@ -159,6 +175,7 @@ export const useAuthStore = create((set) => ({
                 companyId: profile.company_id != null ? String(profile.company_id) : null,
                 company_id: profile.company_id != null ? String(profile.company_id) : null,
                 departmentId: profile.department_id != null ? String(profile.department_id) : null,
+                permissions: await fetchManagerPermissions(profile.uid, profile.role),
               }
             : null;
 

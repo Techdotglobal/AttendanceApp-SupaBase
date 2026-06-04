@@ -44,6 +44,19 @@ async function resyncTenantMetadataIfSessionUsername(username) {
   }
 }
 
+async function fetchManagerPermissions(uid, role) {
+  if (!uid || role !== 'manager') return [];
+  const { data, error } = await supabase
+    .from('manager_permissions')
+    .select('permission_key, granted')
+    .eq('manager_uid', uid);
+  if (error) {
+    console.warn('[AUTH] permissions load failed:', error.message);
+    return [];
+  }
+  return (data || []).filter((row) => row.granted === true).map((row) => row.permission_key);
+}
+
 /**
  * Authenticate user - tries API Gateway first, falls back to Supabase
  * Supports both username and email login
@@ -195,6 +208,7 @@ export const authenticateUser = async (usernameOrEmail, password) => {
           workMode: data.user?.workMode || 'in_office',
           companyId: data.user?.company_id != null ? String(data.user.company_id) : null,
           departmentId: data.user?.department_id != null ? String(data.user.department_id) : null,
+          permissions: data.user?.permissions || [],
         },
       };
     }
@@ -363,6 +377,7 @@ export const authenticateUser = async (usernameOrEmail, password) => {
         workMode: userData.work_mode || 'in_office',
         companyId: userData.company_id != null ? String(userData.company_id) : null,
         departmentId: userData.department_id != null ? String(userData.department_id) : null,
+        permissions: await fetchManagerPermissions(authData.user.id, userData.role),
       }
     };
   } catch (error) {

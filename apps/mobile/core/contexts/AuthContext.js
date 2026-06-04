@@ -19,6 +19,19 @@ import { startLocationMonitoring, stopLocationMonitoring } from '../../features/
 
 const AuthContext = createContext();
 
+async function fetchManagerPermissions(uid, role) {
+  if (!uid || role !== 'manager') return [];
+  const { data, error } = await supabase
+    .from('manager_permissions')
+    .select('permission_key, granted')
+    .eq('manager_uid', uid);
+  if (error) {
+    console.warn('[AUTH_CONTEXT] manager permissions load failed:', error.message);
+    return [];
+  }
+  return (data || []).filter((row) => row.granted === true).map((row) => row.permission_key);
+}
+
 /**
  * Emergency hydration when public.users row is temporarily unreadable.
  * Never invent role "employee" or tenant — that caused super_admin downgrades after backgrounding.
@@ -515,6 +528,7 @@ export function AuthProvider({ children }) {
         position: userData.position || '',
         workMode: userData.work_mode || 'in_office',
         hireDate: userData.hire_date,
+        permissions: await fetchManagerPermissions(userId, dbRole),
         id: userId,
       };
 

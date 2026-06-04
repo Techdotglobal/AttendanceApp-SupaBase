@@ -27,6 +27,7 @@ import Trademark from '../components/Trademark';
 import HamburgerButton from '../shared/components/HamburgerButton';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../core/config/supabase';
+import { MANAGER_PERMISSIONS, hasAnyPermission, hasPermission } from '../shared/constants/permissions';
 
 export default function AdminDashboard({ route }) {
   const navigation = useNavigation();
@@ -47,6 +48,8 @@ export default function AdminDashboard({ route }) {
   // CRITICAL FIX: Role guard - prevent rendering if user is not manager/super_admin
   // Use authUser from context (most up-to-date) with fallback to route params
   const user = authUser || routeUser;
+  const can = (permissionKey) => hasPermission(user, permissionKey);
+  const canAny = (permissionKeys) => hasAnyPermission(user, permissionKeys);
   
   // Guard: Redirect if user doesn't have manager/super_admin role
   useEffect(() => {
@@ -65,7 +68,15 @@ export default function AdminDashboard({ route }) {
   if (!user || (user.role !== 'manager' && user.role !== 'super_admin')) {
     return null;
   }
-  const [activeTab, setActiveTab] = useState(initialTab || 'attendance'); // 'attendance', 'employees', 'calendar', or 'hr'
+  const resolveInitialTab = () => {
+    if (initialTab) return initialTab;
+    if (can(MANAGER_PERMISSIONS.VIEW_ATTENDANCE)) return 'attendance';
+    if (can(MANAGER_PERMISSIONS.VIEW_EMPLOYEES)) return 'employees';
+    if (canAny([MANAGER_PERMISSIONS.CREATE_EVENTS, MANAGER_PERMISSIONS.EDIT_EVENTS, MANAGER_PERMISSIONS.DELETE_EVENTS])) return 'calendar';
+    if (can(MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD)) return 'hr';
+    return 'attendance';
+  };
+  const [activeTab, setActiveTab] = useState(resolveInitialTab); // 'attendance', 'employees', 'calendar', or 'hr'
   const [records, setRecords] = useState([]);
   const [filteredRecords, setFilteredRecords] = useState([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -625,6 +636,7 @@ export default function AdminDashboard({ route }) {
                   gap: tablet ? spacing.md : spacing.xs,
                 }}
               >
+                {can(MANAGER_PERMISSIONS.MANUAL_ATTENDANCE) && (
                 <TouchableOpacity
                   className="bg-blue-500"
                   onPress={() => navigation.navigate('ManualAttendance', { user: user })}
@@ -654,6 +666,8 @@ export default function AdminDashboard({ route }) {
                     </Text>
                   </View>
                 </TouchableOpacity>
+                )}
+                {can(MANAGER_PERMISSIONS.EXPORT_ATTENDANCE) && (
                 <TouchableOpacity
                   className="bg-green-500"
                   onPress={handleExport}
@@ -684,6 +698,7 @@ export default function AdminDashboard({ route }) {
                     </Text>
                   </View>
                 </TouchableOpacity>
+                )}
                 
                 <TouchableOpacity
                   className="bg-red-500"
@@ -733,30 +748,18 @@ export default function AdminDashboard({ route }) {
             width: '100%',
           }}
         >
-          <TabButton
-            title="Attendance"
-            value="attendance"
-            isActive={activeTab === 'attendance'}
-            icon="time-outline"
-          />
-          <TabButton
-            title="Employees"
-            value="employees"
-            isActive={activeTab === 'employees'}
-            icon="people-outline"
-          />
-          <TabButton
-            title="Calendar"
-            value="calendar"
-            isActive={activeTab === 'calendar'}
-            icon="calendar-outline"
-          />
-          <TabButton
-            title="HR"
-            value="hr"
-            isActive={activeTab === 'hr'}
-            icon="briefcase-outline"
-          />
+          {can(MANAGER_PERMISSIONS.VIEW_ATTENDANCE) && (
+            <TabButton title="Attendance" value="attendance" isActive={activeTab === 'attendance'} icon="time-outline" />
+          )}
+          {can(MANAGER_PERMISSIONS.VIEW_EMPLOYEES) && (
+            <TabButton title="Employees" value="employees" isActive={activeTab === 'employees'} icon="people-outline" />
+          )}
+          {canAny([MANAGER_PERMISSIONS.CREATE_EVENTS, MANAGER_PERMISSIONS.EDIT_EVENTS, MANAGER_PERMISSIONS.DELETE_EVENTS]) && (
+            <TabButton title="Calendar" value="calendar" isActive={activeTab === 'calendar'} icon="calendar-outline" />
+          )}
+          {can(MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD) && (
+            <TabButton title="HR" value="hr" isActive={activeTab === 'hr'} icon="briefcase-outline" />
+          )}
         </View>
   );
 

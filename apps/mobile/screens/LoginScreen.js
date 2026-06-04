@@ -124,6 +124,7 @@ export default function LoginScreen() {
             companyId: result.user.companyId ?? employee.companyId ?? null,
             departmentId: result.user.departmentId ?? employee.departmentId ?? null,
             uid: result.user.uid ?? employee.uid ?? null,
+            permissions: result.user.permissions || [],
           };
           console.log('Logging in with employee data (using auth role):', userData);
           loginUser(userData);
@@ -135,6 +136,7 @@ export default function LoginScreen() {
             companyId: result.user.companyId ?? null,
             departmentId: result.user.departmentId ?? null,
             uid: result.user.uid ?? null,
+            permissions: result.user.permissions || [],
           };
           console.log('Logging in with auth data (employee not found):', userData);
           loginUser(userData);
@@ -519,4 +521,3 @@ export default function LoginScreen() {
     </SafeAreaView>
   );
 }
-

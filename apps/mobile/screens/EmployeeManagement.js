@@ -52,6 +52,7 @@ import {
 import { spacing, responsivePadding, responsiveFont, isTablet, getTabletGridColumns, SCREEN_WIDTH } from '../shared/utils/responsive';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+import { MANAGER_PERMISSIONS, hasPermission, isSelfTarget } from '../shared/constants/permissions';
 import { tenantDiagLog, diagQueryUsersByCompanyId, TENANT_RUNTIME_DIAG } from '../core/debug/tenantRuntimeDiag';
 import { resolveCompanyIdFromUser } from '../core/tenant/tenantScope';
 
@@ -306,6 +307,14 @@ export default function EmployeeManagement({
   };
 
   const handleWorkModeChange = (employee) => {
+    if (!hasPermission(user, MANAGER_PERMISSIONS.EDIT_USER)) {
+      Alert.alert('Permission Denied', 'You do not have permission to edit users.');
+      return;
+    }
+    if (isSelfTarget(user, employee)) {
+      Alert.alert('Permission Denied', 'You cannot modify your own administrative access.');
+      return;
+    }
     // Check if user can manage this employee
     if (!canManageEmployee(user, employee)) {
       Alert.alert('Permission Denied', 'You can only manage work modes for employees in your department.');
@@ -384,6 +393,11 @@ export default function EmployeeManagement({
   };
 
   const handleProcessLeaveRequest = async (requestId, status) => {
+    const permissionKey = status === 'approved' ? MANAGER_PERMISSIONS.APPROVE_LEAVE : MANAGER_PERMISSIONS.REJECT_LEAVE;
+    if (!hasPermission(user, permissionKey)) {
+      Alert.alert('Permission Denied', 'You do not have permission to process this leave request.');
+      return;
+    }
     // Check if user can manage this leave request
     const request = pendingLeaveRequests.find(req => req.id === requestId);
     if (request) {
@@ -425,6 +439,14 @@ export default function EmployeeManagement({
   };
 
   const handleManageLeaves = async (employee) => {
+    if (!hasPermission(user, MANAGER_PERMISSIONS.EDIT_LEAVE_BALANCE)) {
+      Alert.alert('Permission Denied', 'You do not have permission to edit leave balances.');
+      return;
+    }
+    if (isSelfTarget(user, employee)) {
+      Alert.alert('Permission Denied', 'You cannot modify your own administrative access.');
+      return;
+    }
     // Check if user can manage this employee
     if (!canManageEmployee(user, employee)) {
       Alert.alert('Permission Denied', 'You can only manage leaves for employees in your department.');
@@ -585,6 +607,14 @@ export default function EmployeeManagement({
 
   const handleUpdateRole = async () => {
     if (!selectedEmployeeForRoleEdit) return;
+    if (isSelfTarget(user, selectedEmployeeForRoleEdit)) {
+      Alert.alert('Permission Denied', 'You cannot modify your own administrative access.');
+      return;
+    }
+    if (!hasPermission(user, MANAGER_PERMISSIONS.CHANGE_USER_ROLE)) {
+      Alert.alert('Permission Denied', 'You do not have permission to change roles.');
+      return;
+    }
 
     // HR admins cannot change roles to super_admin
     if (isHRAdmin(user) && selectedRole === 'super_admin') {
@@ -621,7 +651,10 @@ export default function EmployeeManagement({
     // Get employee ID
     const employeeId = item.id;
     const leaveInfo = employeeLeaveBalances[employeeId];
-    const showRoleBtn = user.role === 'super_admin' || isHRAdmin(user);
+    const targetIsSelf = isSelfTarget(user, item);
+    const canEditUsers = hasPermission(user, MANAGER_PERMISSIONS.EDIT_USER) && !targetIsSelf;
+    const canEditLeaves = hasPermission(user, MANAGER_PERMISSIONS.EDIT_LEAVE_BALANCE) && !targetIsSelf;
+    const showRoleBtn = hasPermission(user, MANAGER_PERMISSIONS.CHANGE_USER_ROLE) && !targetIsSelf;
 
     return (
     <View
@@ -735,6 +768,7 @@ export default function EmployeeManagement({
               maxWidth: '100%',
             }}
           >
+              {canEditUsers && (
               <TouchableOpacity
                 className="rounded-lg py-2"
                 style={{ 
@@ -747,7 +781,9 @@ export default function EmployeeManagement({
               >
                 <Text className="text-white text-xs font-medium" numberOfLines={1}>Work Mode</Text>
               </TouchableOpacity>
+              )}
               
+              {canEditLeaves && (
               <TouchableOpacity
                 className="rounded-lg py-2"
                 style={{ 
@@ -760,6 +796,7 @@ export default function EmployeeManagement({
               >
                 <Text className="text-white text-xs font-medium" numberOfLines={1}>Leaves</Text>
               </TouchableOpacity>
+              )}
               
               {/* Role Edit Button - For super_admin and HR admins */}
               {showRoleBtn && (

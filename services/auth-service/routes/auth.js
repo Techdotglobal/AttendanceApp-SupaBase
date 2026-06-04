@@ -26,6 +26,12 @@ const {
 } = require('../lib/departmentService');
 const { isHrManager, canEditAnyProfile } = require('../lib/profileAccess');
 const { findUserByUsernameInCompany, updateUsernameForUid } = require('../lib/usernameUpdate');
+const {
+  getManagerPermissions,
+  requirePermission,
+  rejectSelfAdministrativeChange,
+  writeAuditLog,
+} = require('../lib/permissions');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PRIVILEGED_ROLES = new Set(['super_admin', 'manager']);
@@ -129,6 +135,8 @@ async function resolveScopedTargetByUid(req, uid) {
 
 async function applyUserRoleChange(req, res, scope, role) {
   const timestamp = new Date().toISOString();
+  if (rejectSelfAdministrativeChange(scope.requester, scope.target.uid, res)) return;
+  if (!(await requirePermission(supabase, scope.requester, 'change_user_role', res))) return;
   if (
     scope.requester.role === 'manager' &&
     !isHrManager(scope.requester) &&
@@ -169,6 +177,11 @@ async function applyUserRoleChange(req, res, scope, role) {
   }
 
   console.log(`[${timestamp}] Auth Service: ✓ User role updated:`, data[0].username, '->', role);
+  await writeAuditLog(supabase, {
+    actorUid: scope.requester.uid,
+    targetUid,
+    action: 'role_changed',
+  });
   return res.status(200).json({
     success: true,
     message: 'User role updated. They must sign in again on the mobile app to apply the change.',
@@ -360,6 +373,8 @@ router.post('/login', async (req, res) => {
       if (!metaSync.ok) {
         console.error(`[${timestamp}] Auth Service: JWT user_metadata sync failed after login:`, metaSync.error);
       }
+      const permissions =
+        userData.role === 'manager' ? await getManagerPermissions(supabase, userId) : [];
 
       // Step 4: Return user info (tenant fields mirror DB; client also refreshes JWT)
       return res.status(200).json({
@@ -375,6 +390,7 @@ router.post('/login', async (req, res) => {
           position: userData.position || '',
           workMode: userData.work_mode || 'in_office',
           company_id: userData.company_id != null ? String(userData.company_id) : null,
+          permissions,
         },
       });
     } catch (authError) {
@@ -552,6 +568,7 @@ router.post('/users', async (req, res) => {
         error: 'Caller is not bound to a tenant (company_id missing). Re-login or update the client.',
       });
     }
+    if (!(await requirePermission(supabase, requester, 'create_user', res))) return;
     // Managers can only create employees (no manager/super_admin escalation).
     if (requester.role === 'manager' && String(role).toLowerCase() !== 'employee') {
       return res.status(403).json({
@@ -789,7 +806,7 @@ router.post('/users', async (req, res) => {
 router.delete('/users/:uid', async (req, res) => {
   const timestamp = new Date().toISOString();
   const { uid } = req.params;
-  const { requester } = req.body || {};
+  const requester = parseRequester(req) || (req.body || {}).requester;
   console.log(`[${timestamp}] Auth Service: Delete user request for uid: ${uid}`);
 
   try {
@@ -806,6 +823,8 @@ router.delete('/users/:uid', async (req, res) => {
         error: 'Requester context is required',
       });
     }
+    if (rejectSelfAdministrativeChange(requester, uid, res)) return;
+    if (!(await requirePermission(supabase, requester, 'delete_user', res))) return;
     const companyId = await resolveRequesterCompanyId(requester);
     if (!companyId) {
       return res.status(403).json({
@@ -850,14 +869,6 @@ router.delete('/users/:uid', async (req, res) => {
       });
     }
 
-    // Prevent deleting your own account for safety (applies to non-super-admin users)
-    if (requester.uid === uid) {
-      return res.status(403).json({
-        success: false,
-        error: 'You cannot delete your own account',
-      });
-    }
-
     // HR managers can delete employees and managers (any department),
     // as long as the target is NOT a super_admin (handled above).
     if (isHrManager) {
@@ -893,6 +904,12 @@ router.delete('/users/:uid', async (req, res) => {
         error: dbDeleteError.message || 'Failed to delete user profile',
       });
     }
+
+    await writeAuditLog(supabase, {
+      actorUid: requester.uid,
+      targetUid: uid,
+      action: 'user_deleted',
+    });
 
     console.log(`[${timestamp}] Auth Service: ✓ User deleted: ${targetUser.username || uid}`);
     return res.status(200).json({ success: true });
@@ -995,6 +1012,8 @@ router.patch('/users/uid/:uid/username', async (req, res) => {
     if (scope.errorStatus) {
       return res.status(scope.errorStatus).json({ success: false, error: scope.error });
     }
+    if (rejectSelfAdministrativeChange(scope.requester, uid, res)) return;
+    if (!(await requirePermission(supabase, scope.requester, 'edit_user', res))) return;
     if (!canEditAnyProfile(scope.requester)) {
       return res.status(403).json({
         success: false,
@@ -1044,6 +1063,8 @@ router.patch('/users/uid/:uid/email', async (req, res) => {
     if (scope.errorStatus) {
       return res.status(scope.errorStatus).json({ success: false, error: scope.error });
     }
+    if (rejectSelfAdministrativeChange(scope.requester, uid, res)) return;
+    if (!(await requirePermission(supabase, scope.requester, 'edit_user', res))) return;
     if (!canEditAnyProfile(scope.requester)) {
       return res.status(403).json({
         success: false,
@@ -1145,6 +1166,8 @@ router.patch('/users/:username/email', async (req, res) => {
     if (scope.errorStatus) {
       return res.status(scope.errorStatus).json({ success: false, error: scope.error });
     }
+    if (rejectSelfAdministrativeChange(scope.requester, scope.target.uid, res)) return;
+    if (!(await requirePermission(supabase, scope.requester, 'edit_user', res))) return;
     if (!canEditAnyProfile(scope.requester)) {
       return res.status(403).json({
         success: false,
@@ -1222,10 +1245,17 @@ router.patch('/users/:username', async (req, res) => {
     if (scope.errorStatus) {
       return res.status(scope.errorStatus).json({ success: false, error: scope.error });
     }
+    if (rejectSelfAdministrativeChange(scope.requester, scope.target.uid, res)) return;
     const sensitiveTouched =
       dbUpdates.name !== undefined ||
       dbUpdates.email !== undefined ||
       dbUpdates.username !== undefined;
+    if (sensitiveTouched && !(await requirePermission(supabase, scope.requester, 'edit_user', res))) return;
+    if (dbUpdates.role !== undefined && dbUpdates.role !== scope.target.role && !(await requirePermission(supabase, scope.requester, 'change_user_role', res))) return;
+    if (dbUpdates.is_active !== undefined) {
+      const key = dbUpdates.is_active ? 'activate_user' : 'deactivate_user';
+      if (!(await requirePermission(supabase, scope.requester, key, res))) return;
+    }
     if (sensitiveTouched && !canEditAnyProfile(scope.requester)) {
       return res.status(403).json({
         success: false,

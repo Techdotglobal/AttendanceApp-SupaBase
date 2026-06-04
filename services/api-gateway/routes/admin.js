@@ -29,6 +29,15 @@ const forward = async (req, res, method, path) => {
 
 router.get('/dashboard/stats', (req, res) => forward(req, res, 'get', '/api/admin/dashboard/stats'));
 router.get('/analytics', (req, res) => forward(req, res, 'get', '/api/admin/analytics'));
+router.get('/permissions/meta', (req, res) => forward(req, res, 'get', '/api/admin/permissions/meta'));
+router.get('/managers', (req, res) => forward(req, res, 'get', '/api/admin/managers'));
+router.get('/managers/:uid/permissions', (req, res) =>
+  forward(req, res, 'get', `/api/admin/managers/${req.params.uid}/permissions`)
+);
+router.put('/managers/:uid/permissions', (req, res) =>
+  forward(req, res, 'put', `/api/admin/managers/${req.params.uid}/permissions`)
+);
+router.get('/audit-logs', (req, res) => forward(req, res, 'get', '/api/admin/audit-logs'));
 router.get('/users', (req, res) => forward(req, res, 'get', '/api/admin/users'));
 router.get('/users/:uid', (req, res) => forward(req, res, 'get', `/api/admin/users/${req.params.uid}`));
 router.patch('/users/:uid', (req, res) => forward(req, res, 'patch', `/api/admin/users/${req.params.uid}`));

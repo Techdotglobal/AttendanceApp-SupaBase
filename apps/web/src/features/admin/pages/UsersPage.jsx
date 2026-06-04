@@ -39,12 +39,24 @@ const EMPTY_CREATE_FORM = {
   hireDate: '',
 };
 
-const isHrAdmin = (u) =>
-  u?.role === 'manager' && String(u?.department || '').toLowerCase() === 'hr';
+const TENANT_WIDE_PEOPLE_PERMISSIONS = [
+  'create_user',
+  'delete_user',
+  'change_user_role',
+  'approve_signup_requests',
+];
 
-const canEditAnyProfile = (u) => u?.role === 'super_admin' || isHrAdmin(u);
+const hasAnyPermission = (u, permissions) =>
+  u?.role === 'manager' &&
+  Array.isArray(u.permissions) &&
+  permissions.some((permission) => u.permissions.includes(permission));
 
-const canChangeRoles = (u) => u?.role === 'super_admin' || isHrAdmin(u);
+const hasTenantWidePeopleAccess = (u) =>
+  u?.role === 'super_admin' || hasAnyPermission(u, TENANT_WIDE_PEOPLE_PERMISSIONS);
+
+const canEditAnyProfile = (u) => hasTenantWidePeopleAccess(u);
+
+const canChangeRoles = (u) => hasTenantWidePeopleAccess(u);
 
 const roleCanBeToggled = (targetRole) => targetRole === 'employee' || targetRole === 'manager';
 
@@ -178,7 +190,7 @@ export function UsersPage() {
   const changeRole = async (u) => {
     setError('');
     if (!canChangeRoles(user)) {
-      setError('Only super admins and HR managers can change roles.');
+      setError('Permission denied: change_user_role permission is required.');
       return;
     }
     if (!roleCanBeToggled(u.role)) {
@@ -821,7 +833,7 @@ export function UsersPage() {
                     {activeUser.role === 'employee' ? 'Make manager' : 'Make employee'}
                   </button>
                 )}
-                {(user?.role === 'super_admin' || isHrAdmin(user)) && activeUser.role !== 'super_admin' && (
+                {hasTenantWidePeopleAccess(user) && activeUser.role !== 'super_admin' && (
                   <button onClick={() => toggleActive(activeUser)} className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]">
                     {activeUser.is_active ? 'Deactivate' : 'Activate'}
                   </button>

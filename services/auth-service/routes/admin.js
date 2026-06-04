@@ -8,7 +8,6 @@ const { syncAuthMetadataForUid, syncAuthMetadataAndInvalidateSessions } = requir
 const { ensureDepartmentForCompany } = require('../lib/departmentService');
 const {
   assertCanManageUser,
-  isHrManager,
   canEditAnyProfile,
 } = require('../lib/profileAccess');
 const {
@@ -16,6 +15,7 @@ const {
   ALL_MANAGER_PERMISSIONS,
   DEFAULT_MANAGER_PERMISSIONS,
   getManagerPermissions,
+  hasAnyPermission,
   requirePermission,
   rejectSelfAdministrativeChange,
   writeAuditLog,
@@ -74,6 +74,20 @@ const requireSuperAdmin = (requester, res) => {
   return true;
 };
 
+const TENANT_WIDE_PEOPLE_PERMISSIONS = [
+  'create_user',
+  'delete_user',
+  'change_user_role',
+  'approve_signup_requests',
+];
+const DUPLICATE_DEPARTMENT_ERROR =
+  'A department with this name already exists.\nDepartment names are case-insensitive.';
+
+const hasTenantWidePeopleAccess = async (requester) =>
+  requester?.role === ROLES.SUPER_ADMIN ||
+  (requester?.role === ROLES.MANAGER &&
+    (await hasAnyPermission(supabase, requester, TENANT_WIDE_PEOPLE_PERMISSIONS)));
+
 const requireAdminPermission = async (requester, permissionKey, res) =>
   requirePermission(supabase, requester, permissionKey, res);
 
@@ -95,6 +109,7 @@ const withTenantContext = async (req, res) => {
   if (process.env.NODE_ENV !== 'production') {
     console.log('[tenant admin]', { path: req.path, companyId, uid: requester.uid, role: requester.role });
   }
+  requester.tenantWidePeopleAccess = await hasTenantWidePeopleAccess(requester);
   return { requester, companyId };
 };
 
@@ -138,7 +153,7 @@ const getUsersBaseQuery = (requester, companyId) => {
     .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, is_active, created_at, company_id')
     .eq('company_id', companyId)
     .order('created_at', { ascending: false });
-  if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
+  if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
     query = query.eq('department', requester.department);
   }
   return query;
@@ -159,7 +174,7 @@ router.get('/analytics', async (req, res) => {
       .from('users')
       .select('uid, department, department_id, is_active')
       .eq('company_id', companyId);
-    if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
+    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
       usersQuery = usersQuery.eq('department', requester.department);
     }
 
@@ -168,7 +183,7 @@ router.get('/analytics', async (req, res) => {
       .select('id, name')
       .eq('company_id', companyId)
       .order('name', { ascending: true });
-    if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
+    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
       const managerDept = await getRequesterDepartment(requester, companyId);
       if (!managerDept) {
         return res.status(200).json({
@@ -194,7 +209,7 @@ router.get('/analytics', async (req, res) => {
       .select('id', { count: 'exact', head: true })
       .eq('company_id', companyId)
       .gte('timestamp', sinceIso);
-    if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
+    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
       const { data: deptUsers } = await supabase
         .from('users')
         .select('uid')
@@ -389,7 +404,9 @@ router.get('/users/:uid', async (req, res) => {
     if (targetError || !targetUser) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
-    const access = assertCanManageUser(requester, targetUser);
+    const access = assertCanManageUser(requester, targetUser, {
+      tenantWide: requester.tenantWidePeopleAccess,
+    });
     if (!access.ok) {
       return res.status(access.status).json({ success: false, error: access.error });
     }
@@ -444,7 +461,9 @@ router.patch('/users/:uid', async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    const access = assertCanManageUser(requester, targetUser);
+    const access = assertCanManageUser(requester, targetUser, {
+      tenantWide: requester.tenantWidePeopleAccess,
+    });
     if (!access.ok) {
       return res.status(access.status).json({ success: false, error: access.error });
     }
@@ -459,10 +478,10 @@ router.patch('/users/:uid', async (req, res) => {
       sick_leaves !== undefined ||
       casual_leaves !== undefined;
 
-    if (profileFieldsTouched && !canEditAnyProfile(requester)) {
+    if (profileFieldsTouched && !canEditAnyProfile(requester, { tenantWide: requester.tenantWidePeopleAccess })) {
       return res.status(403).json({
         success: false,
-        error: 'Only super admins and HR managers can edit user profiles',
+        error: 'Permission denied: edit_user with tenant-wide people access is required',
       });
     }
     if (profileFieldsTouched && !(await requireAdminPermission(requester, 'edit_user', res))) return;
@@ -477,7 +496,7 @@ router.patch('/users/:uid', async (req, res) => {
 
     if (
       requester.role === ROLES.MANAGER &&
-      !isHrManager(requester) &&
+      !requester.tenantWidePeopleAccess &&
       role &&
       role !== targetUser.role
     ) {
@@ -646,7 +665,7 @@ router.get('/departments', async (req, res) => {
   if (!ctx) return;
   const { requester, companyId } = ctx;
   try {
-    if (requester.role === ROLES.MANAGER && !isHrManager(requester)) {
+    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
       const managerDept = await getRequesterDepartment(requester, companyId);
       const { data } = managerDept
         ? await supabase.from('departments').select('*').eq('id', managerDept.id).eq('company_id', companyId)
@@ -674,7 +693,17 @@ router.post('/departments', async (req, res) => {
     const { name } = req.body;
     const normalizedName = normalizeDepartmentName(name);
     if (!normalizedName) return res.status(400).json({ success: false, error: 'Department name is required' });
-    const lookupKey = toLookupKey(normalizedName);
+    const lookupKey = toLookupKey(name);
+    const { data: existing, error: existingError } = await supabase
+      .from('departments')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('normalized_name', lookupKey)
+      .maybeSingle();
+    if (existingError) throw existingError;
+    if (existing) {
+      return res.status(409).json({ success: false, error: DUPLICATE_DEPARTMENT_ERROR });
+    }
     const { data, error } = await supabase
       .from('departments')
       .insert({
@@ -684,7 +713,12 @@ router.post('/departments', async (req, res) => {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      if (error.code === '23505') {
+        return res.status(409).json({ success: false, error: DUPLICATE_DEPARTMENT_ERROR });
+      }
+      throw error;
+    }
     res.status(201).json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to create department' });
@@ -713,12 +747,18 @@ router.patch('/departments/:id', async (req, res) => {
     }
 
     const oldName = currentDept.name;
+    const lookupKey = toLookupKey(name);
     const { error: deptUpdateError } = await supabase
       .from('departments')
-      .update({ name: normalizedName, normalized_name: toLookupKey(normalizedName) })
+      .update({ name: normalizedName, normalized_name: lookupKey })
       .eq('id', id)
       .eq('company_id', companyId);
-    if (deptUpdateError) throw deptUpdateError;
+    if (deptUpdateError) {
+      if (deptUpdateError.code === '23505') {
+        return res.status(409).json({ success: false, error: DUPLICATE_DEPARTMENT_ERROR });
+      }
+      throw deptUpdateError;
+    }
 
     // Backward compatibility: keep legacy users.department in sync (tenant-scoped).
     const { error: usersUpdateError } = await supabase

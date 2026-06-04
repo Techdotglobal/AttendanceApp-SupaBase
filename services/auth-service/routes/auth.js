@@ -24,10 +24,11 @@ const {
   listDepartmentsForCompany,
   ensureDepartmentForCompany,
 } = require('../lib/departmentService');
-const { isHrManager, canEditAnyProfile } = require('../lib/profileAccess');
+const { canEditAnyProfile } = require('../lib/profileAccess');
 const { findUserByUsernameInCompany, updateUsernameForUid } = require('../lib/usernameUpdate');
 const {
   getManagerPermissions,
+  hasAnyPermission,
   requirePermission,
   rejectSelfAdministrativeChange,
   writeAuditLog,
@@ -35,6 +36,17 @@ const {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PRIVILEGED_ROLES = new Set(['super_admin', 'manager']);
+const TENANT_WIDE_PEOPLE_PERMISSIONS = [
+  'create_user',
+  'delete_user',
+  'change_user_role',
+  'approve_signup_requests',
+];
+
+const hasTenantWidePeopleAccess = async (requester) =>
+  requester?.role === 'super_admin' ||
+  (requester?.role === 'manager' &&
+    (await hasAnyPermission(supabase, requester, TENANT_WIDE_PEOPLE_PERMISSIONS)));
 
 /**
  * Parse X-User-Context (caller identity injected by the api-gateway from the
@@ -86,9 +98,10 @@ async function resolveScopedTargetByUsername(req, username) {
   if (!companyId) {
     return { errorStatus: 403, error: 'Caller is not bound to a tenant (company_id missing).' };
   }
+  const tenantWidePeopleAccess = await hasTenantWidePeopleAccess(requester);
 
   const applyScope = (q) => {
-    if (requester.role === 'manager' && !isHrManager(requester)) {
+    if (requester.role === 'manager' && !tenantWidePeopleAccess) {
       return q.eq('department', requester.department).neq('role', 'super_admin');
     }
     if (requester.role === 'manager') {
@@ -99,6 +112,7 @@ async function resolveScopedTargetByUsername(req, username) {
 
   const data = await findUserByUsernameInCompany(supabase, companyId, username, applyScope);
   if (!data) return { errorStatus: 404, error: 'User not found' };
+  requester.tenantWidePeopleAccess = tenantWidePeopleAccess;
   return { requester, companyId, target: data };
 }
 
@@ -114,6 +128,7 @@ async function resolveScopedTargetByUid(req, uid) {
   if (!companyId) {
     return { errorStatus: 403, error: 'Caller is not bound to a tenant (company_id missing).' };
   }
+  const tenantWidePeopleAccess = await hasTenantWidePeopleAccess(requester);
 
   let query = supabase
     .from('users')
@@ -121,7 +136,7 @@ async function resolveScopedTargetByUid(req, uid) {
     .eq('uid', uid)
     .eq('company_id', companyId);
 
-  if (requester.role === 'manager' && !isHrManager(requester)) {
+  if (requester.role === 'manager' && !tenantWidePeopleAccess) {
     query = query.eq('department', requester.department).neq('role', 'super_admin');
   } else if (requester.role === 'manager') {
     query = query.neq('role', 'super_admin');
@@ -130,6 +145,7 @@ async function resolveScopedTargetByUid(req, uid) {
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
   if (!data) return { errorStatus: 404, error: 'User not found' };
+  requester.tenantWidePeopleAccess = tenantWidePeopleAccess;
   return { requester, companyId, target: data };
 }
 
@@ -139,7 +155,7 @@ async function applyUserRoleChange(req, res, scope, role) {
   if (!(await requirePermission(supabase, scope.requester, 'change_user_role', res))) return;
   if (
     scope.requester.role === 'manager' &&
-    !isHrManager(scope.requester) &&
+    !scope.requester.tenantWidePeopleAccess &&
     role !== scope.target.role
   ) {
     return res.status(403).json({ success: false, error: 'Managers cannot update roles.' });
@@ -850,11 +866,11 @@ router.delete('/users/:uid', async (req, res) => {
 
     // Authorization rules:
     // - super_admin cannot delete any super_admin accounts (never allowed)
-    // - HR manager can delete employees + managers, but not super_admin
+    // - permission-elevated managers can delete employees + managers, but not super_admin
     const isSuperAdmin = requester.role === 'super_admin';
-    const isHrManager = requester.role === 'manager' && String(requester.department || '').toLowerCase() === 'hr';
+    const tenantWidePeopleAccess = await hasTenantWidePeopleAccess(requester);
 
-    if (!isSuperAdmin && !isHrManager) {
+    if (!isSuperAdmin && !tenantWidePeopleAccess) {
       return res.status(403).json({
         success: false,
         error: 'Permission denied',
@@ -869,13 +885,13 @@ router.delete('/users/:uid', async (req, res) => {
       });
     }
 
-    // HR managers can delete employees and managers (any department),
+    // Permission-elevated managers can delete employees and managers (any department),
     // as long as the target is NOT a super_admin (handled above).
-    if (isHrManager) {
+    if (tenantWidePeopleAccess) {
       if (!['employee', 'manager'].includes(targetUser.role)) {
         return res.status(403).json({
           success: false,
-          error: 'HR managers can only delete employee/manager accounts',
+          error: 'Managers with delete_user can only delete employee/manager accounts',
         });
       }
     }
@@ -1014,10 +1030,10 @@ router.patch('/users/uid/:uid/username', async (req, res) => {
     }
     if (rejectSelfAdministrativeChange(scope.requester, uid, res)) return;
     if (!(await requirePermission(supabase, scope.requester, 'edit_user', res))) return;
-    if (!canEditAnyProfile(scope.requester)) {
+    if (!canEditAnyProfile(scope.requester, { tenantWide: scope.requester.tenantWidePeopleAccess })) {
       return res.status(403).json({
         success: false,
-        error: 'Only super admins and HR managers can change usernames',
+        error: 'Permission denied: tenant-wide people access is required to change usernames',
       });
     }
     const result = await updateUsernameForUid(supabase, scope.companyId, uid, username);
@@ -1065,10 +1081,10 @@ router.patch('/users/uid/:uid/email', async (req, res) => {
     }
     if (rejectSelfAdministrativeChange(scope.requester, uid, res)) return;
     if (!(await requirePermission(supabase, scope.requester, 'edit_user', res))) return;
-    if (!canEditAnyProfile(scope.requester)) {
+    if (!canEditAnyProfile(scope.requester, { tenantWide: scope.requester.tenantWidePeopleAccess })) {
       return res.status(403).json({
         success: false,
-        error: 'Only super admins and HR managers can change user email',
+        error: 'Permission denied: tenant-wide people access is required to change user email',
       });
     }
     return applyUserEmailChange(res, scope, String(email).trim(), timestamp);
@@ -1168,10 +1184,10 @@ router.patch('/users/:username/email', async (req, res) => {
     }
     if (rejectSelfAdministrativeChange(scope.requester, scope.target.uid, res)) return;
     if (!(await requirePermission(supabase, scope.requester, 'edit_user', res))) return;
-    if (!canEditAnyProfile(scope.requester)) {
+    if (!canEditAnyProfile(scope.requester, { tenantWide: scope.requester.tenantWidePeopleAccess })) {
       return res.status(403).json({
         success: false,
-        error: 'Only super admins and HR managers can change user email',
+        error: 'Permission denied: tenant-wide people access is required to change user email',
       });
     }
     return applyUserEmailChange(res, scope, String(email).trim(), timestamp);
@@ -1256,10 +1272,10 @@ router.patch('/users/:username', async (req, res) => {
       const key = dbUpdates.is_active ? 'activate_user' : 'deactivate_user';
       if (!(await requirePermission(supabase, scope.requester, key, res))) return;
     }
-    if (sensitiveTouched && !canEditAnyProfile(scope.requester)) {
+    if (sensitiveTouched && !canEditAnyProfile(scope.requester, { tenantWide: scope.requester.tenantWidePeopleAccess })) {
       return res.status(403).json({
         success: false,
-        error: 'Only super admins and HR managers can edit user profiles',
+        error: 'Permission denied: tenant-wide people access is required to edit user profiles',
       });
     }
     if (scope.requester.role === 'manager' && dbUpdates.role !== undefined && dbUpdates.role !== scope.target.role) {
@@ -1267,7 +1283,7 @@ router.patch('/users/:username', async (req, res) => {
     }
     if (
       scope.requester.role === 'manager' &&
-      !isHrManager(scope.requester) &&
+      !scope.requester.tenantWidePeopleAccess &&
       dbUpdates.department !== undefined &&
       dbUpdates.department !== scope.target.department
     ) {

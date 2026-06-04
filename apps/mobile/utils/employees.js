@@ -4,6 +4,7 @@ import { supabase } from '../core/config/supabase';
 import { WORK_MODES } from './workModes';
 import { resolveCompanyIdFromUser, requireValidCompanyId } from '../core/tenant/tenantScope';
 import { departmentNamesMatch } from './orgNormalize';
+import { isHRAdmin } from '../shared/constants/roles';
 import {
   TENANT_RUNTIME_DIAG,
   tenantDiagLog,
@@ -402,13 +403,12 @@ function isDepartmentUuid(value) {
 }
 
 /**
- * Check if user is HR manager (special privileges)
- * @deprecated Use isHRAdmin from shared/constants/roles.js instead
+ * Backward-compatible alias for permission-based people admins.
  * @param {Object} user - User object with role and department
- * @returns {boolean} Whether user is HR manager
+ * @returns {boolean} Whether user has tenant-wide people permissions
  */
 export const isHRManager = (user) => {
-  return user && user.role === 'manager' && String(user.department || '').toLowerCase() === 'hr';
+  return isHRAdmin(user);
 };
 
 /**
@@ -463,9 +463,9 @@ export const getManageableEmployees = async (user) => {
       // Super admins can manage EVERYONE (including other super admins) within tenant
       if (user.role === 'super_admin') {
         queryFilters.role_branch = 'super_admin_all_in_company';
-    } else if (user.role === 'manager' && String(user.department || '').toLowerCase() === 'hr') {
+      } else if (isHRAdmin(user)) {
         query = query.neq('role', 'super_admin');
-        queryFilters.role_branch = 'hr_manager_exclude_super_admin';
+        queryFilters.role_branch = 'people_admin_exclude_super_admin';
       } else if (user.role === 'manager') {
         query = query
           .eq('department', user.department)
@@ -590,8 +590,8 @@ export const canManageEmployee = (user, employee) => {
     return true;
   }
 
-  // HR managers can manage all employees (special case)
-    if (user.role === 'manager' && String(user.department || '').toLowerCase() === 'hr') {
+  // Permission-elevated managers can manage all non-super-admin employees.
+  if (isHRAdmin(user)) {
     return employee.role !== 'super_admin';
   }
 
@@ -668,10 +668,10 @@ export const updateEmployeeWorkMode = async (employeeId, newWorkMode, updaterUse
     // 2. Check if updater can manage this employee
     if (!canManageEmployee(updaterUser, targetEmployee)) {
       // Provide specific error message based on updater role
-      if (updaterUser.role === 'manager' && String(updaterUser.department || '').toLowerCase() !== 'hr') {
+      if (updaterUser.role === 'manager' && !isHRAdmin(updaterUser)) {
         return { success: false, error: 'Permission denied: You can only manage employees in your department' };
-      } else if (updaterUser.role === 'manager' && String(updaterUser.department || '').toLowerCase() === 'hr') {
-        return { success: false, error: 'Permission denied: HR managers cannot modify super admin accounts' };
+      } else if (isHRAdmin(updaterUser)) {
+        return { success: false, error: 'Permission denied: managers cannot modify super admin accounts' };
       } else {
         return { success: false, error: 'Permission denied: You do not have permission to manage this employee' };
       }

@@ -126,6 +126,21 @@ async function hasPermission(supabase, requester, permissionKey) {
   return data?.granted === true;
 }
 
+async function hasAnyPermission(supabase, requester, permissionKeys = []) {
+  if (!requester?.role) return false;
+  if (requester.role === 'super_admin') return true;
+  if (requester.role !== 'manager') return false;
+  const keys = permissionKeys.map(normalizePermissionKey).filter((key) => ALL_MANAGER_PERMISSIONS.includes(key));
+  if (keys.length === 0) return false;
+  const { data, error } = await supabase
+    .from('manager_permissions')
+    .select('permission_key, granted')
+    .eq('manager_uid', requester.uid)
+    .in('permission_key', keys);
+  if (error) throw error;
+  return (data || []).some((row) => row.granted === true);
+}
+
 async function requirePermission(supabase, requester, permissionKey, res) {
   const allowed = await hasPermission(supabase, requester, permissionKey);
   if (!allowed) {
@@ -162,6 +177,7 @@ module.exports = {
   SELF_PROTECTION_ERROR,
   getManagerPermissions,
   hasPermission,
+  hasAnyPermission,
   requirePermission,
   rejectSelfAdministrativeChange,
   writeAuditLog,

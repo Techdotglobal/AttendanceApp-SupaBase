@@ -1,3 +1,5 @@
+import { MANAGER_PERMISSIONS, hasAnyPermission } from './permissions';
+
 // User Roles Constants
 export const ROLES = {
   SUPER_ADMIN: 'super_admin',
@@ -63,15 +65,17 @@ export const isSuperAdmin = (role) => {
 };
 
 /**
- * Check if user is HR Admin (manager with HR department)
- * HR Admins have elevated privileges for HR and people-management features
- * but do NOT have full system-level Super Admin powers
- * @param {Object} user - User object with role and department
- * @returns {boolean} Is HR Admin
+ * Backward-compatible name for managers with tenant-wide people permissions.
+ * Department names are organizational only and never grant capabilities.
  */
 export const isHRAdmin = (user) => {
   if (!user) return false;
-  return user.role === ROLES.MANAGER && String(user.department || '').toLowerCase() === 'hr';
+  return user.role === ROLES.MANAGER && hasAnyPermission(user, [
+    MANAGER_PERMISSIONS.CREATE_USER,
+    MANAGER_PERMISSIONS.DELETE_USER,
+    MANAGER_PERMISSIONS.CHANGE_USER_ROLE,
+    MANAGER_PERMISSIONS.APPROVE_SIGNUP_REQUESTS,
+  ]);
 };
 
 /**

@@ -59,10 +59,6 @@ const requireRequester = (req, res) => {
     res.status(401).json({ success: false, error: 'Missing requester context' });
     return null;
   }
-  if (requester.role === ROLES.EMPLOYEE) {
-    res.status(403).json({ success: false, error: 'Employees cannot access admin portal' });
-    return null;
-  }
   return requester;
 };
 
@@ -75,8 +71,12 @@ const requireSuperAdmin = (requester, res) => {
 };
 
 const TENANT_WIDE_PEOPLE_PERMISSIONS = [
+  'view_employees',
   'create_user',
+  'edit_user',
   'delete_user',
+  'activate_user',
+  'deactivate_user',
   'change_user_role',
   'approve_signup_requests',
 ];
@@ -85,7 +85,8 @@ const DUPLICATE_DEPARTMENT_ERROR =
 
 const hasTenantWidePeopleAccess = async (requester) =>
   requester?.role === ROLES.SUPER_ADMIN ||
-  (requester?.role === ROLES.MANAGER &&
+  (requester?.role &&
+    requester.role !== ROLES.SUPER_ADMIN &&
     (await hasAnyPermission(supabase, requester, TENANT_WIDE_PEOPLE_PERMISSIONS)));
 
 const requireAdminPermission = async (requester, permissionKey, res) =>
@@ -1193,12 +1194,12 @@ router.get('/managers', async (req, res) => {
       .from('users')
       .select('uid, username, email, name, role, department, is_active, created_at')
       .eq('company_id', companyId)
-      .eq('role', ROLES.MANAGER)
+      .neq('role', ROLES.SUPER_ADMIN)
       .order('name', { ascending: true });
     if (error) throw error;
-    const rows = await Promise.all((data || []).map(async (manager) => ({
-      ...manager,
-      permissions: await getManagerPermissions(supabase, manager.uid),
+    const rows = await Promise.all((data || []).map(async (permissionUser) => ({
+      ...permissionUser,
+      permissions: await getManagerPermissions(supabase, permissionUser.uid),
     })));
     res.status(200).json({ success: true, data: rows });
   } catch (error) {
@@ -1212,14 +1213,14 @@ router.get('/managers/:uid/permissions', async (req, res) => {
   const { companyId } = ctx;
   const { uid } = req.params;
   try {
-    const { data: manager } = await supabase
+    const { data: permissionUser } = await supabase
       .from('users')
       .select('uid, role')
       .eq('uid', uid)
       .eq('company_id', companyId)
-      .eq('role', ROLES.MANAGER)
+      .neq('role', ROLES.SUPER_ADMIN)
       .maybeSingle();
-    if (!manager) return res.status(404).json({ success: false, error: 'Manager not found' });
+    if (!permissionUser) return res.status(404).json({ success: false, error: 'User not found' });
     const permissions = await getManagerPermissions(supabase, uid);
     res.status(200).json({ success: true, data: permissions });
   } catch (error) {
@@ -1234,14 +1235,14 @@ router.put('/managers/:uid/permissions', async (req, res) => {
   const { uid } = req.params;
   if (rejectSelfAdministrativeChange(requester, uid, res)) return;
   try {
-    const { data: manager } = await supabase
+    const { data: permissionUser } = await supabase
       .from('users')
       .select('uid, role')
       .eq('uid', uid)
       .eq('company_id', companyId)
-      .eq('role', ROLES.MANAGER)
+      .neq('role', ROLES.SUPER_ADMIN)
       .maybeSingle();
-    if (!manager) return res.status(404).json({ success: false, error: 'Manager not found' });
+    if (!permissionUser) return res.status(404).json({ success: false, error: 'User not found' });
 
     const requested = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
     const requestedSet = new Set(requested.filter((key) => ALL_MANAGER_PERMISSIONS.includes(key)));

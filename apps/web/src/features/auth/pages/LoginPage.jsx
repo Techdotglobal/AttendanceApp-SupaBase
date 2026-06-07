@@ -17,9 +17,7 @@ export function LoginPage() {
     e.preventDefault();
     const result = await login(usernameOrEmail, password);
     if (!result.success) return;
-    if (result.role === 'super_admin') navigate('/');
-    else if (result.role === 'manager') navigate('/');
-    else navigate('/unauthorized');
+    navigate('/');
   };
 
   return (

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { adminService } from '../services/adminService';
 import { GlassCard } from '../../../shared/components/GlassCard';
+import { PermissionGate } from '../../../shared/components/PermissionGate';
+import { PERMISSIONS } from '../permissions';
 
 export function SitesPage() {
   const [sites, setSites] = useState([]);
@@ -63,27 +65,31 @@ export function SitesPage() {
         </button>
       </div>
       {error && <GlassCard className="p-4 text-sm text-red-100">{error}</GlassCard>}
-      <div className="grid md:grid-cols-5 gap-2 mb-4">
-        <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="name" value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} />
-        <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="latitude" value={form.latitude} onChange={(e) => setForm((p) => ({ ...p, latitude: e.target.value }))} />
-        <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="longitude" value={form.longitude} onChange={(e) => setForm((p) => ({ ...p, longitude: e.target.value }))} />
-        <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="radius" value={form.radius} onChange={(e) => setForm((p) => ({ ...p, radius: e.target.value }))} />
-        <select
-          className="glass-select rounded bg-slate-800/80 p-2 text-slate-100"
-          value={form.department_id}
-          onChange={(e) => setForm((p) => ({ ...p, department_id: e.target.value }))}
-        >
-          <option value="" className="bg-slate-100 text-slate-900">Select department</option>
-          {departments.map((d) => (
-            <option key={d.id} value={d.id} className="bg-slate-100 text-slate-900">
-              {d.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <button className="rounded bg-indigo-600 px-3 py-2 mb-4 text-white" onClick={createSite}>
-        Create Site
-      </button>
+
+      <PermissionGate permission={PERMISSIONS.MANAGE_GEOFENCING}>
+        <div className="grid md:grid-cols-5 gap-2 mb-4">
+          <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="name" value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} />
+          <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="latitude" value={form.latitude} onChange={(e) => setForm((p) => ({ ...p, latitude: e.target.value }))} />
+          <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="longitude" value={form.longitude} onChange={(e) => setForm((p) => ({ ...p, longitude: e.target.value }))} />
+          <input className="rounded bg-slate-800/80 p-2 text-slate-100" placeholder="radius" value={form.radius} onChange={(e) => setForm((p) => ({ ...p, radius: e.target.value }))} />
+          <select
+            className="glass-select rounded bg-slate-800/80 p-2 text-slate-100"
+            value={form.department_id}
+            onChange={(e) => setForm((p) => ({ ...p, department_id: e.target.value }))}
+          >
+            <option value="" className="bg-slate-100 text-slate-900">Select department</option>
+            {departments.map((d) => (
+              <option key={d.id} value={d.id} className="bg-slate-100 text-slate-900">
+                {d.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button className="rounded bg-indigo-600 px-3 py-2 mb-4 text-white" onClick={createSite}>
+          Create Site
+        </button>
+      </PermissionGate>
+
       <div className="space-y-2">
         {loading &&
           Array.from({ length: 4 }).map((_, i) => (

@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../features/auth/store/authStore';
+import { canAccessFeature, isSuperAdmin, PERMISSIONS } from '../../features/admin/permissions';
+import { PermissionGate } from './PermissionGate';
 
 const navItems = [
   {
@@ -15,6 +17,7 @@ const navItems = [
   {
     to: '/users',
     label: 'Users',
+    feature: 'users',
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
@@ -27,6 +30,7 @@ const navItems = [
   {
     to: '/departments',
     label: 'Departments',
+    feature: 'departments',
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M3 21h18" />
@@ -38,6 +42,7 @@ const navItems = [
   {
     to: '/analytics',
     label: 'Analytics',
+    feature: 'analytics',
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M3 3v18h18" />
@@ -46,8 +51,66 @@ const navItems = [
     ),
   },
   {
+    to: '/attendance',
+    label: 'Attendance',
+    feature: 'attendance',
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M8 2v4M16 2v4M3 10h18" />
+        <rect x="3" y="4" width="18" height="18" rx="2" />
+        <path d="m8 15 2 2 5-5" />
+      </svg>
+    ),
+  },
+  {
+    to: '/leaves',
+    label: 'Leaves',
+    feature: 'leaves',
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <path d="M14 2v6h6" />
+        <path d="M9 15h6M9 11h2" />
+      </svg>
+    ),
+  },
+  {
+    to: '/tickets',
+    label: 'Tickets',
+    feature: 'tickets',
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M4 5h16v14H4z" />
+        <path d="M8 9h8M8 13h5" />
+      </svg>
+    ),
+  },
+  {
+    to: '/sites',
+    label: 'Geofencing',
+    feature: 'sites',
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M12 21s7-4.5 7-11a7 7 0 1 0-14 0c0 6.5 7 11 7 11Z" />
+        <circle cx="12" cy="10" r="2.5" />
+      </svg>
+    ),
+  },
+  {
+    to: '/calendar',
+    label: 'Calendar',
+    feature: 'calendar',
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M8 2v4M16 2v4M3 10h18" />
+        <rect x="3" y="4" width="18" height="18" rx="2" />
+      </svg>
+    ),
+  },
+  {
     to: '/reports',
     label: 'Reports',
+    feature: 'reports',
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -59,8 +122,20 @@ const navItems = [
     ),
   },
   {
+    to: '/notifications',
+    label: 'Notifications',
+    feature: 'notifications',
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5" />
+        <path d="M9 17a3 3 0 0 0 6 0" />
+      </svg>
+    ),
+  },
+  {
     to: '/settings',
     label: 'Settings',
+    feature: 'settings',
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
@@ -72,6 +147,7 @@ const navItems = [
     to: '/manager-permissions',
     label: 'Permissions',
     superAdminOnly: true,
+    feature: 'permissions',
     icon: (
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3Z" />
@@ -84,17 +160,18 @@ const navItems = [
 export function AppShell() {
   const { user, logout } = useAuthStore();
   const location = useLocation();
+  const navigate = useNavigate();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [search, setSearch] = useState('');
 
   const items = useMemo(() => {
     return navItems.filter((item) => {
-      if (user?.role === 'manager' && item.to === '/settings') return false;
-      if (item.superAdminOnly && user?.role !== 'super_admin') return false;
+      if (item.superAdminOnly && !isSuperAdmin(user)) return false;
+      if (item.feature && !canAccessFeature(user, item.feature)) return false;
       return true;
     });
-  }, [user?.role]);
+  }, [user]);
 
   const pageTitle = useMemo(() => {
     const matched = items.find((i) => i.to === location.pathname);
@@ -171,13 +248,20 @@ export function AppShell() {
             </div>
           </div>
 
-          <button className="relative rounded-lg border border-white/20 bg-white/5 p-2 text-slate-100 hover:bg-white/15 transition-all duration-200" aria-label="Notifications">
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5" />
-              <path d="M9 17a3 3 0 0 0 6 0" />
-            </svg>
-            <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-blue-600" />
-          </button>
+          <PermissionGate permission={PERMISSIONS.MANAGE_NOTIFICATIONS}>
+            <button
+              type="button"
+              onClick={() => navigate('/notifications')}
+              className="relative rounded-lg border border-white/20 bg-white/5 p-2 text-slate-100 hover:bg-white/15 transition-all duration-200"
+              aria-label="Notifications"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5" />
+                <path d="M9 17a3 3 0 0 0 6 0" />
+              </svg>
+              <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-blue-600" />
+            </button>
+          </PermissionGate>
 
           <div className="relative">
             <button

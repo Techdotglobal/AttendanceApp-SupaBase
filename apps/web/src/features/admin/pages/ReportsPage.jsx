@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { GlassCard } from '../../../shared/components/GlassCard';
+import { PermissionGate } from '../../../shared/components/PermissionGate';
 import { adminService } from '../services/adminService';
+import { PERMISSIONS } from '../permissions';
 
 const RANGE_OPTIONS = [
   { value: 'monthly', label: 'Monthly (previous month)' },
@@ -89,6 +91,7 @@ export function ReportsPage() {
     <div className="space-y-6 animate-fade-up">
       <h1 className="text-2xl font-semibold text-white">Reports</h1>
 
+      <PermissionGate permission={PERMISSIONS.EXPORT_REPORTS}>
       {/* ── Send Report Now ────────────────────────────────────── */}
       <GlassCard className="p-5 space-y-4">
         <h2 className="text-sm font-medium text-white">Send Report Now</h2>
@@ -236,6 +239,7 @@ export function ReportsPage() {
           </div>
         )}
       </GlassCard>
+      </PermissionGate>
     </div>
   );
 }

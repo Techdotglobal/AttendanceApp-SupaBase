@@ -20,5 +20,8 @@
     "dotenv": "^17.2.3",
     "supabase": "^2.98.2"
   },
-  "private": true
+  "private": true,
+  "dependencies": {
+    "nodemailer": "^8.0.10"
+  }
 }

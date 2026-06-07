@@ -13,8 +13,8 @@ import {
 const extractErrorMessage = (error, fallbackMessage) =>
   error?.response?.data?.error || error?.message || fallbackMessage;
 
-const fetchManagerPermissions = async (uid, role) => {
-  if (!uid || role !== 'manager') return [];
+const fetchUserPermissions = async (uid, role) => {
+  if (!uid || role === 'super_admin') return [];
   const { data, error } = await supabase
     .from('manager_permissions')
     .select('permission_key, granted')
@@ -41,7 +41,7 @@ export const useAuthStore = create((set) => ({
           console.warn('[authStore] bootstrap tenant metadata sync:', syncRes.error);
         }
       }
-      const permissions = data ? await fetchManagerPermissions(data.uid, data.role) : [];
+      const permissions = data ? await fetchUserPermissions(data.uid, data.role) : [];
       set({
         loading: false,
         user: data
@@ -175,7 +175,7 @@ export const useAuthStore = create((set) => ({
                 companyId: profile.company_id != null ? String(profile.company_id) : null,
                 company_id: profile.company_id != null ? String(profile.company_id) : null,
                 departmentId: profile.department_id != null ? String(profile.department_id) : null,
-                permissions: await fetchManagerPermissions(profile.uid, profile.role),
+                permissions: await fetchUserPermissions(profile.uid, profile.role),
               }
             : null;
 

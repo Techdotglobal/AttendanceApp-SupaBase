@@ -35,17 +35,22 @@ const {
 } = require('../lib/permissions');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PRIVILEGED_ROLES = new Set(['super_admin', 'manager']);
+const PRIVILEGED_ROLES = new Set(['super_admin', 'manager', 'employee']);
 const TENANT_WIDE_PEOPLE_PERMISSIONS = [
+  'view_employees',
   'create_user',
+  'edit_user',
   'delete_user',
+  'activate_user',
+  'deactivate_user',
   'change_user_role',
   'approve_signup_requests',
 ];
 
 const hasTenantWidePeopleAccess = async (requester) =>
   requester?.role === 'super_admin' ||
-  (requester?.role === 'manager' &&
+  (requester?.role &&
+    requester.role !== 'super_admin' &&
     (await hasAnyPermission(supabase, requester, TENANT_WIDE_PEOPLE_PERMISSIONS)));
 
 /**
@@ -390,7 +395,7 @@ router.post('/login', async (req, res) => {
         console.error(`[${timestamp}] Auth Service: JWT user_metadata sync failed after login:`, metaSync.error);
       }
       const permissions =
-        userData.role === 'manager' ? await getManagerPermissions(supabase, userId) : [];
+        userData.role === 'super_admin' ? [] : await getManagerPermissions(supabase, userId);
 
       // Step 4: Return user info (tenant fields mirror DB; client also refreshes JWT)
       return res.status(200).json({
@@ -574,7 +579,7 @@ router.post('/users', async (req, res) => {
     if (!PRIVILEGED_ROLES.has(String(requester.role))) {
       return res.status(403).json({
         success: false,
-        error: 'Only super admins or managers can create users.',
+        error: 'Permission denied: create_user is required.',
       });
     }
     const companyId = await resolveRequesterCompanyId(requester);
@@ -585,12 +590,8 @@ router.post('/users', async (req, res) => {
       });
     }
     if (!(await requirePermission(supabase, requester, 'create_user', res))) return;
-    // Managers can only create employees (no manager/super_admin escalation).
-    if (requester.role === 'manager' && String(role).toLowerCase() !== 'employee') {
-      return res.status(403).json({
-        success: false,
-        error: 'Managers can only create users with role "employee".',
-      });
+    if (String(role).toLowerCase() !== 'employee') {
+      if (!(await requirePermission(supabase, requester, 'change_user_role', res))) return;
     }
     // If the client supplied a different company_id, reject (signal of bug or attack).
     const suppliedCompany = req.body.company_id ?? req.body.companyId;
@@ -1277,9 +1278,6 @@ router.patch('/users/:username', async (req, res) => {
         success: false,
         error: 'Permission denied: tenant-wide people access is required to edit user profiles',
       });
-    }
-    if (scope.requester.role === 'manager' && dbUpdates.role !== undefined && dbUpdates.role !== scope.target.role) {
-      return res.status(403).json({ success: false, error: 'Managers cannot update roles.' });
     }
     if (
       scope.requester.role === 'manager' &&

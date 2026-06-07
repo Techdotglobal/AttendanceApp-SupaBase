@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { adminService } from '../services/adminService';
 import { GlassCard } from '../../../shared/components/GlassCard';
+import { PermissionGate, usePermission } from '../../../shared/components/PermissionGate';
+import { PERMISSIONS } from '../permissions';
 
 export function LeavesPage() {
   const [rows, setRows] = useState([]);
@@ -19,6 +21,8 @@ export function LeavesPage() {
       setLoading(false);
     }
   };
+  const canApprove = usePermission(PERMISSIONS.APPROVE_LEAVE);
+  const canReject = usePermission(PERMISSIONS.REJECT_LEAVE);
 
   useEffect(() => {
     load();
@@ -59,10 +63,14 @@ export function LeavesPage() {
           rows.map((r) => (
             <GlassCard key={r.id} className="p-3 flex justify-between items-center gap-3">
               <span className="text-slate-100">{r.employee_id} - {r.leave_type || 'leave'} - {r.status || 'pending'}</span>
-              {r.status === 'pending' && (
+              {r.status === 'pending' && (canApprove || canReject) && (
                 <div className="space-x-2 shrink-0">
-                  <button className="rounded bg-green-700 px-2 py-1 text-white" onClick={() => processLeave(r.id, 'approved')}>Approve</button>
-                  <button className="rounded bg-red-700 px-2 py-1 text-white" onClick={() => processLeave(r.id, 'rejected')}>Reject</button>
+                  <PermissionGate permission={PERMISSIONS.APPROVE_LEAVE}>
+                    <button className="rounded bg-green-700 px-2 py-1 text-white" onClick={() => processLeave(r.id, 'approved')}>Approve</button>
+                  </PermissionGate>
+                  <PermissionGate permission={PERMISSIONS.REJECT_LEAVE}>
+                    <button className="rounded bg-red-700 px-2 py-1 text-white" onClick={() => processLeave(r.id, 'rejected')}>Reject</button>
+                  </PermissionGate>
                 </div>
               )}
             </GlassCard>

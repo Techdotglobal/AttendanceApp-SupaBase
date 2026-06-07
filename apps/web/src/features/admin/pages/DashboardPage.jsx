@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { adminService } from '../services/adminService';
 import { GlassCard } from '../../../shared/components/GlassCard';
+import { useAuthStore } from '../../auth/store/authStore';
+import { hasAnyPermission, hasPermission, PERMISSIONS } from '../permissions';
 
 const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -69,6 +71,7 @@ const downloadUsersCsv = (users) => {
 
 export function DashboardPage() {
   const navigate = useNavigate();
+  const { user } = useAuthStore();
   const [stats, setStats] = useState(null);
   const [cachedUsers, setCachedUsers] = useState([]);
   const [growthSeries, setGrowthSeries] = useState([]);
@@ -80,14 +83,37 @@ export function DashboardPage() {
     setError('');
     setLoading(true);
     try {
+      const canViewUsers = hasAnyPermission(user, [
+        PERMISSIONS.VIEW_EMPLOYEES,
+        PERMISSIONS.CREATE_USER,
+        PERMISSIONS.EDIT_USER,
+        PERMISSIONS.DELETE_USER,
+      ]);
+      const canViewAttendance = hasAnyPermission(user, [
+        PERMISSIONS.VIEW_ATTENDANCE,
+        PERMISSIONS.MANUAL_ATTENDANCE,
+      ]);
+      const canViewLeaves = hasAnyPermission(user, [
+        PERMISSIONS.VIEW_LEAVE_REQUESTS,
+        PERMISSIONS.APPROVE_LEAVE,
+        PERMISSIONS.REJECT_LEAVE,
+      ]);
+      const canViewStats = hasPermission(user, PERMISSIONS.VIEW_HR_DASHBOARD);
+
       const [statsData, users, attendance, leaves] = await Promise.all([
-        adminService.getStats(),
-        adminService.getUsers(),
-        adminService.getAttendance(),
-        adminService.getLeaves(),
+        canViewStats ? adminService.getStats() : Promise.resolve(null),
+        canViewUsers ? adminService.getUsers() : Promise.resolve([]),
+        canViewAttendance ? adminService.getAttendance() : Promise.resolve([]),
+        canViewLeaves ? adminService.getLeaves() : Promise.resolve([]),
       ]);
 
-      setStats(statsData);
+      setStats(statsData || {
+        totalEmployees: users?.length || 0,
+        activeUsers: (users || []).filter((u) => u.is_active).length,
+        totalDepartments: 0,
+        pendingLeaves: (leaves || []).filter((leave) => leave.status === 'pending').length,
+        attendanceRecords: attendance?.length || 0,
+      });
       setCachedUsers(users || []);
 
       const monthBuckets = new Map();
@@ -155,7 +181,7 @@ export function DashboardPage() {
     const timer = setInterval(loadDashboard, 30000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user]);
 
   const maxGrowth = Math.max(...growthSeries.map((p) => p.value), 1);
   const growthPoints = growthSeries.length
@@ -171,6 +197,45 @@ export function DashboardPage() {
     : 0;
 
   const unresolvedActions = stats?.pendingLeaves ?? 0;
+  const canViewUsers = hasAnyPermission(user, [
+    PERMISSIONS.VIEW_EMPLOYEES,
+    PERMISSIONS.CREATE_USER,
+    PERMISSIONS.EDIT_USER,
+    PERMISSIONS.DELETE_USER,
+  ]);
+  const canCreateUsers = hasPermission(user, PERMISSIONS.CREATE_USER);
+  const canExportReports = hasPermission(user, PERMISSIONS.EXPORT_REPORTS);
+  const canManageDepartments = hasPermission(user, PERMISSIONS.MANAGE_DEPARTMENTS);
+  const canViewAttendance = hasAnyPermission(user, [PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
+  const canViewLeaves = hasAnyPermission(user, [
+    PERMISSIONS.VIEW_LEAVE_REQUESTS,
+    PERMISSIONS.APPROVE_LEAVE,
+    PERMISSIONS.REJECT_LEAVE,
+  ]);
+  const canViewAnalytics = hasPermission(user, PERMISSIONS.VIEW_ANALYTICS);
+  const canManageTickets = hasAnyPermission(user, [
+    PERMISSIONS.VIEW_TICKETS,
+    PERMISSIONS.MANAGE_TICKETS,
+    PERMISSIONS.ASSIGN_TICKETS,
+    PERMISSIONS.CLOSE_TICKETS,
+  ]);
+  const canManageGeofencing = hasPermission(user, PERMISSIONS.MANAGE_GEOFENCING);
+  const canManageNotifications = hasPermission(user, PERMISSIONS.MANAGE_NOTIFICATIONS);
+  const canViewActivity = hasAnyPermission(user, [
+    PERMISSIONS.VIEW_HR_DASHBOARD,
+    PERMISSIONS.VIEW_EMPLOYEES,
+    PERMISSIONS.CREATE_USER,
+    PERMISSIONS.EDIT_USER,
+    PERMISSIONS.VIEW_LEAVE_REQUESTS,
+    PERMISSIONS.APPROVE_LEAVE,
+    PERMISSIONS.VIEW_ATTENDANCE,
+    PERMISSIONS.MANUAL_ATTENDANCE,
+  ]);
+  const canUseCalendar = hasAnyPermission(user, [
+    PERMISSIONS.CREATE_EVENTS,
+    PERMISSIONS.EDIT_EVENTS,
+    PERMISSIONS.DELETE_EVENTS,
+  ]);
 
   return (
     <div className="space-y-6 animate-fade-up">
@@ -204,6 +269,7 @@ export function DashboardPage() {
           </>
         ) : (
           <>
+            {canViewUsers && (
             <KPI
               label="Total Users"
               value={stats?.totalEmployees ?? 0}
@@ -212,6 +278,8 @@ export function DashboardPage() {
               onClick={() => navigate('/users')}
               icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /></svg>}
             />
+            )}
+            {canViewUsers && (
             <KPI
               label="Active Users Today"
               value={stats?.activeUsers ?? 0}
@@ -220,6 +288,8 @@ export function DashboardPage() {
               onClick={() => navigate('/users', { state: { statusFilter: 'active' } })}
               icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 12a9 9 0 1 1-9-9" /><path d="M21 3v9h-9" /></svg>}
             />
+            )}
+            {canManageDepartments && (
             <KPI
               label="Departments"
               value={stats?.totalDepartments ?? 0}
@@ -228,6 +298,8 @@ export function DashboardPage() {
               onClick={() => navigate('/departments', { state: { focusCreate: true } })}
               icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 21h18" /><path d="M5 21V7l7-4 7 4v14" /></svg>}
             />
+            )}
+            {canViewLeaves && (
             <KPI
               label="Pending Actions"
               value={unresolvedActions}
@@ -236,11 +308,84 @@ export function DashboardPage() {
               onClick={() => navigate('/leaves')}
               icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 6v6l3 3" /><circle cx="12" cy="12" r="9" /></svg>}
             />
+            )}
+            {canViewAttendance && (
+              <KPI
+                label="Attendance"
+                value={stats?.attendanceRecords ?? 0}
+                trend="Attendance tools available"
+                hint="Open attendance ->"
+                onClick={() => navigate('/attendance')}
+                icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M8 2v4M16 2v4M3 10h18" /><rect x="3" y="4" width="18" height="18" rx="2" /></svg>}
+              />
+            )}
+            {canViewAnalytics && (
+              <KPI
+                label="Analytics"
+                value="Open"
+                trend="Analytics permission granted"
+                hint="View analytics ->"
+                onClick={() => navigate('/analytics')}
+                icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-4 4" /></svg>}
+              />
+            )}
+            {canManageTickets && (
+              <KPI
+                label="Ticket Dashboard"
+                value="Open"
+                trend="Ticket management permission granted"
+                hint="Manage tickets ->"
+                onClick={() => navigate('/tickets')}
+                icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 5h16v14H4z" /><path d="M8 9h8M8 13h5" /></svg>}
+              />
+            )}
+            {canUseCalendar && (
+              <KPI
+                label="Calendar"
+                value="Open"
+                trend="Calendar permission granted"
+                hint="Open calendar ->"
+                onClick={() => navigate('/calendar')}
+                icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M8 2v4M16 2v4M3 10h18" /><rect x="3" y="4" width="18" height="18" rx="2" /></svg>}
+              />
+            )}
+            {canManageGeofencing && (
+              <KPI
+                label="Geofencing"
+                value="Open"
+                trend="Geofencing permission granted"
+                hint="Manage geofencing ->"
+                onClick={() => navigate('/sites')}
+                icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 21s7-4.5 7-11a7 7 0 1 0-14 0c0 6.5 7 11 7 11Z" /><circle cx="12" cy="10" r="2.5" /></svg>}
+              />
+            )}
+            {canManageNotifications && (
+              <KPI
+                label="Notifications"
+                value="Open"
+                trend="Notification management permission granted"
+                hint="Manage notifications ->"
+                onClick={() => navigate('/notifications')}
+                icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5" /><path d="M9 17a3 3 0 0 0 6 0" /></svg>}
+              />
+            )}
+            {canExportReports && (
+              <KPI
+                label="Reports"
+                value="Open"
+                trend="Export reports permission granted"
+                hint="Open reports ->"
+                onClick={() => navigate('/reports')}
+                icon={<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>}
+              />
+            )}
           </>
         )}
       </section>
 
+      {(canViewUsers || canViewActivity) && (
       <section className="grid xl:grid-cols-5 gap-6">
+        {canViewUsers && (
         <GlassCard className="xl:col-span-3 p-5">
           <div className="flex items-center justify-between">
             <div>
@@ -277,8 +422,10 @@ export function DashboardPage() {
             <div className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-slate-300">Latest Month <span className="ml-1 font-semibold text-white">{growthSeries[growthSeries.length - 1]?.label || 'N/A'}</span></div>
           </div>
         </GlassCard>
+        )}
 
-        <div className="xl:col-span-2 space-y-6">
+        <div className={`space-y-6 ${canViewUsers ? 'xl:col-span-2' : 'xl:col-span-5'}`}>
+          {canViewActivity && (
           <GlassCard className="p-5">
             <h2 className="text-sm font-medium text-white">Recent Activity</h2>
             <div className="mt-4 space-y-3">
@@ -299,43 +446,54 @@ export function DashboardPage() {
                 ))}
             </div>
           </GlassCard>
+          )}
 
           <GlassCard className="p-5">
             <h2 className="text-sm font-medium text-white">Quick Actions</h2>
             <div className="mt-4 grid grid-cols-1 gap-2">
-              <button
-                type="button"
-                onClick={() => navigate('/users', { state: { openCreate: true } })}
-                className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]"
-              >
-                Add User
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (cachedUsers.length) {
-                    downloadUsersCsv(cachedUsers);
-                  } else {
-                    adminService.getUsers().then(downloadUsersCsv).catch((err) => {
-                      setError(err?.message || 'Failed to export users');
-                    });
-                  }
-                }}
-                className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]"
-              >
-                Export Users (CSV)
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate('/departments', { state: { focusCreate: true } })}
-                className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]"
-              >
-                Create Department
-              </button>
+              {canCreateUsers && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/users', { state: { openCreate: true } })}
+                  className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]"
+                >
+                  Add User
+                </button>
+              )}
+              {canExportReports && canViewUsers && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (cachedUsers.length) {
+                      downloadUsersCsv(cachedUsers);
+                    } else {
+                      adminService.getUsers().then(downloadUsersCsv).catch((err) => {
+                        setError(err?.message || 'Failed to export users');
+                      });
+                    }
+                  }}
+                  className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]"
+                >
+                  Export Users (CSV)
+                </button>
+              )}
+              {canManageDepartments && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/departments', { state: { focusCreate: true } })}
+                  className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-left text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]"
+                >
+                  Create Department
+                </button>
+              )}
+              {!canCreateUsers && !(canExportReports && canViewUsers) && !canManageDepartments && (
+                <p className="text-sm text-slate-300">No quick actions available.</p>
+              )}
             </div>
           </GlassCard>
         </div>
       </section>
+      )}
     </div>
   );
 }

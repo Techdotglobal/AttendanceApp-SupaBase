@@ -1,4 +1,4 @@
-package com.attendanceapp
+package com.attendanceapphadirai
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build

@@ -46,7 +46,7 @@ export function ManagerPermissionsPage() {
         setPermissionSet(new Set(first.permissions || []));
       }
     } catch (err) {
-      setError(err?.message || 'Failed to load manager permissions');
+      setError(err?.message || 'Failed to load user permissions');
     } finally {
       setLoading(false);
     }
@@ -98,9 +98,9 @@ export function ManagerPermissionsPage() {
   return (
     <div className="space-y-5 animate-fade-up">
       <div>
-        <h1 className="text-2xl font-semibold text-white">Manager Permissions</h1>
+        <h1 className="text-2xl font-semibold text-white">User Permissions</h1>
         <p className="mt-1 text-sm text-slate-200">
-          Control manager access from one source of truth.
+          Control portal access from one source of truth.
         </p>
       </div>
 
@@ -112,13 +112,13 @@ export function ManagerPermissionsPage() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search managers..."
+            placeholder="Search users..."
             className="w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-300 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-300/30"
           />
           <div className="mt-4 space-y-2">
-            {loading && <p className="text-sm text-slate-200">Loading managers...</p>}
+            {loading && <p className="text-sm text-slate-200">Loading users...</p>}
             {!loading && filteredManagers.length === 0 && (
-              <p className="text-sm text-slate-200">No managers found.</p>
+              <p className="text-sm text-slate-200">No users found.</p>
             )}
             {filteredManagers.map((manager) => {
               const active = manager.uid === selectedUid;
@@ -193,7 +193,7 @@ export function ManagerPermissionsPage() {
               </div>
             </>
           ) : (
-            <p className="text-sm text-slate-200">Select a manager to edit permissions.</p>
+            <p className="text-sm text-slate-200">Select a user to edit permissions.</p>
           )}
         </GlassCard>
       </div>

@@ -3,6 +3,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { adminService } from '../services/adminService';
 import { useAuthStore } from '../../auth/store/authStore';
 import { GlassCard } from '../../../shared/components/GlassCard';
+import { PermissionGate } from '../../../shared/components/PermissionGate';
+import { hasPermission, PERMISSIONS } from '../permissions';
 
 export function DepartmentsPage() {
   const { user } = useAuthStore();
@@ -38,7 +40,7 @@ export function DepartmentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
 
-  const isSuperAdmin = user?.role === 'super_admin';
+  const canManageDepartments = hasPermission(user, PERMISSIONS.MANAGE_DEPARTMENTS);
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return rows;
@@ -101,7 +103,7 @@ export function DepartmentsPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        {isSuperAdmin && (
+        {canManageDepartments && (
           <>
             <input
               ref={createInputRef}
@@ -110,9 +112,11 @@ export function DepartmentsPage() {
               onChange={(e) => setName(e.target.value)}
               placeholder="New department"
             />
-            <button className="rounded-lg bg-blue-600 text-white px-3 py-2 text-sm hover:bg-blue-700 transition-all duration-200 active:scale-[0.99]" onClick={onCreateDepartment}>
-              Create
-            </button>
+            <PermissionGate permission={PERMISSIONS.MANAGE_DEPARTMENTS}>
+              <button className="rounded-lg bg-blue-600 text-white px-3 py-2 text-sm hover:bg-blue-700 transition-all duration-200 active:scale-[0.99]" onClick={onCreateDepartment}>
+                Create
+              </button>
+            </PermissionGate>
           </>
         )}
       </div>
@@ -138,7 +142,8 @@ export function DepartmentsPage() {
 
             {expandedIds[d.id] && (
               <div className="border-t border-white/10 p-4 space-y-3">
-                {isSuperAdmin && (
+                {canManageDepartments && (
+                  <PermissionGate permission={PERMISSIONS.MANAGE_DEPARTMENTS}>
                   <div className="flex flex-col md:flex-row gap-2">
                     <input
                       className="rounded-lg border border-white/20 bg-white/10 p-2.5 md:w-72 text-sm text-slate-100 placeholder:text-slate-300"
@@ -153,6 +158,7 @@ export function DepartmentsPage() {
                       Delete
                     </button>
                   </div>
+                  </PermissionGate>
                 )}
 
                 <div className="space-y-2">

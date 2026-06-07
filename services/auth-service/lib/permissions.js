@@ -113,7 +113,6 @@ async function getManagerPermissions(supabase, managerUid) {
 async function hasPermission(supabase, requester, permissionKey) {
   if (!requester?.role) return false;
   if (requester.role === 'super_admin') return true;
-  if (requester.role !== 'manager') return false;
   const key = normalizePermissionKey(permissionKey);
   if (!ALL_MANAGER_PERMISSIONS.includes(key)) return false;
   const { data, error } = await supabase
@@ -129,7 +128,6 @@ async function hasPermission(supabase, requester, permissionKey) {
 async function hasAnyPermission(supabase, requester, permissionKeys = []) {
   if (!requester?.role) return false;
   if (requester.role === 'super_admin') return true;
-  if (requester.role !== 'manager') return false;
   const keys = permissionKeys.map(normalizePermissionKey).filter((key) => ALL_MANAGER_PERMISSIONS.includes(key));
   if (keys.length === 0) return false;
   const { data, error } = await supabase

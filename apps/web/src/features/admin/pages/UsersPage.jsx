@@ -6,6 +6,7 @@ import { GlassCard } from '../../../shared/components/GlassCard';
 import { GlassTable } from '../../../shared/components/GlassTable';
 import { SlideOverPanel } from '../../../shared/components/SlideOverPanel';
 import { PasswordInput } from '../../../shared/components/PasswordInput';
+import { hasPermission, PERMISSIONS } from '../permissions';
 
 function SkeletonRow() {
   return (
@@ -39,25 +40,6 @@ const EMPTY_CREATE_FORM = {
   hireDate: '',
 };
 
-const TENANT_WIDE_PEOPLE_PERMISSIONS = [
-  'create_user',
-  'delete_user',
-  'change_user_role',
-  'approve_signup_requests',
-];
-
-const hasAnyPermission = (u, permissions) =>
-  u?.role === 'manager' &&
-  Array.isArray(u.permissions) &&
-  permissions.some((permission) => u.permissions.includes(permission));
-
-const hasTenantWidePeopleAccess = (u) =>
-  u?.role === 'super_admin' || hasAnyPermission(u, TENANT_WIDE_PEOPLE_PERMISSIONS);
-
-const canEditAnyProfile = (u) => hasTenantWidePeopleAccess(u);
-
-const canChangeRoles = (u) => hasTenantWidePeopleAccess(u);
-
 const roleCanBeToggled = (targetRole) => targetRole === 'employee' || targetRole === 'manager';
 
 export function UsersPage() {
@@ -84,8 +66,14 @@ export function UsersPage() {
   const [editError, setEditError] = useState('');
   const [saveSuccess, setSaveSuccess] = useState('');
 
-  const canCreate = user?.role === 'super_admin' || user?.role === 'manager';
-  const canEditProfiles = canEditAnyProfile(user);
+  const canCreate = hasPermission(user, PERMISSIONS.CREATE_USER);
+  const canEditProfiles = hasPermission(user, PERMISSIONS.EDIT_USER);
+  const canDelete = hasPermission(user, PERMISSIONS.DELETE_USER);
+  const canActivate = hasPermission(user, PERMISSIONS.ACTIVATE_USER);
+  const canDeactivate = hasPermission(user, PERMISSIONS.DEACTIVATE_USER);
+  const canChangeRoles = hasPermission(user, PERMISSIONS.CHANGE_USER_ROLE);
+  const canEditLeaveBalance = hasPermission(user, PERMISSIONS.EDIT_LEAVE_BALANCE);
+  const canBulkDeactivate = canDeactivate || canDelete;
 
   const loadUsers = async () => {
     setError('');
@@ -189,7 +177,7 @@ export function UsersPage() {
 
   const changeRole = async (u) => {
     setError('');
-    if (!canChangeRoles(user)) {
+    if (!canChangeRoles) {
       setError('Permission denied: change_user_role permission is required.');
       return;
     }
@@ -249,6 +237,7 @@ export function UsersPage() {
   };
 
   const bulkDeactivate = async () => {
+    if (!canBulkDeactivate) return;
     const target = filteredRows.filter((r) => selected[r.uid] && r.is_active);
     setError('');
     try {
@@ -325,10 +314,12 @@ export function UsersPage() {
         email: editForm.email.trim(),
         report_email: editForm.report_email?.trim() || null,
         department: editForm.department || '',
-        annual_leaves: Number(editForm.annual_leaves),
-        sick_leaves: Number(editForm.sick_leaves),
-        casual_leaves: Number(editForm.casual_leaves),
       };
+      if (canEditLeaveBalance) {
+        payload.annual_leaves = Number(editForm.annual_leaves);
+        payload.sick_leaves = Number(editForm.sick_leaves);
+        payload.casual_leaves = Number(editForm.casual_leaves);
+      }
       const updated = await adminService.updateUserProfile(activeUser.uid, payload, {
         originalUsername: activeUser.username,
         originalEmail: activeUser.email,
@@ -414,7 +405,7 @@ export function UsersPage() {
             <option value="inactive">Inactive</option>
           </select>
           <button
-            disabled={selectedCount === 0}
+            disabled={selectedCount === 0 || !canBulkDeactivate}
             onClick={bulkDeactivate}
             className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/20 transition-all duration-200"
           >
@@ -492,10 +483,12 @@ export function UsersPage() {
                       <button onClick={() => openUserPanel(u)} className="rounded-md border border-white/20 bg-white/10 px-2 py-1 text-xs text-slate-100 hover:bg-white/20">
                         {canEditProfiles ? 'Edit' : 'View'}
                       </button>
-                      <button onClick={() => toggleActive(u)} className="rounded-md border border-white/20 bg-white/10 px-2 py-1 text-xs text-slate-100 hover:bg-white/20">
-                        {u.is_active ? 'Disable' : 'Enable'}
-                      </button>
-                      {canChangeRoles(user) && roleCanBeToggled(u.role) && (
+                      {((u.is_active && canDeactivate) || (!u.is_active && canActivate)) && (
+                        <button onClick={() => toggleActive(u)} className="rounded-md border border-white/20 bg-white/10 px-2 py-1 text-xs text-slate-100 hover:bg-white/20">
+                          {u.is_active ? 'Disable' : 'Enable'}
+                        </button>
+                      )}
+                      {canChangeRoles && roleCanBeToggled(u.role) && (
                         <button
                           type="button"
                           onClick={() => changeRole(u)}
@@ -594,7 +587,7 @@ export function UsersPage() {
                   className="glass-select w-full rounded-lg border border-white/20 bg-white/10 px-3 py-2.5 text-sm text-slate-100"
                 >
                   <option value="employee">Employee</option>
-                  {user?.role === 'super_admin' && <option value="manager">Manager</option>}
+                  {canChangeRoles && <option value="manager">Manager</option>}
                 </select>
               </label>
 
@@ -767,7 +760,7 @@ export function UsersPage() {
                   )}
                 </section>
 
-                {canEditProfiles && editForm && !editLoading && (
+                {canEditLeaveBalance && editForm && !editLoading && (
                   <section>
                     <p className="text-xs uppercase tracking-wide text-slate-300 mb-2">Leave allocation</p>
                     <div className="rounded-lg border border-white/10 bg-white/5 p-4 grid grid-cols-3 gap-3 text-sm">
@@ -824,7 +817,7 @@ export function UsersPage() {
                     {editSaving ? 'Saving…' : 'Save profile'}
                   </button>
                 )}
-                {canChangeRoles(user) && roleCanBeToggled(activeUser.role) && (
+                {canChangeRoles && roleCanBeToggled(activeUser.role) && (
                   <button
                     type="button"
                     onClick={() => changeRole(activeUser)}
@@ -833,7 +826,7 @@ export function UsersPage() {
                     {activeUser.role === 'employee' ? 'Make manager' : 'Make employee'}
                   </button>
                 )}
-                {hasTenantWidePeopleAccess(user) && activeUser.role !== 'super_admin' && (
+                {((activeUser.is_active && canDeactivate) || (!activeUser.is_active && canActivate)) && activeUser.role !== 'super_admin' && (
                   <button onClick={() => toggleActive(activeUser)} className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-sm text-slate-100 hover:bg-white/20 transition-all duration-200 active:scale-[0.99]">
                     {activeUser.is_active ? 'Deactivate' : 'Activate'}
                   </button>

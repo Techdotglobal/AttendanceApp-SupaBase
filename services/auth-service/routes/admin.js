@@ -20,6 +20,7 @@ const {
   rejectSelfAdministrativeChange,
   writeAuditLog,
 } = require('../lib/permissions');
+const { enrichLeaveRequestsWithEmployees } = require('../lib/leaveEmployeeResolve');
 
 const router = express.Router();
 
@@ -1086,31 +1087,6 @@ router.get('/attendance', async (req, res) => {
   }
 });
 
-const enrichLeaveRequestsWithEmployees = async (companyId, requests) => {
-  if (!requests?.length) return [];
-  const employeeUids = [...new Set(requests.map((row) => row.employee_uid).filter(Boolean))];
-  const employeeMap = new Map();
-  if (employeeUids.length > 0) {
-    const { data: employees, error: empError } = await supabase
-      .from('users')
-      .select('uid, username, name, department')
-      .in('uid', employeeUids)
-      .eq('company_id', companyId);
-    if (!empError && employees) {
-      employees.forEach((emp) => employeeMap.set(emp.uid, emp));
-    }
-  }
-  return requests.map((row) => {
-    const employee = employeeMap.get(row.employee_uid);
-    return {
-      ...row,
-      employee_name: employee?.name || null,
-      employee_username: employee?.username || null,
-      employee_department: employee?.department || null,
-    };
-  });
-};
-
 router.get('/leaves', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
@@ -1139,7 +1115,7 @@ router.get('/leaves', async (req, res) => {
     }
     const { data, error } = await query;
     if (error) throw error;
-    const enriched = await enrichLeaveRequestsWithEmployees(companyId, data || []);
+    const enriched = await enrichLeaveRequestsWithEmployees(supabase, companyId, data || []);
     res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to fetch leaves' });

@@ -25,9 +25,77 @@ export const formatLeaveStatus = (status) => {
   return label.charAt(0).toUpperCase() + label.slice(1);
 };
 
+const normalizeKey = (value) => {
+  if (value == null) return null;
+  const str = String(value).trim();
+  return str ? str.toLowerCase() : null;
+};
+
+const extractUidFromEmployeeId = (employeeId) => {
+  if (!employeeId) return null;
+  const str = String(employeeId).trim();
+  if (str.startsWith('emp_')) return normalizeKey(str.slice(4));
+  if (INTERNAL_ID_PATTERN.test(str) && !str.startsWith('emp_')) return normalizeKey(str);
+  return null;
+};
+
+/**
+ * Client-side join when API enrichment is unavailable or incomplete.
+ * @param {Array} leaves
+ * @param {Array} users
+ * @returns {Array}
+ */
+export const enrichLeavesWithUsers = (leaves = [], users = []) => {
+  if (!leaves.length || !users.length) return leaves;
+
+  const byUid = new Map();
+  const byUsername = new Map();
+  for (const user of users) {
+    const uidKey = normalizeKey(user.uid);
+    if (uidKey) byUid.set(uidKey, user);
+    const idKey = normalizeKey(user.id);
+    if (idKey) byUid.set(idKey, user);
+    const usernameKey = normalizeKey(user.username);
+    if (usernameKey) byUsername.set(usernameKey, user);
+  }
+
+  const resolveUser = (leave) => {
+    const uidCandidates = [
+      normalizeKey(leave.employee_uid || leave.employeeUid),
+      extractUidFromEmployeeId(leave.employee_id || leave.employeeId),
+    ].filter(Boolean);
+    for (const key of uidCandidates) {
+      const hit = byUid.get(key);
+      if (hit) return hit;
+    }
+    const legacyId = leave.employee_id || leave.employeeId;
+    if (legacyId && !String(legacyId).startsWith('emp_') && !isInternalEmployeeId(legacyId)) {
+      const byName = byUsername.get(normalizeKey(legacyId));
+      if (byName) return byName;
+    }
+    const storedUsername = normalizeKey(leave.employee_username || leave.employeeUsername);
+    if (storedUsername && byUsername.has(storedUsername)) {
+      return byUsername.get(storedUsername);
+    }
+    return null;
+  };
+
+  return leaves.map((leave) => {
+    if (leave.employee_name || leave.employeeName) return leave;
+    const user = resolveUser(leave);
+    if (!user) return leave;
+    return {
+      ...leave,
+      employee_name: user.name || leave.employee_name || null,
+      employee_username: user.username || leave.employee_username || null,
+      employee_department: user.department || leave.employee_department || null,
+    };
+  });
+};
+
 export const formatEmployeeDisplay = (leave) => {
   const name = leave?.employee_name || leave?.employeeName;
-  const username = leave?.employee_username || leave?.username;
+  const username = leave?.employee_username || leave?.employeeUsername || leave?.username;
   if (name && username && name !== username) {
     return `${name} (${username})`;
   }

@@ -1,5 +1,6 @@
 import { api } from '../../../core/api/client';
 import { apiUrl } from '../../../core/config/api';
+import { enrichLeavesWithUsers } from '../utils/leaveDisplay';
 
 const extractApiMessage = (error, fallbackMessage) => {
   const apiError = error?.response?.data?.error;
@@ -247,8 +248,25 @@ export const adminService = {
     executeApiCall(async () => (await api.post(apiUrl('/api/admin/employee-sites'), payload)).data, 'Failed to assign site'),
   getAttendance: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/attendance'))).data.data, 'Failed to load attendance'),
-  getLeaves: async () =>
-    executeApiCall(async () => (await api.get(apiUrl('/api/admin/leaves'))).data.data, 'Failed to load leaves'),
+  getLeaves: async () => {
+    const leaves = await executeApiCall(
+      async () => (await api.get(apiUrl('/api/admin/leaves'))).data.data,
+      'Failed to load leaves'
+    );
+    if (!leaves?.length) return leaves || [];
+    const needsEnrichment = leaves.some((row) => !row.employee_name && !row.employeeName);
+    if (!needsEnrichment) return leaves;
+    try {
+      const users = await executeApiCall(
+        async () => (await api.get(apiUrl('/api/admin/users'))).data.data,
+        'Failed to load users for leave enrichment'
+      );
+      return enrichLeavesWithUsers(leaves, users || []);
+    } catch (enrichErr) {
+      console.warn('[adminService] getLeaves client enrichment skipped:', enrichErr?.message);
+      return leaves;
+    }
+  },
   processLeave: async (id, payload) =>
     executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/leaves/${id}`), payload)).data, 'Failed to process leave request'),
 

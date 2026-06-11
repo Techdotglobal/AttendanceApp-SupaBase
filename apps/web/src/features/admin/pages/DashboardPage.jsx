@@ -4,6 +4,7 @@ import { adminService } from '../services/adminService';
 import { GlassCard } from '../../../shared/components/GlassCard';
 import { useAuthStore } from '../../auth/store/authStore';
 import { hasAnyPermission, hasPermission, PERMISSIONS } from '../permissions';
+import { formatLeaveActivityTitle } from '../utils/leaveDisplay';
 
 const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -145,7 +146,7 @@ export function DashboardPage() {
         if (!ts) continue;
         activity.push({
           ts,
-          title: `Leave ${leave.status || 'update'} for ${leave.employee_id || 'employee'}`,
+          title: formatLeaveActivityTitle(leave),
         });
       }
       for (const row of attendance || []) {

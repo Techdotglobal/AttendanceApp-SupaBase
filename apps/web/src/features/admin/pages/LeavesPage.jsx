@@ -3,6 +3,11 @@ import { adminService } from '../services/adminService';
 import { GlassCard } from '../../../shared/components/GlassCard';
 import { PermissionGate, usePermission } from '../../../shared/components/PermissionGate';
 import { PERMISSIONS } from '../permissions';
+import {
+  formatEmployeeDisplay,
+  formatLeaveStatus,
+  formatLeaveTypeLabel,
+} from '../utils/leaveDisplay';
 
 export function LeavesPage() {
   const [rows, setRows] = useState([]);
@@ -62,7 +67,13 @@ export function LeavesPage() {
         {!loading &&
           rows.map((r) => (
             <GlassCard key={r.id} className="p-3 flex justify-between items-center gap-3">
-              <span className="text-slate-100">{r.employee_id} - {r.leave_type || 'leave'} - {r.status || 'pending'}</span>
+              <div className="min-w-0">
+                <p className="text-slate-100 font-medium truncate">{formatEmployeeDisplay(r)}</p>
+                <p className="text-sm text-slate-300 mt-0.5">
+                  {formatLeaveTypeLabel(r.leave_type)} · {formatLeaveStatus(r.status)}
+                  {r.employee_department ? ` · ${r.employee_department}` : ''}
+                </p>
+              </div>
               {r.status === 'pending' && (canApprove || canReject) && (
                 <div className="space-x-2 shrink-0">
                   <PermissionGate permission={PERMISSIONS.APPROVE_LEAVE}>

@@ -219,8 +219,8 @@ export function ManagerPermissionsPage() {
               {auditLogs.map((log) => (
                 <tr key={log.id} className="border-b border-white/5 text-slate-100">
                   <td className="py-2 pr-3">{log.action}</td>
-                  <td className="py-2 pr-3">{log.actor?.name || log.actor?.username || log.actor_uid}</td>
-                  <td className="py-2 pr-3">{log.target?.name || log.target?.username || log.target_uid}</td>
+                  <td className="py-2 pr-3">{log.actor?.name || log.actor?.username || 'Unknown User'}</td>
+                  <td className="py-2 pr-3">{log.target?.name || log.target?.username || 'Unknown User'}</td>
                   <td className="py-2 pr-3">{new Date(log.timestamp).toLocaleString()}</td>
                 </tr>
               ))}

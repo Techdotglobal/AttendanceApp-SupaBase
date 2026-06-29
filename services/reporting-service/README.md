@@ -18,11 +18,13 @@ Microservice for generating and emailing attendance, leave, and ticket reports.
    SUPABASE_URL=your_supabase_url
    SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
    
-   # Email Configuration (for sending reports via Resend)
-   RESEND_API_KEY=re_xxxxxxxxxxxxx
-   RESEND_FROM_EMAIL=noreply@yourdomain.com
-   # Optional: Report recipient email (overrides database lookup)
-   REPORT_RECIPIENT_EMAIL=admin@yourdomain.com
+   # Email Configuration (Gmail SMTP via Nodemailer)
+   SMTP_HOST=smtp.gmail.com
+   SMTP_PORT=587
+   SMTP_USER=your-gmail-account@gmail.com
+   SMTP_PASS=your-gmail-app-password
+   # Optional: override From address (defaults to SMTP_USER)
+   # EMAIL_FROM=reports@yourdomain.com
    ```
 
 3. **Start the Service**
@@ -92,33 +94,35 @@ The service automatically generates and emails monthly reports on the 1st of eve
 
 ## Email Configuration
 
-The service uses [Resend](https://resend.com) for reliable email delivery via HTTPS API (no SMTP required).
+The service sends report emails via **Gmail SMTP** using [Nodemailer](https://nodemailer.com).
 
-### Setup Steps:
+### Setup Steps
 
-1. **Create a Resend account** at https://resend.com
-2. **Get your API key** from the Resend dashboard
-3. **Verify your domain** in Resend (required for sending emails)
-4. **Set environment variables:**
-   - `RESEND_API_KEY`: Your Resend API key (starts with `re_`)
-   - `RESEND_FROM_EMAIL`: Verified sender email (e.g., `noreply@yourdomain.com`)
+1. **Create or use a dedicated Gmail account** for sending reports.
+2. **Enable 2-Step Verification** on the Google account.
+3. **Generate an App Password** at https://myaccount.google.com/apppasswords
+4. **Set environment variables on Render** (or in `.env` locally):
+   - `SMTP_HOST`: `smtp.gmail.com` (default)
+   - `SMTP_PORT`: `587` (default; use `465` for implicit TLS)
+   - `SMTP_USER`: Gmail account address
+   - `SMTP_PASS`: Gmail app password (not your regular login password)
+   - `EMAIL_FROM` (optional): From address shown to recipients (defaults to `SMTP_USER`)
 
-### Why Resend?
+### Gmail App Password Notes
 
-- ✅ No SMTP connection timeouts (uses HTTPS API)
-- ✅ Reliable delivery on cloud platforms like Render
-- ✅ Better deliverability and tracking
-- ✅ Simple API-based integration
+- Use a dedicated account — do not use a personal inbox.
+- App passwords are required when 2FA is enabled.
+- Never commit credentials to the repository.
 
 ## Troubleshooting
 
 ### Email Not Sending
 
-1. Verify `RESEND_API_KEY` is set correctly in environment variables
-2. Ensure your domain is verified in Resend dashboard
-3. Check that `RESEND_FROM_EMAIL` uses a verified domain
-4. Review service logs for detailed error messages
-5. Check Resend dashboard for delivery status and errors
+1. Verify `SMTP_USER` and `SMTP_PASS` are set correctly in environment variables
+2. Confirm the Gmail app password is valid (regenerate if unsure)
+3. Check that `SMTP_HOST` is `smtp.gmail.com` and `SMTP_PORT` is `587`
+4. Review service logs for `[SUCCESS]` / `[FAILURE]` email delivery entries
+5. Check Gmail "Sent" folder on the sending account for delivery attempts
 
 ### Report Generation Fails
 

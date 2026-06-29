@@ -203,11 +203,18 @@ async function getSuperAdminEmails(companyId) {
 
     if (error) throw error;
 
-    // Prefer report_email if set; fall back to login email
-    const emails = (data || [])
-      .map((r) => (r.report_email && r.report_email.trim()) || r.email)
-      .filter(isValidEmail)
-      .map((e) => e.trim());
+    // Prefer report_email if set; fall back to login email; dedupe case-insensitively
+    const seen = new Set();
+    const emails = [];
+    for (const r of data || []) {
+      const raw = (r.report_email && r.report_email.trim()) || r.email;
+      if (!isValidEmail(raw)) continue;
+      const trimmed = raw.trim();
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      emails.push(trimmed);
+    }
 
     if (emails.length === 0) {
       console.warn(`[queryService] getSuperAdminEmails: no valid super_admin emails found for company ${cid}`);

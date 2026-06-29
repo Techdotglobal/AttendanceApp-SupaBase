@@ -95,8 +95,12 @@ async function processCompany(company) {
   try {
     const emailSubject = `Monthly Attendance Report — ${companyName} — ${reportData.period.label}`;
     const emailBody = generateMonthlyReportEmailBody(reportData);
-    emailResult = await sendReportEmail(recipients, emailSubject, emailBody, pdfPath, filename);
-    console.log(`[${ts()}]   ✓ Email sent (Resend id=${emailResult.messageId}) to: ${recipients.join(', ')}`);
+    emailResult = await sendReportEmail(recipients, emailSubject, emailBody, pdfPath, filename, {
+      companyId,
+      companyName,
+      reportType: 'Monthly Attendance',
+    });
+    console.log(`[${ts()}]   ✓ Email sent (SMTP id=${emailResult.messageId}) to: ${recipients.join(', ')}`);
   } catch (err) {
     const msg = `Email delivery failed: ${err.message}`;
     console.error(`[${ts()}]   ✗ ${companyName}: ${msg}`);

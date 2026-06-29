@@ -197,7 +197,11 @@ router.post('/generate', verifySuperAdmin, async (req, res) => {
           const emailSubject = `Attendance Report — ${companyName} — ${reportData.period.label}`;
           const emailBody = generateManualReportEmailBody(reportData);
 
-          await sendReportEmail(recipients, emailSubject, emailBody, pdfPath, filename);
+          await sendReportEmail(recipients, emailSubject, emailBody, pdfPath, filename, {
+            companyId: req.user.company_id,
+            companyName,
+            reportType: `Manual Attendance (${range})`,
+          });
           console.log(`[${timestamp}] ✓ Report sent to: ${recipients.join(', ')}`);
 
           // NOTE: Do NOT delete PDF immediately - it's needed for download

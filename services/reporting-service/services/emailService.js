@@ -11,6 +11,8 @@ const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const EMAIL_FROM = process.env.EMAIL_FROM || SMTP_USER;
 
+let transporterInstance = null;
+
 function createTransporter() {
   if (!SMTP_USER || !SMTP_PASS) {
     console.warn('⚠ SMTP credentials not configured. Email sending will be disabled.');
@@ -18,27 +20,172 @@ function createTransporter() {
     return null;
   }
 
-  return nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT === 465,
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
-  });
+  if (!transporterInstance) {
+    transporterInstance = nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_PORT === 465,
+      auth: {
+        user: SMTP_USER,
+        pass: SMTP_PASS,
+      },
+    });
+  }
+
+  return transporterInstance;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * Validate, normalize, and deduplicate recipient email addresses.
+ * @param {string|string[]} recipients
+ * @returns {string[]}
+ */
 function validateRecipients(recipients) {
   const list = Array.isArray(recipients) ? recipients : [recipients];
-  const valid = list.map((e) => String(e).trim()).filter((e) => EMAIL_RE.test(e));
-  const invalid = list.filter((e) => !EMAIL_RE.test(String(e).trim()));
-  if (invalid.length > 0) {
-    console.warn('⚠ sendReportEmail: skipping invalid addresses:', invalid);
+  const seen = new Set();
+  const valid = [];
+  const invalid = [];
+  const duplicates = [];
+
+  for (const entry of list) {
+    if (entry == null || String(entry).trim() === '') {
+      continue;
+    }
+
+    const trimmed = String(entry).trim();
+    const key = trimmed.toLowerCase();
+
+    if (!EMAIL_RE.test(trimmed)) {
+      invalid.push(trimmed);
+      continue;
+    }
+
+    if (seen.has(key)) {
+      duplicates.push(trimmed);
+      continue;
+    }
+
+    seen.add(key);
+    valid.push(trimmed);
   }
+
+  if (invalid.length > 0) {
+    console.warn('[emailService] Skipping invalid addresses:', invalid.join(', '));
+  }
+  if (duplicates.length > 0) {
+    console.warn('[emailService] Skipping duplicate addresses:', duplicates.join(', '));
+  }
+
   return valid;
+}
+
+/**
+ * Strip HTML tags for plain-text fallback.
+ * @param {string} html
+ * @returns {string}
+ */
+function htmlToPlainText(html) {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function logEmailResult(status, { companyId, companyName, reportType, recipients, messageId, error, timestamp }) {
+  const lines = [
+    `[${status}]`,
+    `Company: ${companyName || 'N/A'}${companyId ? ` (${companyId})` : ''}`,
+    `Recipient: ${recipients.join(', ')}`,
+    `Report: ${reportType || 'N/A'}`,
+    `Timestamp: ${timestamp}`,
+  ];
+
+  if (status === 'SUCCESS') {
+    lines.push(`SMTP messageId: ${messageId}`);
+  } else {
+    lines.push(`Error: ${error}`);
+  }
+
+  const output = lines.join('\n');
+  if (status === 'SUCCESS') {
+    console.log(output);
+  } else {
+    console.error(output);
+  }
+}
+
+/**
+ * Send an email via Gmail SMTP.
+ * @param {Object} options
+ * @param {string|string[]} options.to - Recipient email address(es)
+ * @param {string} options.subject - Email subject
+ * @param {string} options.html - HTML body
+ * @param {string} [options.text] - Plain-text body (auto-generated from html if omitted)
+ * @param {Array} [options.attachments] - Nodemailer attachments
+ * @param {Object} [options.context] - Logging context
+ * @param {string} [options.context.companyId]
+ * @param {string} [options.context.companyName]
+ * @param {string} [options.context.reportType]
+ * @returns {Promise<Object>}
+ */
+async function sendEmail({ to, subject, html, text, attachments = [], context = {} }) {
+  const transporter = createTransporter();
+
+  if (!transporter) {
+    throw new Error('Email service not configured. Please set SMTP_USER and SMTP_PASS environment variables.');
+  }
+
+  const recipients = validateRecipients(to);
+  if (recipients.length === 0) {
+    throw new Error('sendEmail: no valid recipient email addresses provided');
+  }
+
+  const fromAddress = EMAIL_FROM
+    ? `Hadir.AI Reports <${EMAIL_FROM}>`
+    : `Hadir.AI Reports <${SMTP_USER}>`;
+  const sentAt = new Date().toISOString();
+  const { companyId, companyName, reportType } = context;
+
+  try {
+    const info = await transporter.sendMail({
+      from: fromAddress,
+      to: recipients.join(', '),
+      subject,
+      html,
+      text: text || htmlToPlainText(html),
+      attachments,
+    });
+
+    logEmailResult('SUCCESS', {
+      companyId,
+      companyName,
+      reportType,
+      recipients,
+      messageId: info.messageId,
+      timestamp: sentAt,
+    });
+
+    return { success: true, messageId: info.messageId, recipients };
+  } catch (error) {
+    logEmailResult('FAILURE', {
+      companyId,
+      companyName,
+      reportType,
+      recipients,
+      error: error.message,
+      timestamp: sentAt,
+    });
+    throw error;
+  }
 }
 
 /**
@@ -48,55 +195,26 @@ function validateRecipients(recipients) {
  * @param {string} body - Email body (HTML)
  * @param {string} pdfPath - Path to PDF file
  * @param {string} pdfFilename - PDF filename for attachment
+ * @param {Object} [context] - Logging context (companyId, companyName, reportType)
  * @returns {Promise<Object>} Email send result
  */
-async function sendReportEmail(to, subject, body, pdfPath, pdfFilename) {
-  const transporter = createTransporter();
-
-  if (!transporter) {
-    throw new Error('Email service not configured. Please set SMTP_USER and SMTP_PASS environment variables.');
-  }
-
-  const recipients = validateRecipients(to);
-  if (recipients.length === 0) {
-    throw new Error('sendReportEmail: no valid recipient email addresses provided');
-  }
-
+async function sendReportEmail(to, subject, body, pdfPath, pdfFilename, context = {}) {
   if (!fs.existsSync(pdfPath)) {
     throw new Error(`PDF file not found: ${pdfPath}`);
   }
 
-  const fromAddress = EMAIL_FROM ? `Hadir.AI Reports <${EMAIL_FROM}>` : `Hadir.AI Reports <${SMTP_USER}>`;
-  const recipientList = recipients.join(', ');
-  const sentAt = new Date().toISOString();
-
-  console.log(`[emailService] Sending report email`);
-  console.log(`[emailService]   From:       ${fromAddress}`);
-  console.log(`[emailService]   To:         ${recipientList}`);
-  console.log(`[emailService]   Subject:    ${subject}`);
-  console.log(`[emailService]   Attachment: ${pdfFilename}`);
-  console.log(`[emailService]   Timestamp:  ${sentAt}`);
-
-  try {
-    const info = await transporter.sendMail({
-      from: fromAddress,
-      to: recipientList,
-      subject,
-      html: body,
-      attachments: [
-        {
-          filename: pdfFilename,
-          path: pdfPath,
-        },
-      ],
-    });
-
-    console.log(`✓ Report email sent via Gmail SMTP (messageId=${info.messageId}) to: ${recipientList}`);
-    return { success: true, messageId: info.messageId, recipients };
-  } catch (error) {
-    console.error(`✗ Error sending report email to ${recipientList} at ${sentAt}:`, error.message);
-    throw error;
-  }
+  return sendEmail({
+    to,
+    subject,
+    html: body,
+    attachments: [
+      {
+        filename: pdfFilename,
+        path: pdfPath,
+      },
+    ],
+    context,
+  });
 }
 
 /**
@@ -192,7 +310,9 @@ function generateManualReportEmailBody(reportData) {
 }
 
 module.exports = {
+  sendEmail,
   sendReportEmail,
+  validateRecipients,
   generateMonthlyReportEmailBody,
   generateManualReportEmailBody,
 };

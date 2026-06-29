@@ -10,11 +10,9 @@
  *   5. Write audit log entry
  */
 const cron = require('node-cron');
-const { generateReportData } = require('../services/reportFormatter');
-const { generatePDF, savePDFToFile, deletePDFFile } = require('../services/pdfGenerator');
-const { sendReportEmail, generateMonthlyReportEmailBody } = require('../services/emailService');
-const { getAllCompanies, getSuperAdminEmails, getReportSchedule, logReportAudit } = require('../services/queryService');
-const { getMonthName } = require('../utils/dateUtils');
+const { buildReport } = require('../services/reportBuilder');
+const { getAllCompanies, getReportSchedule, logReportAudit } = require('../services/queryService');
+const { recordScheduleExecution } = require('../services/scheduleConfig');
 
 let isRunning = false;
 
@@ -29,97 +27,45 @@ async function processCompany(company) {
 
   console.log(`[${ts()}] ── Processing company: "${companyName}" (${companyId})`);
 
-  // Step 1: Fetch super admin emails for THIS company only
-  let recipients;
   try {
-    recipients = await getSuperAdminEmails(companyId);
-  } catch (err) {
-    const msg = `Failed to fetch super admin emails: ${err.message}`;
-    console.error(`[${ts()}]   ✗ ${companyName}: ${msg}`);
-    await logReportAudit({ companyId, companyName, status: 'error', errorMessage: msg });
-    return { companyId, companyName, status: 'error', error: msg };
-  }
-
-  if (recipients.length === 0) {
-    const msg = 'No active super_admin with a valid email address — skipping';
-    console.warn(`[${ts()}]   ⚠ ${companyName}: ${msg}`);
-    await logReportAudit({ companyId, companyName, status: 'skipped', errorMessage: msg });
-    return { companyId, companyName, status: 'skipped' };
-  }
-
-  console.log(`[${ts()}]   Recipients (${recipients.length}): ${recipients.join(', ')}`);
-
-  // Step 2: Generate report using ONLY this company's data
-  let reportData;
-  try {
-    reportData = await generateReportData('monthly', null, null, companyId);
-  } catch (err) {
-    const msg = `Report data generation failed: ${err.message}`;
-    console.error(`[${ts()}]   ✗ ${companyName}: ${msg}`);
-    await logReportAudit({ companyId, companyName, recipients, status: 'error', errorMessage: msg });
-    return { companyId, companyName, status: 'error', error: msg };
-  }
-
-  console.log(`[${ts()}]   Period: ${reportData.period.label}`);
-  console.log(`[${ts()}]   Total employees: ${reportData.overall.totalEmployees}`);
-
-  // Step 3: Generate PDF
-  let pdfBuffer;
-  try {
-    pdfBuffer = await generatePDF(reportData);
-    console.log(`[${ts()}]   PDF generated (${pdfBuffer.length} bytes)`);
-  } catch (err) {
-    const msg = `PDF generation failed: ${err.message}`;
-    console.error(`[${ts()}]   ✗ ${companyName}: ${msg}`);
-    await logReportAudit({ companyId, companyName, reportPeriod: reportData.period.label, recipients, status: 'error', errorMessage: msg });
-    return { companyId, companyName, status: 'error', error: msg };
-  }
-
-  // Save PDF to a temp file
-  const now = new Date();
-  const monthName = getMonthName(new Date(now.getFullYear(), now.getMonth() - 1, 1));
-  const filename = `monthly-report-${companyId.slice(0, 8)}-${monthName.toLowerCase()}-${now.getFullYear()}.pdf`;
-  let pdfPath;
-  try {
-    pdfPath = await savePDFToFile(pdfBuffer, filename);
-    console.log(`[${ts()}]   PDF saved: ${pdfPath}`);
-  } catch (err) {
-    const msg = `PDF save failed: ${err.message}`;
-    console.error(`[${ts()}]   ✗ ${companyName}: ${msg}`);
-    await logReportAudit({ companyId, companyName, reportPeriod: reportData.period.label, recipients, status: 'error', errorMessage: msg });
-    return { companyId, companyName, status: 'error', error: msg };
-  }
-
-  // Step 4: Send email ONLY to this company's super admins
-  let emailResult;
-  try {
-    const emailSubject = `Monthly Attendance Report — ${companyName} — ${reportData.period.label}`;
-    const emailBody = generateMonthlyReportEmailBody(reportData);
-    emailResult = await sendReportEmail(recipients, emailSubject, emailBody, pdfPath, filename, {
+    const result = await buildReport({
+      range: 'monthly',
       companyId,
       companyName,
-      reportType: 'Monthly Attendance',
+      generatedBy: 'Hadir.AI Scheduled Reports',
+      sendEmail: true,
     });
-    console.log(`[${ts()}]   ✓ Email sent (SMTP id=${emailResult.messageId}) to: ${recipients.join(', ')}`);
+
+    if (result.record.emailStatus === 'sent') {
+      await logReportAudit({
+        companyId,
+        companyName,
+        reportPeriod: result.periodLabel,
+        status: 'sent',
+      });
+      recordScheduleExecution(companyId, 'sent');
+      console.log(`[${ts()}]   ✓ Monthly report sent for ${companyName}`);
+      return { companyId, companyName, status: 'sent', reportId: result.reportId };
+    }
+
+    if (result.record.emailStatus === 'skipped') {
+      const msg = 'No active super_admin with a valid email address — skipping';
+      await logReportAudit({ companyId, companyName, status: 'skipped', errorMessage: msg });
+      recordScheduleExecution(companyId, 'skipped');
+      return { companyId, companyName, status: 'skipped' };
+    }
+
+    const msg = result.record.emailError || 'Email delivery failed';
+    await logReportAudit({ companyId, companyName, reportPeriod: result.periodLabel, status: 'error', errorMessage: msg });
+    recordScheduleExecution(companyId, 'error');
+    return { companyId, companyName, status: 'error', error: msg };
   } catch (err) {
-    const msg = `Email delivery failed: ${err.message}`;
+    const msg = err.message || 'Report generation failed';
     console.error(`[${ts()}]   ✗ ${companyName}: ${msg}`);
-    deletePDFFile(pdfPath);
-    await logReportAudit({ companyId, companyName, reportPeriod: reportData.period.label, recipients, status: 'error', errorMessage: msg });
+    await logReportAudit({ companyId, companyName, status: 'error', errorMessage: msg });
+    recordScheduleExecution(companyId, 'error');
     return { companyId, companyName, status: 'error', error: msg };
   }
-
-  // Step 5: Cleanup and audit
-  deletePDFFile(pdfPath);
-  await logReportAudit({
-    companyId,
-    companyName,
-    reportPeriod: reportData.period.label,
-    recipients,
-    status: 'sent',
-  });
-
-  return { companyId, companyName, status: 'sent', recipients };
 }
 
 /**

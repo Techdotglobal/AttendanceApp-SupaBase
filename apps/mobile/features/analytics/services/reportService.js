@@ -217,7 +217,7 @@ export async function downloadReport(reportId, user = null) {
     
     // Handle specific error types
     if (error.message?.includes('404') || error.message?.includes('not found')) {
-      throw new Error('Report not found or has expired. Reports expire after 30 minutes.');
+      throw new Error('Report not found or has expired. Reports are retained for 7 days.');
     }
     
     if (error.message?.includes('Network') || error.message?.includes('fetch')) {

@@ -271,13 +271,99 @@ export const adminService = {
     executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/leaves/${id}`), payload)).data, 'Failed to process leave request'),
 
   // Reports
+  generateReportPdf: async (payload) =>
+    executeApiCall(
+      async () => (await api.post(apiUrl('/api/reports/generate-pdf'), payload, { timeout: 120000 })).data,
+      'PDF generation failed'
+    ),
+  generateAndEmailReport: async (payload) =>
+    executeApiCall(
+      async () => (await api.post(apiUrl('/api/reports/generate-and-email'), payload, { timeout: 120000 })).data,
+      'Failed to generate and email report'
+    ),
   generateReport: async (payload) =>
-    executeApiCall(async () => (await api.post(apiUrl('/api/reports/generate'), payload)).data, 'Failed to generate report'),
+    executeApiCall(
+      async () => (await api.post(apiUrl('/api/reports/generate-pdf'), payload, { timeout: 120000 })).data,
+      'Failed to generate report'
+    ),
+  getReportHistory: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/reports/history'))).data.reports, 'Failed to load report history'),
+  getLatestReport: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/reports/latest'))).data.report, 'Failed to load latest report'),
+  getReportRecipients: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/reports/recipients'))).data.recipients, 'Failed to load recipients'),
+  resendReportEmail: async (reportId) =>
+    executeApiCall(
+      async () => (await api.post(apiUrl(`/api/reports/email/${reportId}`), {})).data,
+      'Email failed'
+    ),
+  deleteReport: async (reportId) =>
+    executeApiCall(
+      async () => (await api.delete(apiUrl(`/api/reports/${reportId}`))).data,
+      'Failed to delete report'
+    ),
+  fetchReportBlob: async (reportId, mode = 'download') => {
+    const path = mode === 'preview' ? `/api/reports/preview/${reportId}` : `/api/reports/download/${reportId}`;
+    try {
+      const response = await api.get(apiUrl(path), { responseType: 'blob', timeout: 120000 });
+      const contentType = response.headers['content-type'] || '';
+      if (contentType.includes('application/json')) {
+        const text = await response.data.text();
+        const err = JSON.parse(text);
+        throw new Error(err.message || err.error || 'Unable to load report');
+      }
+      if (!contentType.includes('pdf') && response.data.type && !response.data.type.includes('pdf')) {
+        throw new Error('Unable to load report. Invalid response format.');
+      }
+      return response.data;
+    } catch (error) {
+      if (error.response?.data instanceof Blob) {
+        try {
+          const text = await error.response.data.text();
+          const err = JSON.parse(text);
+          throw new Error(err.message || err.error || 'Unable to load report');
+        } catch {
+          throw new Error('Unable to load report');
+        }
+      }
+      throw new Error(extractApiMessage(error, 'Unable to load report'));
+    }
+  },
+  downloadReportFile: async (reportId, filename = 'report.pdf') => {
+    const path = `/api/reports/download/${reportId}`;
+    const response = await api.get(apiUrl(path), { responseType: 'blob', timeout: 120000 });
+    const contentType = response.headers['content-type'] || '';
+    if (contentType.includes('application/json') || (response.data.type && response.data.type.includes('json'))) {
+      const text = await response.data.text();
+      const err = JSON.parse(text);
+      throw new Error(err.message || err.error || 'Unable to load report');
+    }
+    const url = URL.createObjectURL(response.data);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  previewReport: async (reportId) => {
+    const path = `/api/reports/preview/${reportId}`;
+    const response = await api.get(apiUrl(path), { responseType: 'blob', timeout: 120000 });
+    const contentType = response.headers['content-type'] || '';
+    if (contentType.includes('application/json') || (response.data.type && response.data.type.includes('json'))) {
+      const text = await response.data.text();
+      const err = JSON.parse(text);
+      throw new Error(err.message || err.error || 'Unable to load report');
+    }
+    const url = URL.createObjectURL(response.data);
+    window.open(url, '_blank', 'noopener,noreferrer');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  },
   sendReportNow: async () =>
     executeApiCall(async () => (await api.post(apiUrl('/api/reports/send-now'), {})).data, 'Failed to send report'),
   getReportSchedule: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/reports/schedule'))).data.schedule, 'Failed to load report schedule'),
   updateReportSchedule: async (payload) =>
     executeApiCall(async () => (await api.put(apiUrl('/api/reports/schedule'), payload)).data.schedule, 'Failed to update report schedule'),
-  downloadReport: (reportId) => apiUrl(`/api/reports/download/${reportId}`),
 };

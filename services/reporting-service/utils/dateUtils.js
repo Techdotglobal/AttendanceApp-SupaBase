@@ -4,18 +4,25 @@
 
 /**
  * Get date range based on report type
- * @param {string} range - 'weekly', 'monthly', 'yearly', 'all', or 'custom'
+ * @param {string} range - 'daily', 'weekly', 'monthly', 'yearly', 'all', or 'custom'
  * @param {string} from - Custom start date (ISO format) - optional
  * @param {string} to - Custom end date (ISO format) - optional
  * @returns {Object} { from: Date, to: Date }
  */
 function getDateRange(range, from = null, to = null) {
   const now = new Date();
-  let fromDate, toDate;
+  let fromDate;
+  let toDate;
 
   switch (range) {
+    case 'daily':
+      fromDate = new Date(now);
+      fromDate.setHours(0, 0, 0, 0);
+      toDate = new Date(now);
+      toDate.setHours(23, 59, 59, 999);
+      break;
+
     case 'weekly':
-      // Last 7 days
       toDate = new Date(now);
       toDate.setHours(23, 59, 59, 999);
       fromDate = new Date(now);
@@ -24,7 +31,6 @@ function getDateRange(range, from = null, to = null) {
       break;
 
     case 'monthly':
-      // Previous month
       fromDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       fromDate.setHours(0, 0, 0, 0);
       toDate = new Date(now.getFullYear(), now.getMonth(), 0);
@@ -32,7 +38,6 @@ function getDateRange(range, from = null, to = null) {
       break;
 
     case 'yearly':
-      // Previous year
       fromDate = new Date(now.getFullYear() - 1, 0, 1);
       fromDate.setHours(0, 0, 0, 0);
       toDate = new Date(now.getFullYear() - 1, 11, 31);
@@ -40,7 +45,6 @@ function getDateRange(range, from = null, to = null) {
       break;
 
     case 'all':
-      // All time - set to a very early date
       fromDate = new Date(2000, 0, 1);
       fromDate.setHours(0, 0, 0, 0);
       toDate = new Date(now);
@@ -81,7 +85,7 @@ function formatDate(date) {
 function getMonthName(date) {
   const months = [
     'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
+    'July', 'August', 'September', 'October', 'November', 'December',
   ];
   return months[date.getMonth()];
 }
@@ -95,6 +99,8 @@ function getMonthName(date) {
  */
 function getPeriodLabel(range, from, to) {
   switch (range) {
+    case 'daily':
+      return formatDate(from);
     case 'weekly':
       return `Week of ${formatDate(from)} to ${formatDate(to)}`;
     case 'monthly':
@@ -116,4 +122,3 @@ module.exports = {
   getMonthName,
   getPeriodLabel,
 };
-

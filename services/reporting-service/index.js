@@ -48,8 +48,12 @@ app.get('/', (req, res) => {
     message: 'Reporting Service',
     version: '1.0.0',
     endpoints: {
-      generate: 'POST /api/reports/generate',
+      generatePdf: 'POST /api/reports/generate-pdf',
+      generateAndEmail: 'POST /api/reports/generate-and-email',
+      preview: 'GET /api/reports/preview/:reportId',
       download: 'GET /api/reports/download/:reportId',
+      history: 'GET /api/reports/history',
+      latest: 'GET /api/reports/latest',
       health: '/health',
     },
   });

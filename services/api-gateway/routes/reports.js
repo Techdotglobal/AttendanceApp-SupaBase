@@ -1,112 +1,99 @@
 /**
  * Reports API Gateway Routes
- * Forwards report generation requests to reporting-service
  */
 const express = require('express');
 const axios = require('axios');
 
 const router = express.Router();
-
-// Reporting service base URL
 const REPORTING_SERVICE_URL = process.env.REPORTING_SERVICE_URL || 'http://localhost:3002';
 
-console.log(`[API Gateway] Reporting Service URL configured: ${REPORTING_SERVICE_URL}`);
-
-/**
- * Extract x-user-id and x-user-email from the x-user-context header
- * (set by the frontend axios interceptor as JSON.stringify(user)).
- * Falls back to raw x-user-id / x-user-email if already present.
- */
 function buildAuthHeaders(req) {
   const headers = { 'Content-Type': 'application/json' };
-
-  // Prefer explicit headers if already set
-  if (req.headers['x-user-email']) {
-    headers['x-user-email'] = req.headers['x-user-email'];
-  }
-  if (req.headers['x-user-id']) {
-    headers['x-user-id'] = req.headers['x-user-id'];
-  }
-
-  // Parse x-user-context sent by the web client
-  const ctx = req.headers['x-user-context'];
-  if (ctx && !headers['x-user-email']) {
-    try {
-      const user = JSON.parse(ctx);
-      if (user.email) headers['x-user-email'] = user.email;
-      if (!headers['x-user-id'] && (user.uid || user.id)) {
-        headers['x-user-id'] = user.uid || user.id;
-      }
-    } catch (_) {}
-  }
-
+  if (req.headers['x-user-email']) headers['x-user-email'] = req.headers['x-user-email'];
+  if (req.headers['x-user-id']) headers['x-user-id'] = req.headers['x-user-id'];
+  if (req.headers['x-user-context']) headers['x-user-context'] = req.headers['x-user-context'];
   return headers;
 }
 
-const proxyError = (res, error) => {
-  if (error.response) return res.status(error.response.status).json(error.response.data);
-  if (error.request) return res.status(503).json({ success: false, error: 'Reporting service unavailable' });
-  res.status(500).json({ success: false, error: error.message });
-};
-
-router.post('/generate', async (req, res) => {
+async function proxyJson(method, path, req, res, timeout = 120000) {
   try {
-    const response = await axios.post(`${REPORTING_SERVICE_URL}/api/reports/generate`, req.body, {
+    const response = await axios({
+      method,
+      url: `${REPORTING_SERVICE_URL}${path}`,
+      data: req.body,
       headers: buildAuthHeaders(req),
-      timeout: 30000,
+      timeout,
     });
-    res.status(response.status).json(response.data);
-  } catch (error) { proxyError(res, error); }
-});
-
-router.get('/download/:reportId', async (req, res) => {
-  try {
-    const response = await axios.get(
-      `${REPORTING_SERVICE_URL}/api/reports/download/${req.params.reportId}`,
-      { headers: buildAuthHeaders(req), responseType: 'stream', timeout: 60000 }
-    );
-    res.setHeader('Content-Type', response.headers['content-type'] || 'application/pdf');
-    res.setHeader('Content-Disposition', response.headers['content-disposition'] || `attachment; filename="report-${req.params.reportId}.pdf"`);
-    if (response.headers['content-length']) res.setHeader('Content-Length', response.headers['content-length']);
-    response.data.pipe(res);
-  } catch (error) { proxyError(res, error); }
-});
-
-router.get('/schedule', async (req, res) => {
-  try {
-    const response = await axios.get(`${REPORTING_SERVICE_URL}/api/reports/schedule`, {
-      headers: buildAuthHeaders(req), timeout: 10000,
-    });
-    res.status(response.status).json(response.data);
-  } catch (error) { proxyError(res, error); }
-});
-
-router.put('/schedule', async (req, res) => {
-  try {
-    const response = await axios.put(`${REPORTING_SERVICE_URL}/api/reports/schedule`, req.body, {
-      headers: buildAuthHeaders(req), timeout: 10000,
-    });
-    res.status(response.status).json(response.data);
-  } catch (error) { proxyError(res, error); }
-});
-
-router.post('/send-now', async (req, res) => {
-  try {
-    const response = await axios.post(`${REPORTING_SERVICE_URL}/api/reports/send-now`, {}, {
-      headers: buildAuthHeaders(req), timeout: 30000,
-    });
-    res.status(response.status).json(response.data);
-  } catch (error) { proxyError(res, error); }
-});
-
-router.get('/health', async (req, res) => {
-  try {
-    const response = await axios.get(`${REPORTING_SERVICE_URL}/api/reports/health`, { timeout: 5000 });
     res.status(response.status).json(response.data);
   } catch (error) {
-    res.status(503).json({ status: 'error', message: 'Reporting service unavailable' });
+    if (error.response) return res.status(error.response.status).json(error.response.data);
+    if (error.request) return res.status(503).json({ success: false, error: 'Reporting service unavailable' });
+    res.status(500).json({ success: false, error: 'Request failed' });
   }
-});
+}
+
+async function proxyPdf(method, path, req, res, disposition = 'attachment') {
+  try {
+    const response = await axios({
+      method,
+      url: `${REPORTING_SERVICE_URL}${path}`,
+      headers: buildAuthHeaders(req),
+      responseType: 'arraybuffer',
+      timeout: 120000,
+    });
+
+    const contentType = response.headers['content-type'] || 'application/pdf';
+
+    if (contentType.includes('application/json')) {
+      try {
+        const errBody = JSON.parse(Buffer.from(response.data).toString('utf8'));
+        return res.status(response.status).json(errBody);
+      } catch {
+        return res.status(500).json({ success: false, error: 'Unable to load report' });
+      }
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      response.headers['content-disposition'] || `${disposition}; filename="report.pdf"`
+    );
+    if (response.headers['content-length']) {
+      res.setHeader('Content-Length', response.headers['content-length']);
+    }
+    res.send(Buffer.from(response.data));
+  } catch (error) {
+    if (error.response) {
+      const ct = error.response.headers['content-type'] || '';
+      if (ct.includes('application/json') && error.response.data) {
+        try {
+          const text = Buffer.isBuffer(error.response.data)
+            ? error.response.data.toString('utf8')
+            : JSON.stringify(error.response.data);
+          return res.status(error.response.status).json(JSON.parse(text));
+        } catch {
+          return res.status(error.response.status).json({ success: false, error: 'Unable to load report' });
+        }
+      }
+    }
+    if (error.request) return res.status(503).json({ success: false, error: 'Reporting service unavailable' });
+    res.status(500).json({ success: false, error: 'Request failed' });
+  }
+}
+
+router.post('/generate-pdf', (req, res) => proxyJson('post', '/api/reports/generate-pdf', req, res));
+router.post('/generate-and-email', (req, res) => proxyJson('post', '/api/reports/generate-and-email', req, res));
+router.post('/generate', (req, res) => proxyJson('post', '/api/reports/generate', req, res));
+router.get('/preview/:reportId', (req, res) => proxyPdf('get', `/api/reports/preview/${req.params.reportId}`, req, res, 'inline'));
+router.get('/download/:reportId', (req, res) => proxyPdf('get', `/api/reports/download/${req.params.reportId}`, req, res, 'attachment'));
+router.post('/email/:reportId', (req, res) => proxyJson('post', `/api/reports/email/${req.params.reportId}`, req, res));
+router.get('/history', (req, res) => proxyJson('get', '/api/reports/history', req, res));
+router.get('/latest', (req, res) => proxyJson('get', '/api/reports/latest', req, res));
+router.delete('/:reportId', (req, res) => proxyJson('delete', `/api/reports/${req.params.reportId}`, req, res));
+router.get('/recipients', (req, res) => proxyJson('get', '/api/reports/recipients', req, res));
+router.get('/schedule', (req, res) => proxyJson('get', '/api/reports/schedule', req, res));
+router.put('/schedule', (req, res) => proxyJson('put', '/api/reports/schedule', req, res));
+router.post('/send-now', (req, res) => proxyJson('post', '/api/reports/send-now', req, res));
+router.get('/health', (req, res) => proxyJson('get', '/api/reports/health', req, res));
 
 module.exports = router;
-

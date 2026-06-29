@@ -4,6 +4,7 @@
  * Every aggregate path must pass an explicit company_id (tenant scope).
  */
 const { supabase } = require('../config/supabase');
+const { getExtendedSchedule, setExtendedSchedule } = require('./scheduleConfig');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -239,7 +240,7 @@ async function getCompany(companyId) {
   try {
     const { data, error } = await supabase
       .from('companies')
-      .select('id, name')
+      .select('id, name, logo_url')
       .eq('id', cid)
       .maybeSingle();
 
@@ -291,9 +292,14 @@ async function getReportSchedule(companyId) {
     if (!data) return { day: 1, autoSend: true };
 
     const day = data.report_schedule_day ?? 1;
+    const extended = getExtendedSchedule(cid);
     return {
       day: Number.isFinite(day) && day >= 1 && day <= 28 ? day : 1,
       autoSend: data.report_auto_send ?? true,
+      frequency: extended.frequency,
+      lastExecution: extended.lastExecution,
+      lastStatus: extended.lastStatus,
+      nextExecution: extended.nextExecution,
     };
   } catch (err) {
     console.warn(`[queryService] getReportSchedule error for ${cid} (using defaults):`, err.message);
@@ -325,14 +331,20 @@ async function setReportSchedule(companyId, settings) {
     updates.report_auto_send = Boolean(settings.autoSend);
   }
 
-  if (Object.keys(updates).length === 0) return;
+  if (settings.frequency !== undefined) {
+    setExtendedSchedule(cid, { frequency: settings.frequency });
+  }
 
-  const { error } = await supabase
-    .from('companies')
-    .update(updates)
-    .eq('id', cid);
+  if (Object.keys(updates).length === 0 && settings.frequency === undefined) return;
 
-  if (error) throw error;
+  if (Object.keys(updates).length > 0) {
+    const { error } = await supabase
+      .from('companies')
+      .update(updates)
+      .eq('id', cid);
+
+    if (error) throw error;
+  }
 }
 
 /**

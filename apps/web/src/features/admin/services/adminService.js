@@ -3,11 +3,17 @@ import { apiUrl } from '../../../core/config/api';
 import { enrichLeavesWithUsers } from '../utils/leaveDisplay';
 
 const extractApiMessage = (error, fallbackMessage) => {
-  const apiError = error?.response?.data?.error;
-  if (typeof apiError === 'string' && apiError.trim()) return apiError;
+  const data = error?.response?.data;
+  const apiError = data?.error;
+  const apiMessage = data?.message;
+  if (typeof apiError === 'string' && apiError.trim()) {
+    if (typeof apiMessage === 'string' && apiMessage.trim() && apiMessage.trim() !== apiError.trim()) {
+      return apiError + ': ' + apiMessage;
+    }
+    return apiError;
+  }
 
   const status = error?.response?.status;
-  const data = error?.response?.data;
   const rawBody = typeof data === 'string' ? data : '';
   if (/service suspended/i.test(rawBody)) {
     return 'API gateway URL points to a suspended host. Update VITE_API_GATEWAY_URL to the Coolify HTTPS domain and redeploy the web app.';

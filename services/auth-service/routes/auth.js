@@ -33,6 +33,7 @@ const {
   rejectSelfAdministrativeChange,
   writeAuditLog,
 } = require('../lib/permissions');
+const { normalizeWorkMode } = require('../lib/workModes');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PRIVILEGED_ROLES = new Set(['super_admin', 'manager', 'employee']);
@@ -637,12 +638,16 @@ router.post('/users', async (req, res) => {
       });
     }
 
+    const normalizedWorkMode = normalizeWorkMode(workMode);
+
     traceCreateUser('start', {
       username,
       role,
       companyId,
       isServiceRole,
       departmentInput: department != null ? String(department).slice(0, 80) : '',
+      workModeInput: workMode,
+      normalizedWorkMode,
     });
 
     let resolvedDepartment = { id: null, name: '' };
@@ -725,7 +730,7 @@ router.post('/users', async (req, res) => {
       department: resolvedDepartment.name || '',
       department_id: resolvedDepartment.id || null,
       position: normalizedPosition || '',
-      work_mode: workMode || 'in_office',
+      work_mode: normalizedWorkMode,
       hire_date: hireDate || new Date().toISOString().split('T')[0],
       is_active: true,
     };
@@ -800,7 +805,7 @@ router.post('/users', async (req, res) => {
         department: userData.department || '',
         department_id: userData.department_id || null,
         position: normalizedPosition || userData.position || '',
-        workMode: workMode || 'in_office',
+        workMode: userData.work_mode || normalizedWorkMode,
         company_id: userData.company_id != null ? String(userData.company_id) : String(companyId),
       },
     });

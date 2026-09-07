@@ -33,7 +33,30 @@ const EMPTY_CREATE_FORM = {
   hireDate: '',
 };
 
+const WORK_MODE_LABELS = {
+  in_office: 'In office',
+  remote: 'Remote',
+  hybrid: 'Hybrid',
+  semi_remote: 'Hybrid',
+  fully_remote: 'Remote',
+};
+
+const WORK_MODE_OPTIONS = [
+  { value: 'in_office', label: 'In office' },
+  { value: 'fully_remote', label: 'Remote' },
+  { value: 'semi_remote', label: 'Hybrid' },
+];
+
 const roleCanBeToggled = (targetRole) => targetRole === 'employee' || targetRole === 'manager';
+
+const formatWorkMode = (value) => WORK_MODE_LABELS[String(value || 'in_office').toLowerCase()] || 'In office';
+
+const normalizeWorkMode = (value) => {
+  const key = String(value || 'in_office').trim().toLowerCase();
+  if (key === 'fully_remote' || key === 'remote') return 'fully_remote';
+  if (key === 'semi_remote' || key === 'hybrid') return 'semi_remote';
+  return 'in_office';
+};
 
 /** Column key -> comparable value. Keys mirror the table's column keys. */
 const SORT_VALUES = {
@@ -139,7 +162,7 @@ export function UsersPage() {
       role: createForm.role,
       department: createForm.department || '',
       position: createForm.position.trim(),
-      workMode: createForm.workMode || 'in_office',
+      workMode: normalizeWorkMode(createForm.workMode),
       hireDate: createForm.hireDate || undefined,
     };
 
@@ -320,6 +343,7 @@ export function UsersPage() {
         email: (profile?.email || u.email) ?? '',
         report_email: (profile?.report_email || u.report_email) ?? '',
         department: (profile?.department || u.department) ?? '',
+        work_mode: normalizeWorkMode(profile?.work_mode || u.work_mode),
         annual_leaves: lb.annual_leaves ?? 20,
         sick_leaves: lb.sick_leaves ?? 10,
         casual_leaves: lb.casual_leaves ?? 5,
@@ -336,6 +360,7 @@ export function UsersPage() {
         email: u.email || '',
         report_email: u.report_email ?? '',
         department: u.department || '',
+        work_mode: normalizeWorkMode(u.work_mode),
         annual_leaves: 20,
         sick_leaves: 10,
         casual_leaves: 5,
@@ -356,6 +381,7 @@ export function UsersPage() {
         email: editForm.email.trim(),
         report_email: editForm.report_email?.trim() || null,
         department: editForm.department || '',
+        work_mode: normalizeWorkMode(editForm.work_mode),
       };
       if (canEditLeaveBalance) {
         payload.annual_leaves = Number(editForm.annual_leaves);
@@ -373,6 +399,7 @@ export function UsersPage() {
         username: updated?.username ?? editForm.username,
         email: updated?.email ?? editForm.email,
         department: updated?.department ?? editForm.department,
+        work_mode: updated?.work_mode ?? normalizeWorkMode(editForm.work_mode),
       };
       setActiveUser(merged);
       setRows((prev) => prev.map((row) => (row.uid === activeUser.uid ? { ...row, ...merged } : row)));
@@ -692,9 +719,11 @@ export function UsersPage() {
                   onChange={(e) => setCreateForm((f) => ({ ...f, workMode: e.target.value }))}
                   className="ui-select"
                 >
-                  <option value="in_office">In office</option>
-                  <option value="remote">Remote</option>
-                  <option value="hybrid">Hybrid</option>
+                  {WORK_MODE_OPTIONS.map((mode) => (
+                    <option key={mode.value} value={mode.value}>
+                      {mode.label}
+                    </option>
+                  ))}
                 </select>
               </label>
             </div>
@@ -805,8 +834,22 @@ export function UsersPage() {
                               ))}
                             </select>
                           </label>
+                          <label className="block space-y-1">
+                            <span className="ui-label">Work mode</span>
+                            <select
+                              value={editForm.work_mode}
+                              onChange={(e) => setEditForm((f) => ({ ...f, work_mode: e.target.value }))}
+                              className="ui-select"
+                            >
+                              {WORK_MODE_OPTIONS.map((mode) => (
+                                <option key={mode.value} value={mode.value}>
+                                  {mode.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
                           <p className="text-xs text-ink-muted">
-                            Role: {activeUser.role} · Status: {activeUser.is_active ? 'Active' : 'Inactive'}
+                            Role: {activeUser.role} / Status: {activeUser.is_active ? 'Active' : 'Inactive'}
                           </p>
                         </>
                       )}
@@ -817,6 +860,7 @@ export function UsersPage() {
                       <p><span className="text-ink-muted">Username:</span> <span className="text-ink">{activeUser.username}</span></p>
                       <p><span className="text-ink-muted">Role:</span> <span className="text-ink">{activeUser.role}</span></p>
                       <p><span className="text-ink-muted">Department:</span> <span className="text-ink">{activeUser.department || '-'}</span></p>
+                      <p><span className="text-ink-muted">Work mode:</span> <span className="text-ink">{formatWorkMode(activeUser.work_mode)}</span></p>
                       <p><span className="text-ink-muted">Status:</span> <span className="text-ink">{activeUser.is_active ? 'Active' : 'Inactive'}</span></p>
                     </div>
                   )}

@@ -27,6 +27,7 @@ const {
   processApprovalStep,
   mapLeaveTypeToRequestType,
 } = require('../lib/approvalEngine');
+const { normalizeWorkMode } = require('../lib/workModes');
 
 const router = express.Router();
 
@@ -472,7 +473,7 @@ router.patch('/users/:uid', async (req, res) => {
   try {
     const { data: targetUser, error: targetError } = await supabase
       .from('users')
-      .select('uid, username, email, role, department, company_id, is_active')
+      .select('uid, username, email, role, department, work_mode, company_id, is_active')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();
@@ -495,7 +496,8 @@ router.patch('/users/:uid', async (req, res) => {
       department !== undefined ||
       annual_leaves !== undefined ||
       sick_leaves !== undefined ||
-      casual_leaves !== undefined;
+      casual_leaves !== undefined ||
+      work_mode !== undefined;
 
     if (profileFieldsTouched && !canEditAnyProfile(requester, { tenantWide: requester.tenantWidePeopleAccess })) {
       return res.status(403).json({
@@ -598,7 +600,7 @@ router.patch('/users/:uid', async (req, res) => {
       }
     }
 
-    if (work_mode !== undefined) updates.work_mode = work_mode;
+    if (work_mode !== undefined) updates.work_mode = normalizeWorkMode(work_mode, targetUser.work_mode || 'in_office');
     if (is_active !== undefined) updates.is_active = is_active;
 
     const profileRowTouched = Object.keys(updates).length > 1;

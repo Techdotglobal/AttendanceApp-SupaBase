@@ -32,6 +32,7 @@ export const PERMISSIONS = {
   EXPORT_ATTENDANCE: 'export_attendance',
   ATTENDANCE_ANALYTICS: 'attendance_analytics',
   VIEW_LEAVE_REQUESTS: 'view_leave_requests',
+  CREATE_LEAVE_REQUEST: 'create_leave_request',
   APPROVE_LEAVE: 'approve_leave',
   REJECT_LEAVE: 'reject_leave',
   EDIT_LEAVE_BALANCE: 'edit_leave_balance',

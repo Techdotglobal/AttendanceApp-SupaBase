@@ -893,8 +893,9 @@ export function CalendarPage() {
       </section>
 
       <aside
-        className="calendar-sidebar flex h-full max-h-[42%] min-h-0 w-full shrink-0 flex-col overflow-x-hidden overflow-y-auto rounded-3xl p-1.5 text-slate-800 shadow-[0_8px_24px_rgba(15,23,42,0.06)] sm:p-3 lg:max-h-[calc(100vh-80px)] lg:w-[20.5rem] lg:p-3 xl:w-[360px]"
+        className="calendar-sidebar flex h-full min-h-0 max-h-[42%] w-full shrink-0 flex-col overflow-x-hidden overflow-y-auto rounded-3xl p-1.5 text-slate-800 shadow-[0_8px_24px_rgba(15,23,42,0.06)] sm:p-3 lg:max-h-[calc(100vh-80px)] lg:w-[20.5rem] lg:p-3 xl:w-[360px]"
         style={{ background: SIDEBAR_GRADIENT }}
+        data-lenis-prevent
       >
         <div className="relative mx-1 flex h-10 w-[calc(100%-0.5rem)] shrink-0 items-center overflow-hidden rounded-full border border-[#C2ECF9] bg-white transition-all duration-200 hover:border-[#70C8F4] focus-within:border-[#00B0FF]/60 focus-within:ring-2 focus-within:ring-[#00B0FF]/10">
           <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden />

@@ -7,6 +7,8 @@ import { canAccessFeature, isSuperAdmin } from '../../features/admin/permissions
 import { AccessDenied } from '../../shared/components/PermissionGate';
 import { AppLoader } from '../../shared/components/ui';
 import { LoginPage } from '../../features/auth/pages/LoginPage';
+import { ForgotPasswordPage } from '../../features/auth/pages/ForgotPasswordPage';
+import { ResetPasswordPage } from '../../features/auth/pages/ResetPasswordPage';
 import { CompanyOnboardingPage } from '../../features/auth/pages/CompanyOnboardingPage';
 import { LandingPage } from '../../features/landing/pages/LandingPage';
 import { AppShell } from '../../shared/components/AppShell';
@@ -62,7 +64,14 @@ function PermissionRoute({ feature, superAdminOnly = false, children }) {
   return children;
 }
 
-const WINDOW_SCROLL_ROUTES = new Set(['/', '/login', '/onboard', '/unauthorized']);
+const WINDOW_SCROLL_ROUTES = new Set([
+  '/',
+  '/login',
+  '/forgot-password',
+  '/reset-password',
+  '/onboard',
+  '/unauthorized',
+]);
 
 function WindowSmoothScroll() {
   const { pathname } = useLocation();
@@ -92,6 +101,8 @@ export function AppRouter() {
       <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/onboard" element={<CompanyOnboardingPage />} />
       <Route path="/unauthorized" element={<Unauthorized />} />
       {/* Pathless layout: keeps /users, /attendance, etc. while freeing / for marketing */}

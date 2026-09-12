@@ -337,6 +337,8 @@ export const adminService = {
   },
   processLeave: async (id, payload) =>
     executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/leaves/${id}`), payload)).data, 'Failed to process leave request'),
+  createLeave: async (payload) =>
+    executeApiCall(async () => (await api.post(apiUrl('/api/admin/leaves'), payload)).data.data, 'Failed to create leave request'),
 
   // Reports
   generateReportPdf: async (payload) =>

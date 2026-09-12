@@ -1,7 +1,7 @@
 const express = require('express');
 const { supabase } = require('../config/supabase');
 const { getTenantCompanyId, fetchCompanyUserUids } = require('../lib/tenantScope');
-const { normalizeDepartmentName, toLookupKey } = require('../lib/orgNormalize');
+const { normalizeDepartmentName, normalizePosition, toLookupKey } = require('../lib/orgNormalize');
 const { normalizedUsernameKey } = require('../lib/loginNormalize');
 const { updateUsernameForUid } = require('../lib/usernameUpdate');
 const { syncAuthMetadataForUid, syncAuthMetadataAndInvalidateSessions } = require('../lib/authMetadata');
@@ -21,6 +21,7 @@ const {
   writeAuditLog,
 } = require('../lib/permissions');
 const { enrichLeaveRequestsWithEmployees } = require('../lib/leaveEmployeeResolve');
+const { countBusinessDays } = require('../lib/payrollEngine');
 const {
   initializeApprovalSteps,
   getApprovalProgress,
@@ -158,7 +159,7 @@ const resolveLeaveBalanceForUser = async (uid, companyId) => {
 const getUsersBaseQuery = (requester, companyId) => {
   let query = supabase
     .from('users')
-    .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, is_active, created_at, company_id')
+    .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, hire_date, is_active, created_at, company_id')
     .eq('company_id', companyId)
     .order('created_at', { ascending: false });
   if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
@@ -405,7 +406,7 @@ router.get('/users/:uid', async (req, res) => {
   try {
     const { data: targetUser, error: targetError } = await supabase
       .from('users')
-      .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, is_active, created_at, updated_at, company_id')
+      .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, hire_date, is_active, created_at, updated_at, company_id')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();
@@ -438,6 +439,8 @@ router.patch('/users/:uid', async (req, res) => {
     role,
     department,
     work_mode,
+    position,
+    hire_date,
     is_active,
     username,
     email,
@@ -482,9 +485,20 @@ router.patch('/users/:uid', async (req, res) => {
       report_email !== undefined ||
       name !== undefined ||
       department !== undefined ||
+      position !== undefined ||
+      hire_date !== undefined ||
+      work_mode !== undefined ||
       annual_leaves !== undefined ||
       sick_leaves !== undefined ||
       casual_leaves !== undefined;
+
+    const VALID_WORK_MODES = ['in_office', 'semi_remote', 'fully_remote'];
+    if (work_mode !== undefined && !VALID_WORK_MODES.includes(work_mode)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid work_mode. Must be one of: ${VALID_WORK_MODES.join(', ')}`,
+      });
+    }
 
     if (profileFieldsTouched && !canEditAnyProfile(requester, { tenantWide: requester.tenantWidePeopleAccess })) {
       return res.status(403).json({
@@ -588,6 +602,16 @@ router.patch('/users/:uid', async (req, res) => {
     }
 
     if (work_mode !== undefined) updates.work_mode = work_mode;
+
+    if (position !== undefined) {
+      const trimmedPosition = position != null ? String(position).trim() : '';
+      updates.position = trimmedPosition ? normalizePosition(trimmedPosition) : null;
+    }
+
+    if (hire_date !== undefined) {
+      updates.hire_date = hire_date || null;
+    }
+
     if (is_active !== undefined) updates.is_active = is_active;
 
     const profileRowTouched = Object.keys(updates).length > 1;
@@ -654,7 +678,7 @@ router.patch('/users/:uid', async (req, res) => {
     const leave_balance = await resolveLeaveBalanceForUser(uid, companyId);
     const { data: refreshed } = await supabase
       .from('users')
-      .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, is_active, updated_at')
+      .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, hire_date, is_active, updated_at')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();
@@ -1109,6 +1133,8 @@ router.post('/sites', async (req, res) => {
       });
     }
 
+    const address = body.address != null ? String(body.address).trim().slice(0, 500) || null : null;
+
     const { data, error } = await supabase
       .from('sites')
       .insert({
@@ -1118,6 +1144,7 @@ router.post('/sites', async (req, res) => {
         latitude,
         longitude,
         radius: Math.round(radius),
+        address,
       })
       .select()
       .single();
@@ -1178,9 +1205,18 @@ router.patch('/sites/:id', async (req, res) => {
     const radius = body.radius != null ? Number(body.radius) : Number(site.radius);
     const geomError = validateSiteGeometry({ latitude, longitude, radius });
     if (geomError) return res.status(400).json({ success: false, error: geomError });
+    const coordsChanged = latitude !== Number(site.latitude) || longitude !== Number(site.longitude);
     if (latitude !== Number(site.latitude)) patch.latitude = latitude;
     if (longitude !== Number(site.longitude)) patch.longitude = longitude;
     if (Math.round(radius) !== Number(site.radius)) patch.radius = Math.round(radius);
+
+    if (body.address !== undefined) {
+      patch.address = body.address != null ? String(body.address).trim().slice(0, 500) || null : null;
+    } else if (coordsChanged) {
+      // Stale address would otherwise point at the old coordinates; clear it
+      // so the UI re-resolves (or falls back to coordinates) for the new pin.
+      patch.address = null;
+    }
 
     if (Object.keys(patch).length === 0) {
       return res.status(200).json({ success: true, data: site });
@@ -1505,6 +1541,88 @@ router.get('/leaves', async (req, res) => {
     res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to fetch leaves' });
+  }
+});
+
+const LEAVE_TYPES = ['annual', 'sick', 'casual'];
+
+router.post('/leaves', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
+  if (!(await requireAdminPermission(requester, 'create_leave_request', res))) return;
+  try {
+    const body = req.body || {};
+    const employeeUid = String(body.employee_uid || '').trim();
+    const leaveType = String(body.leave_type || '').trim().toLowerCase();
+    const startDate = String(body.start_date || '').trim();
+    const endDate = String(body.end_date || '').trim();
+    const isHalfDay = Boolean(body.is_half_day);
+    const halfDayPeriod = isHalfDay ? String(body.half_day_period || '').trim() || null : null;
+    const reason = body.reason != null ? String(body.reason).trim() : '';
+
+    if (!employeeUid) return res.status(400).json({ success: false, error: 'employee_uid is required' });
+    if (!LEAVE_TYPES.includes(leaveType)) {
+      return res.status(400).json({ success: false, error: `leave_type must be one of: ${LEAVE_TYPES.join(', ')}` });
+    }
+    const start = new Date(`${startDate}T00:00:00Z`);
+    const end = new Date(`${endDate}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return res.status(400).json({ success: false, error: 'start_date and end_date must be valid dates (YYYY-MM-DD)' });
+    }
+    if (start > end) {
+      return res.status(400).json({ success: false, error: 'start_date must be on or before end_date' });
+    }
+    if (isHalfDay && startDate !== endDate) {
+      return res.status(400).json({ success: false, error: 'Half-day leave must be for a single day' });
+    }
+
+    const { data: employee, error: employeeError } = await supabase
+      .from('users')
+      .select('uid, username, name, department, department_id, company_id')
+      .eq('uid', employeeUid)
+      .eq('company_id', companyId)
+      .single();
+    if (employeeError || !employee) {
+      return res.status(404).json({ success: false, error: 'Employee not found' });
+    }
+    if (requester.role === ROLES.MANAGER && employee.department !== requester.department) {
+      return res.status(403).json({ success: false, error: 'Managers can only file leave for their own department' });
+    }
+
+    const days = isHalfDay ? 0.5 : countBusinessDays(startDate, endDate);
+
+    const { data, error } = await supabase
+      .from('leave_requests')
+      .insert({
+        company_id: companyId,
+        employee_uid: employee.uid,
+        employee_id: employee.username,
+        employee_name: employee.name || employee.username,
+        employee_username: employee.username,
+        leave_type: leaveType,
+        start_date: startDate,
+        end_date: endDate,
+        days,
+        is_half_day: isHalfDay,
+        half_day_period: halfDayPeriod,
+        reason: reason || null,
+        category: employee.department_id ? String(employee.department_id) : null,
+        status: 'pending',
+      })
+      .select()
+      .single();
+    if (error) throw error;
+
+    await writeAuditLog(supabase, {
+      actorUid: requester.uid,
+      targetUid: employee.uid,
+      action: 'leave_request_created',
+    });
+
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || 'Failed to create leave request' });
   }
 });
 

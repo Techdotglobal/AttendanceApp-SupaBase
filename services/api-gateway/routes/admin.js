@@ -80,6 +80,7 @@ router.post('/attendance', (req, res) => forward(req, res, 'post', '/api/admin/a
 router.patch('/attendance/:id', (req, res) => forward(req, res, 'patch', `/api/admin/attendance/${req.params.id}`));
 router.delete('/attendance/:id', (req, res) => forward(req, res, 'delete', `/api/admin/attendance/${req.params.id}`));
 router.get('/leaves', (req, res) => forward(req, res, 'get', '/api/admin/leaves'));
+router.post('/leaves', (req, res) => forward(req, res, 'post', '/api/admin/leaves'));
 router.patch('/leaves/:id', (req, res) => forward(req, res, 'patch', `/api/admin/leaves/${req.params.id}`));
 
 router.get('/tickets', (req, res) => forward(req, res, 'get', '/api/admin/tickets'));

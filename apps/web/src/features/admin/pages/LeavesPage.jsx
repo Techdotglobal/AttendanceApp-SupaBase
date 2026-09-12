@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CalendarClock, CalendarDays, CalendarOff, Check, ChevronLeft, ChevronRight } from 'lucide-react';
+import { CalendarClock, CalendarDays, CalendarOff, Check, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import { useAuthStore } from '../../auth/store/authStore';
 import { SlideOverPanel } from '../../../shared/components/SlideOverPanel';
@@ -15,7 +15,9 @@ import {
 import { Alert } from '../../../shared/components/ui/Alert';
 import { EmptyStateBody } from '../../../shared/components/ui/EmptyState';
 import { Dialog } from '../../../shared/components/ui/Dialog';
+import { Select } from '../../../shared/components/ui/Select';
 import { KpiMetricCard, KpiMetricGrid } from '../../../shared/components/ui/KpiMetricCard';
+import { DatePickerField } from './calendarPickers';
 import { canAccessFeature, hasPermission, PERMISSIONS } from '../permissions';
 import {
   formatEmployeeDisplay,
@@ -30,6 +32,16 @@ const BALANCE_KEYS = {
   annual: 'annual_leaves',
   sick: 'sick_leaves',
   casual: 'casual_leaves',
+};
+
+const EMPTY_CREATE_LEAVE_FORM = {
+  employee_uid: '',
+  leave_type: 'annual',
+  start_date: '',
+  end_date: '',
+  is_half_day: false,
+  half_day_period: 'morning',
+  reason: '',
 };
 
 const pad = (value) => String(value).padStart(2, '0');
@@ -143,9 +155,16 @@ export function LeavesPage() {
   const [rejectNote, setRejectNote] = useState('');
   const [monthDate, setMonthDate] = useState(() => startOfDay(new Date()));
   const [selectedDay, setSelectedDay] = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState(EMPTY_CREATE_LEAVE_FORM);
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const [employeeOptions, setEmployeeOptions] = useState([]);
+  const [employeesLoading, setEmployeesLoading] = useState(false);
 
   const canApprove = hasPermission(user, PERMISSIONS.APPROVE_LEAVE);
   const canReject = hasPermission(user, PERMISSIONS.REJECT_LEAVE);
+  const canCreate = hasPermission(user, PERMISSIONS.CREATE_LEAVE_REQUEST);
   const canViewUsers = canAccessFeature(user, 'users');
   const today = useMemo(() => startOfDay(new Date()), []);
   const todayKey = toDateKey(today);
@@ -297,6 +316,65 @@ export function LeavesPage() {
     }
   };
 
+  const openCreate = async () => {
+    setCreateForm(EMPTY_CREATE_LEAVE_FORM);
+    setCreateError('');
+    setCreateOpen(true);
+    if (employeeOptions.length === 0) {
+      setEmployeesLoading(true);
+      try {
+        const users = await adminService.getUsers();
+        setEmployeeOptions(
+          (users || []).filter((row) => row.is_active && (row.role === 'employee' || row.role === 'manager'))
+        );
+      } catch {
+        setEmployeeOptions([]);
+      } finally {
+        setEmployeesLoading(false);
+      }
+    }
+  };
+
+  const closeCreate = () => {
+    if (createSubmitting) return;
+    setCreateOpen(false);
+    setCreateForm(EMPTY_CREATE_LEAVE_FORM);
+    setCreateError('');
+  };
+
+  const submitCreate = async (e) => {
+    e?.preventDefault?.();
+    setCreateError('');
+    if (!createForm.employee_uid) {
+      setCreateError('Choose an employee.');
+      return;
+    }
+    if (!createForm.start_date || !createForm.end_date) {
+      setCreateError('Start and end dates are required.');
+      return;
+    }
+    setCreateSubmitting(true);
+    try {
+      await adminService.createLeave({
+        employee_uid: createForm.employee_uid,
+        leave_type: createForm.leave_type,
+        start_date: createForm.start_date,
+        end_date: createForm.is_half_day ? createForm.start_date : createForm.end_date,
+        is_half_day: createForm.is_half_day,
+        half_day_period: createForm.is_half_day ? createForm.half_day_period : null,
+        reason: createForm.reason.trim(),
+      });
+      setNotice('Leave request created.');
+      setCreateOpen(false);
+      setCreateForm(EMPTY_CREATE_LEAVE_FORM);
+      await load();
+    } catch (err) {
+      setCreateError(err?.response?.data?.error || err?.message || 'Failed to create leave request');
+    } finally {
+      setCreateSubmitting(false);
+    }
+  };
+
   const openRow = (event, leave) => {
     if (event.target.closest('button, input, a, [data-row-action]')) return;
     setActiveLeave(leave);
@@ -340,6 +418,17 @@ export function LeavesPage() {
             <ChevronRight className="h-4 w-4" />
           </button>
         </div>
+        {canCreate && (
+          <button
+            type="button"
+            onClick={openCreate}
+            data-on-dark
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#00B0FF] px-3 text-sm font-semibold text-white transition-colors duration-150 hover:bg-[#0099E6]"
+          >
+            <Plus className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+            New leave request
+          </button>
+        )}
       </PageActions>
 
       {error && <Alert type="error">{error}</Alert>}
@@ -676,6 +765,123 @@ export function LeavesPage() {
             )}
           </div>
         )}
+      </SlideOverPanel>
+
+      <SlideOverPanel
+        open={createOpen}
+        onClose={closeCreate}
+        title="New leave request"
+        description="File a leave request on behalf of an employee. It follows the same approval workflow as a self-filed request."
+        footer={
+          <>
+            <button type="button" className="ui-btn-secondary ui-btn-sm" disabled={createSubmitting} onClick={closeCreate}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="ui-btn-primary ui-btn-sm"
+              disabled={createSubmitting}
+              onClick={submitCreate}
+            >
+              {createSubmitting ? 'Creating…' : 'Create request'}
+            </button>
+          </>
+        }
+      >
+        <form onSubmit={submitCreate} className="space-y-3.5">
+          {createError && <Alert type="error">{createError}</Alert>}
+
+          <label className="block space-y-1">
+            <span className="ui-label">Employee</span>
+            <Select
+              value={createForm.employee_uid}
+              onChange={(e) => setCreateForm((f) => ({ ...f, employee_uid: e.target.value }))}
+              disabled={employeesLoading}
+            >
+              <option value="">{employeesLoading ? 'Loading…' : 'Select employee'}</option>
+              {employeeOptions.map((row) => (
+                <option key={row.uid} value={row.uid}>
+                  {row.name || row.username} ({row.department || 'No department'})
+                </option>
+              ))}
+            </Select>
+          </label>
+
+          <label className="block space-y-1">
+            <span className="ui-label">Leave type</span>
+            <Select
+              value={createForm.leave_type}
+              onChange={(e) => setCreateForm((f) => ({ ...f, leave_type: e.target.value }))}
+            >
+              <option value="annual">{formatLeaveTypeLabel('annual')}</option>
+              <option value="sick">{formatLeaveTypeLabel('sick')}</option>
+              <option value="casual">{formatLeaveTypeLabel('casual')}</option>
+            </Select>
+          </label>
+
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              className="ui-checkbox"
+              checked={createForm.is_half_day}
+              onChange={(e) => setCreateForm((f) => ({ ...f, is_half_day: e.target.checked }))}
+            />
+            Half-day leave
+          </label>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <span id="leave-start-date" className="ui-label">
+                {createForm.is_half_day ? 'Date' : 'Start date'}
+              </span>
+              <DatePickerField
+                value={createForm.start_date}
+                onChange={(value) =>
+                  setCreateForm((f) => ({
+                    ...f,
+                    start_date: value,
+                    end_date: f.is_half_day ? value : f.end_date,
+                  }))
+                }
+                labelledBy="leave-start-date"
+              />
+            </div>
+            {!createForm.is_half_day && (
+              <div>
+                <span id="leave-end-date" className="ui-label">End date</span>
+                <DatePickerField
+                  value={createForm.end_date}
+                  onChange={(value) => setCreateForm((f) => ({ ...f, end_date: value }))}
+                  labelledBy="leave-end-date"
+                />
+              </div>
+            )}
+          </div>
+
+          {createForm.is_half_day && (
+            <label className="block space-y-1">
+              <span className="ui-label">Half</span>
+              <Select
+                value={createForm.half_day_period}
+                onChange={(e) => setCreateForm((f) => ({ ...f, half_day_period: e.target.value }))}
+              >
+                <option value="morning">Morning</option>
+                <option value="afternoon">Afternoon</option>
+              </Select>
+            </label>
+          )}
+
+          <label className="block space-y-1">
+            <span className="ui-label">Reason <span className="font-normal text-slate-400">(optional)</span></span>
+            <textarea
+              rows={3}
+              value={createForm.reason}
+              onChange={(e) => setCreateForm((f) => ({ ...f, reason: e.target.value }))}
+              className="ui-textarea w-full"
+              placeholder="Context for the approver"
+            />
+          </label>
+        </form>
       </SlideOverPanel>
 
       <Dialog

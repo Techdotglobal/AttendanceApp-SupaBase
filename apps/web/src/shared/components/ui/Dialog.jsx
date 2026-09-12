@@ -16,17 +16,23 @@ const WIDTHS = {
  */
 export function Dialog({ open, onClose, title, description, children, footer, size = 'md' }) {
   const panelRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   usePageScrollLock(open);
 
+  // Deliberately keyed on `open` alone: callers pass a new `onClose` closure
+  // on every render, and re-running this on every keystroke inside the dialog
+  // would re-focus the panel and steal focus from whatever input is active.
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => {
-      if (e.key === 'Escape') onClose?.();
+      if (e.key === 'Escape') onCloseRef.current?.();
     };
     window.addEventListener('keydown', onKey);
     panelRef.current?.focus();
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   if (!open) return null;
 

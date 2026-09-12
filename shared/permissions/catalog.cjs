@@ -29,6 +29,7 @@ const MANAGER_PERMISSION_GROUPS = [
     group: 'Leave',
     permissions: [
       ['view_leave_requests', 'View Leave Requests'],
+      ['create_leave_request', 'Create Leave Requests'],
       ['approve_leave', 'Approve Leave'],
       ['reject_leave', 'Reject Leave'],
       ['edit_leave_balance', 'Edit Leave Balance'],

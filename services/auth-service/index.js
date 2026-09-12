@@ -4,6 +4,7 @@ require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
+const opsRoutes = require('./routes/opsRoutes');
 const payrollRoutes = require('./routes/payroll');
 const { checkSupabase } = require('./lib/health');
 
@@ -42,6 +43,7 @@ app.use((req, res, next) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin', opsRoutes);
 app.use('/api/admin/payroll', payrollRoutes);
 
 // Health / readiness. Docker Compose probes /health?deep=1.

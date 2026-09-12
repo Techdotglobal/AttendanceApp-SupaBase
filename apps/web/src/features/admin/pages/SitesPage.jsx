@@ -8,6 +8,7 @@ import { EmptyStateBody } from '../../../shared/components/ui/EmptyState';
 import { hasPermission, PERMISSIONS } from '../permissions';
 import { useSilentPoll } from '../../../shared/hooks/useSilentPoll';
 import { GeofenceMap } from '../components/GeofenceMap';
+import { reverseGeocode } from '../utils/geocode';
 import {
   acceptBoundedNumber,
   coordinateErrors,
@@ -28,6 +29,7 @@ const EMPTY_DRAFT = {
   latitude: '',
   longitude: '',
   radius: 150,
+  address: '',
   assigneeUids: [],
 };
 
@@ -142,22 +144,57 @@ export function SitesPage() {
 
   useSilentPoll(load, 30000);
 
+  // Seed labels from the stored address (or a coordinate fallback) immediately,
+  // then resolve real addresses in the background for sites that don't have
+  // one saved yet — sequentially, so we don't burst Nominatim's free API.
   useEffect(() => {
     if (!sites.length) {
       setCoordinateLabels({});
-      return;
+      return undefined;
     }
     setCoordinateLabels((current) => {
       const next = {};
       let changed = false;
       for (const site of sites) {
-        const label = current[site.id] || formatCoordinateLabel(site.latitude, site.longitude);
+        const label = site.address || current[site.id] || formatCoordinateLabel(site.latitude, site.longitude);
         next[site.id] = label;
         if (current[site.id] !== label) changed = true;
       }
       if (Object.keys(current).length !== sites.length) changed = true;
       return changed ? next : current;
     });
+
+    let cancelled = false;
+    const pending = sites.filter(
+      (site) => !site.address && parseLatitude(site.latitude) != null && parseLongitude(site.longitude) != null
+    );
+
+    (async () => {
+      for (const site of pending) {
+        if (cancelled) return;
+        // eslint-disable-next-line no-await-in-loop
+        const resolved = await reverseGeocode(site.latitude, site.longitude);
+        if (cancelled) return;
+        setCoordinateLabels((current) => ({ ...current, [site.id]: resolved }));
+        const isRealAddress = resolved !== formatCoordinateLabel(site.latitude, site.longitude);
+        if (isRealAddress) {
+          // Persist so future loads skip the lookup; leave unsaved on failure
+          // (resolved === coordinate fallback) so we retry next time instead
+          // of caching "no address found" forever.
+          adminService.updateSite(site.id, { address: resolved }).catch(() => {
+            /* best-effort cache; UI already has the label for this session */
+          });
+        }
+        if (pending.length > 1) {
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((resolve) => setTimeout(resolve, 1100));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [sites]);
 
   const assignableUsers = useMemo(
@@ -287,6 +324,7 @@ export function SitesPage() {
       latitude: site.latitude != null ? String(site.latitude) : '',
       longitude: site.longitude != null ? String(site.longitude) : '',
       radius: Number(site.radius) || EMPTY_DRAFT.radius,
+      address: site.address || '',
       assigneeUids: [],
     });
     setNotice('');
@@ -354,6 +392,7 @@ export function SitesPage() {
         longitude: lng,
         radius: Number(draft.radius),
         department_id: draft.department_id,
+        address: draft.address || null,
       };
       let siteId;
       if (editingId) {
@@ -564,8 +603,8 @@ export function SitesPage() {
                               <p className="min-w-0 truncate text-sm font-semibold text-slate-800">{site.name}</p>
                               <QuietStatus active label="Active" />
                             </div>
-                            <p className="mt-1 text-xs tabular-nums text-slate-500">
-                              {formatCoord(site.latitude)}, {formatCoord(site.longitude)}
+                            <p className="mt-1 truncate text-xs text-slate-500">
+                              {coordinateLabels[site.id] || formatCoordinateLabel(site.latitude, site.longitude)}
                               <span className="text-slate-300"> • </span>
                               {formatMeters(site.radius)}
                               <span className="text-slate-300"> • </span>
@@ -654,6 +693,31 @@ function WizardPanel({
   onCreate,
   editing = false,
 }) {
+  const [resolvingAddress, setResolvingAddress] = useState(false);
+  const lat = parseLatitude(draft.latitude);
+  const lng = parseLongitude(draft.longitude);
+
+  // Debounced address preview as the pin/coordinates move — never blocks
+  // saving; if the lookup fails or is slow, the form still submits with
+  // whatever coordinates are set and the list falls back to showing those.
+  useEffect(() => {
+    if (lat == null || lng == null || isNullIsland(lat, lng)) return undefined;
+    let cancelled = false;
+    setResolvingAddress(true);
+    const timer = setTimeout(async () => {
+      const resolved = await reverseGeocode(lat, lng);
+      if (!cancelled) {
+        onDraft((current) => ({ ...current, address: resolved }));
+        setResolvingAddress(false);
+      }
+    }, 700);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lat, lng]);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-slate-200 px-4 py-3">
@@ -743,6 +807,9 @@ function WizardPanel({
                 {coordErrors.longitude && <p className="text-xs text-rose-600">{coordErrors.longitude}</p>}
               </label>
             </div>
+            <p className="text-xs text-slate-400">
+              {resolvingAddress ? 'Resolving address…' : draft.address || 'Address will show once coordinates are set.'}
+            </p>
           </div>
         )}
         {step === 3 && (
@@ -803,6 +870,9 @@ function WizardPanel({
           <dl className="text-sm">
             <ReviewRow label="Name">{draft.name}</ReviewRow>
             <ReviewRow label="Department">{departmentName(draft.department_id)}</ReviewRow>
+            <ReviewRow label="Location">
+              {draft.address || formatCoordinateLabel(draft.latitude, draft.longitude)}
+            </ReviewRow>
             <ReviewRow label="Centre">
               {formatCoord(draft.latitude)}, {formatCoord(draft.longitude)}
             </ReviewRow>
@@ -860,6 +930,9 @@ function LocationDetail({
     <div className="geofence-accordion-panel border-t border-sky-100 px-3.5 pb-3 pt-1.5">
       <dl>
         <DetailField label="Department">{departmentName}</DetailField>
+        <DetailField label="Location">
+          {site.address || formatCoordinateLabel(site.latitude, site.longitude)}
+        </DetailField>
         <DetailField label="Centre">
           {formatCoord(site.latitude)}, {formatCoord(site.longitude)} • {formatMeters(site.radius)}
         </DetailField>

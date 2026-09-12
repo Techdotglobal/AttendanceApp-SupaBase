@@ -429,6 +429,13 @@ export function UsersPage() {
   };
 
   const toggleActive = async (u) => {
+    const willDeactivate = Boolean(u.is_active);
+    if (willDeactivate) {
+      const confirmed = window.confirm(
+        `Deactivate ${u.name || u.username}? They will immediately lose portal and mobile access. Their attendance, leave, and ticket history is preserved.`
+      );
+      if (!confirmed) return;
+    }
     setError('');
     try {
       await adminService.updateUser(u.uid, { is_active: !u.is_active });
@@ -643,6 +650,11 @@ export function UsersPage() {
   const bulkDeactivate = async () => {
     if (!canBulkDeactivate) return;
     const target = filteredRows.filter((r) => selected[r.uid] && r.is_active);
+    if (target.length === 0) return;
+    const confirmed = window.confirm(
+      `Deactivate ${target.length} selected user${target.length === 1 ? '' : 's'}? They will immediately lose portal and mobile access. Their history is preserved.`
+    );
+    if (!confirmed) return;
     setError('');
     try {
       for (const row of target) {
@@ -690,6 +702,9 @@ export function UsersPage() {
         email: (profile?.email || u.email) ?? '',
         report_email: (profile?.report_email || u.report_email) ?? '',
         department: (profile?.department || u.department) ?? '',
+        position: (profile?.position ?? u.position) ?? '',
+        work_mode: (profile?.work_mode || u.work_mode) ?? 'in_office',
+        hire_date: (profile?.hire_date || u.hire_date) ?? '',
         annual_leaves: lb.annual_leaves ?? 20,
         sick_leaves: lb.sick_leaves ?? 10,
         casual_leaves: lb.casual_leaves ?? 5,
@@ -706,6 +721,9 @@ export function UsersPage() {
         email: u.email || '',
         report_email: u.report_email ?? '',
         department: u.department || '',
+        position: u.position || '',
+        work_mode: u.work_mode || 'in_office',
+        hire_date: u.hire_date || '',
         annual_leaves: 20,
         sick_leaves: 10,
         casual_leaves: 5,
@@ -726,6 +744,9 @@ export function UsersPage() {
         email: editForm.email.trim(),
         report_email: editForm.report_email?.trim() || null,
         department: editForm.department || '',
+        position: editForm.position?.trim() || '',
+        work_mode: editForm.work_mode || 'in_office',
+        hire_date: editForm.hire_date || null,
       };
       if (canEditLeaveBalance) {
         payload.annual_leaves = Number(editForm.annual_leaves);
@@ -1326,8 +1347,8 @@ export function UsersPage() {
                 onChange={(e) => setCreateForm((f) => ({ ...f, workMode: e.target.value }))}
               >
                 <option value="in_office">In office</option>
-                <option value="remote">Remote</option>
-                <option value="hybrid">Hybrid</option>
+                <option value="semi_remote">Hybrid</option>
+                <option value="fully_remote">Remote</option>
               </Select>
             </div>
 
@@ -1455,6 +1476,32 @@ export function UsersPage() {
                               <option key={d.id} value={d.name}>{d.name}</option>
                             ))}
                           </Select>
+                          <label className="block space-y-1">
+                            <span className="ui-label">Position</span>
+                            <input
+                              value={editForm.position}
+                              onChange={(e) => setEditForm((f) => ({ ...f, position: e.target.value }))}
+                              className="ui-input"
+                              placeholder="Software Engineer"
+                            />
+                          </label>
+                          <Select
+                            label="Work mode"
+                            value={editForm.work_mode}
+                            onChange={(e) => setEditForm((f) => ({ ...f, work_mode: e.target.value }))}
+                          >
+                            <option value="in_office">In office</option>
+                            <option value="semi_remote">Hybrid</option>
+                            <option value="fully_remote">Remote</option>
+                          </Select>
+                          <div>
+                            <span id="edit-hire-date" className="ui-label">Hire date</span>
+                            <DatePickerField
+                              value={editForm.hire_date}
+                              onChange={(value) => setEditForm((f) => ({ ...f, hire_date: value }))}
+                              labelledBy="edit-hire-date"
+                            />
+                          </div>
                         </div>
                       )
                     ) : (
@@ -1465,6 +1512,8 @@ export function UsersPage() {
                         <ProfileField label="Role">{formatRole(activeUser.role)}</ProfileField>
                         <ProfileField label="Department">{activeUser.department || '—'}</ProfileField>
                         <ProfileField label="Position">{activeUser.position || '—'}</ProfileField>
+                        <ProfileField label="Work mode">{formatWorkMode(activeUser.work_mode)}</ProfileField>
+                        <ProfileField label="Hire date">{activeUser.hire_date || '—'}</ProfileField>
                         <ProfileField label="Status">{activeUser.is_active ? 'Active' : 'Inactive'}</ProfileField>
                       </dl>
                     )}

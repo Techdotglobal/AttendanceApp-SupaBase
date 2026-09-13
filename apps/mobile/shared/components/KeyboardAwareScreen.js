@@ -144,6 +144,21 @@ export function KeyboardAwareScreen({
 
   const behavior = getKeyboardAvoidingBehavior({ inModal });
 
+  /*
+   * On Android, an unstyled <ScrollView> does not reliably size itself to
+   * content the way a plain <View> does — the native ScrollView widget
+   * needs an explicit height/flex hint from Yoga, or it can render at zero
+   * height. That was never a problem for a full-screen KeyboardAwareScreen
+   * (its parent is always flex:1 — a real screen fills the device), but
+   * every KeyboardAwareModal usage nests this inside a content-sized sheet
+   * (maxHeight only, no explicit height) and never gave the ScrollView any
+   * style at all. flexGrow:1 there matches the full-screen case (fill
+   * whatever height the parent resolves to); flexShrink:1 with no grow in
+   * the modal case keeps it content-sized but able to shrink under the
+   * sheet's maxHeight cap instead of collapsing to nothing.
+   */
+  const innerSizeStyle = inModal ? { flexGrow: 0, flexShrink: 1 } : { flex: 1 };
+
   const ensureFocusedVisible = useCallback(() => {
     scrollFocusedIntoView({
       scrollRef,
@@ -200,6 +215,7 @@ export function KeyboardAwareScreen({
       ref={scrollRef}
       {...formScrollViewProps}
       {...scrollViewProps}
+      style={[innerSizeStyle, scrollViewProps?.style]}
       bounces={bounces}
       showsVerticalScrollIndicator={scrollViewProps?.showsVerticalScrollIndicator ?? false}
       contentContainerStyle={[
@@ -214,7 +230,7 @@ export function KeyboardAwareScreen({
     </ScrollView>
   ) : (
     <View
-      style={[{ flex: 1, paddingBottom: bottomPad }, contentContainerStyle]}
+      style={[innerSizeStyle, { paddingBottom: bottomPad }, contentContainerStyle]}
       onFocusCapture={onFocusCapture}
     >
       {children}

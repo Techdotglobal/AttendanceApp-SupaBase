@@ -1091,6 +1091,7 @@ export default function EmployeeManagement({
       <View className="flex-1 justify-center items-center" style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
         <View className="rounded-xl p-6 mx-4 w-full max-w-md" style={{ backgroundColor: colors.surface, maxHeight: '78%' }}>
           <KeyboardAwareModal
+            style={{ flex: 0, flexShrink: 1 }}
             contentContainerStyle={{ paddingBottom: spacing.lg }}
             extraScrollHeight={24}
           >
@@ -1444,6 +1445,7 @@ const LeaveSettingsModal = ({ visible, onClose, defaultSettings, onSave, onSetti
       <View className="flex-1 justify-center items-center" style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
         <View className="rounded-xl mx-4 w-full max-w-sm overflow-hidden" style={{ backgroundColor: colors.surface, maxHeight: '85%' }}>
           <KeyboardAwareModal
+            style={{ flex: 0, flexShrink: 1 }}
             contentContainerStyle={{ padding: 24 }}
             extraScrollHeight={40}
           >
@@ -1592,6 +1594,7 @@ const EmployeeLeaveModal = ({ visible, onClose, employeeData, leaveInputs, onInp
       <View className="flex-1 justify-center items-center" style={{ backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
         <View className="rounded-xl mx-4 w-full max-w-sm overflow-hidden" style={{ backgroundColor: colors.surface, maxHeight: '85%' }}>
           <KeyboardAwareModal
+            style={{ flex: 0, flexShrink: 1 }}
             contentContainerStyle={{ padding: 24 }}
             extraScrollHeight={40}
           >

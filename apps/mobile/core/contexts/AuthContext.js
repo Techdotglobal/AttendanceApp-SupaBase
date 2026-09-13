@@ -596,6 +596,23 @@ export function AuthProvider({ children }) {
         return;
       }
 
+      // exchangeCodeForSession (the manual RN path AppNavigator uses for the
+      // password-reset deep link) fires a plain SIGNED_IN — it never emits
+      // PASSWORD_RECOVERY the way the browser SDK does — and updateUser()
+      // (ResetPasswordScreen setting the new password) fires USER_UPDATED
+      // with that same still-live recovery session; a slow-enough visit to
+      // that screen could even trigger a TOKEN_REFRESHED before the user
+      // finishes. Adopting any of these here would route the user into the
+      // main app mid-reset, on a session they never meant to log in with.
+      // ResetPasswordScreen reads the session itself; ignore all three.
+      if (
+        isPasswordRecoveryActive() &&
+        (event === 'SIGNED_IN' || event === 'USER_UPDATED' || event === 'TOKEN_REFRESHED')
+      ) {
+        console.log(`[AUTH_CONTEXT] Ignoring ${event} during password recovery`);
+        return;
+      }
+
       if (event === 'TOKEN_REFRESHED') {
         console.log('Token refreshed successfully');
         if (consumeSkipNextTokenRefreshLoad()) {
@@ -627,16 +644,6 @@ export function AuthProvider({ children }) {
           scheduleLoadUserData(session.user.id, 'USER_UPDATED');
         }
       } else if (event === 'SIGNED_IN' && session?.user) {
-        // exchangeCodeForSession (the manual RN path AppNavigator uses for the
-        // password-reset deep link) always fires SIGNED_IN — it never emits
-        // PASSWORD_RECOVERY the way the browser SDK does. Adopting that
-        // session here would route the user into the main app instead of the
-        // reset-password screen, using a session they never meant to log in
-        // with. Skip it; ResetPasswordScreen reads the session itself.
-        if (isPasswordRecoveryActive()) {
-          console.log('[AUTH_CONTEXT] Ignoring SIGNED_IN during password recovery');
-          return;
-        }
         scheduleLoadUserData(session.user.id, 'SIGNED_IN');
       } else if (!session) {
         applyUserProfile(null);

@@ -410,6 +410,7 @@ export function TicketsPage() {
           ) : (
             <GlassTable
               className="rounded-none border-0 shadow-none"
+              fillsAvailableHeight
               loading={loading}
               skeletonRows={6}
               emptyTitle="No matching tickets"

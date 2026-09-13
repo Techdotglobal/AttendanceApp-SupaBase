@@ -92,7 +92,7 @@ export function Sidebar({ canSee, onLogout, unreadCount = 0, className = '', lay
   return (
     <LayoutGroup id={layoutGroupId}>
       <aside
-        className={`nav-surface relative z-40 m-0 flex h-full min-h-0 w-64 shrink-0 flex-col justify-start overflow-y-auto p-0 ${className || 'hidden md:flex'}`}
+        className={`nav-surface relative z-40 m-0 flex h-full min-h-0 w-64 shrink-0 flex-col justify-start overflow-hidden p-0 ${className || 'hidden md:flex'}`}
         aria-label="Sidebar"
       >
         <div className="relative flex h-[3.75rem] shrink-0 items-center gap-3 px-4">

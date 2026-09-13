@@ -127,6 +127,11 @@ export const adminService = {
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/audit-logs'))).data.data, 'Failed to load audit logs'),
   getUsers: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/users'))).data.data, 'Failed to load users'),
+  getPositionSuggestions: async () =>
+    executeApiCall(
+      async () => (await api.get(apiUrl('/api/auth/position-suggestions'))).data.data,
+      'Failed to load position suggestions'
+    ),
   getUserProfile: async (uid) => {
     try {
       const res = await api.get(apiUrl(`/api/admin/users/${uid}`));

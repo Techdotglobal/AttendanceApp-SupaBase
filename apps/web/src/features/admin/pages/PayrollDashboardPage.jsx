@@ -13,6 +13,7 @@ import { EmptyStateBody } from '../../../shared/components/ui/EmptyState';
 import { GlassTable, TableCell, TableRow } from '../../../shared/components/GlassTable';
 import { PageActions } from '../../../shared/components/pageChrome';
 import { formatCurrency, formatDateRange } from '../../../shared/lib/format';
+import { useSessionState } from '../../../shared/hooks/useSilentPoll';
 
 const STATUS_TONE = {
   draft: 'neutral',
@@ -36,6 +37,7 @@ export function PayrollDashboardPage() {
   const [form, setForm] = useState({ period_start: '', period_end: '', pay_date: '', notes: '' });
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [explainerDismissed, setExplainerDismissed] = useSessionState('payroll:explainerDismissed', false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -106,6 +108,26 @@ export function PayrollDashboardPage() {
       {notice && (
         <Alert type="success" onDismiss={() => setNotice('')}>
           {notice}
+        </Alert>
+      )}
+
+      {!explainerDismissed && (
+        <Alert type="info" title="How payroll works" onDismiss={() => setExplainerDismissed(true)}>
+          <p>
+            Each employee has a salary profile (monthly or hourly, with an optional overtime rate).
+            Creating a payroll period pulls their real attendance and leave records for that date
+            range: unpaid absences and unpaid leave reduce a monthly salary proportionally; hourly
+            pay is based on actual worked and paid-leave hours; hours beyond the standard day are
+            paid as overtime where enabled. Bonuses, allowances, other earnings, and deductions can
+            be added manually per employee and are added on top of — never overwrite — that
+            calculated base. Tax, if enabled on a profile, is deducted as a flat amount or a
+            percentage of gross pay.
+          </p>
+          <p className="mt-2">
+            A period moves through <strong>draft → calculated → reviewed → approved → locked</strong>.
+            Locking a period finalizes it and prevents further changes. Only Super Admin can access
+            payroll — it&apos;s not part of manager permissions.
+          </p>
         </Alert>
       )}
 

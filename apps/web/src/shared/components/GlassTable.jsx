@@ -44,6 +44,17 @@ export function GlassTable({
   onSort,
   maxHeight,
   className = '',
+  /*
+   * Pages that give this wrapper its own overflow-y (the .admin-page-locked
+   * layouts — currently just Tickets) need Lenis kept out of the vertical
+   * axis too, not just horizontal: those routes run with the page-level
+   * Lenis scroller stopped, and Lenis still calls preventDefault() on any
+   * wheel/touch gesture over an element that isn't explicitly exempted —
+   * data-lenis-prevent-horizontal alone doesn't cover that. Everywhere else
+   * this must stay off: it's what makes the table "grow with the page"
+   * instead of getting its own scrollbar (see the comment below).
+   */
+  fillsAvailableHeight = false,
 }) {
   const hasRows = Array.isArray(children) ? children.flat().filter(Boolean).length > 0 : Boolean(children);
 
@@ -54,7 +65,11 @@ export function GlassTable({
         Vertical overflow is left visible: long tables grow with the page instead of
         creating a second scrollbar. Pass maxHeight only when a capped region is required.
       */}
-      <div className="ui-table-scroll" style={maxHeight ? { maxHeight } : undefined} data-lenis-prevent-horizontal>
+      <div
+        className="ui-table-scroll"
+        style={maxHeight ? { maxHeight } : undefined}
+        {...(fillsAvailableHeight ? { 'data-lenis-prevent': true } : { 'data-lenis-prevent-horizontal': true })}
+      >
         <table className="min-w-full">
           <thead className="ui-table-head sticky top-0 z-10">
             <tr>

@@ -309,6 +309,7 @@ export function UsersPage() {
   const [createError, setCreateError] = useState('');
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [tenantDepartments, setTenantDepartments] = useState([]);
+  const [positionSuggestions, setPositionSuggestions] = useState([]);
   const [editForm, setEditForm] = useState(null);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
@@ -361,9 +362,19 @@ export function UsersPage() {
     }
   };
 
+  const loadPositionSuggestions = async () => {
+    try {
+      const positions = await adminService.getPositionSuggestions();
+      setPositionSuggestions(positions || []);
+    } catch (err) {
+      console.warn('[UsersPage] Failed to load position suggestions:', err?.message || err);
+    }
+  };
+
   useEffect(() => {
     loadUsers();
     loadDepartments();
+    loadPositionSuggestions();
   }, [canViewAttendance, canViewLeaves, canViewWorkModes]);
 
   const openCreate = () => {
@@ -853,6 +864,11 @@ export function UsersPage() {
 
   return (
     <div className="users-directory admin-page gap-3 animate-fade-up">
+      <datalist id="position-suggestions">
+        {positionSuggestions.map((position) => (
+          <option key={position} value={position} />
+        ))}
+      </datalist>
       {canCreate && (
         <PageActions>
           <button
@@ -1337,7 +1353,8 @@ export function UsersPage() {
                   value={createForm.position}
                   onChange={(e) => setCreateForm((f) => ({ ...f, position: e.target.value }))}
                   className="ui-input"
-                  placeholder="Software Engineer"
+                  placeholder="Software Engineer, HOD, VP…"
+                  list="position-suggestions"
                 />
               </label>
 
@@ -1482,7 +1499,8 @@ export function UsersPage() {
                               value={editForm.position}
                               onChange={(e) => setEditForm((f) => ({ ...f, position: e.target.value }))}
                               className="ui-input"
-                              placeholder="Software Engineer"
+                              placeholder="Software Engineer, HOD, VP…"
+                              list="position-suggestions"
                             />
                           </label>
                           <Select

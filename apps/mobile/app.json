@@ -24,7 +24,7 @@
     ],
     "ios": {
       "bundleIdentifier": "com.techdotglobal.hadirai",
-      "buildNumber": "21",
+      "buildNumber": "22",
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We use your location to verify your attendance when you check in or check out.",

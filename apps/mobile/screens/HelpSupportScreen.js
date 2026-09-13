@@ -83,7 +83,7 @@ ${message.trim()}`;
     return { subject, body, mailto: `mailto:${SUPPORT.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}` };
   };
 
-  const openUrl = async (url, fallbackMessage) => {
+  const openUrl = async (url, fallbackMessage, { silent = false } = {}) => {
     try {
       const canOpen = await Linking.canOpenURL(url);
       if (canOpen) {
@@ -93,7 +93,10 @@ ${message.trim()}`;
     } catch {
       /* fall through */
     }
-    Alert.alert('Unable to open', fallbackMessage);
+    // Callers with their own fallback UI (e.g. the "no email app" sheet
+    // below) pass silent so the user doesn't see this generic alert and
+    // then a second, better-informed one right after it.
+    if (!silent) Alert.alert('Unable to open', fallbackMessage);
     return false;
   };
 
@@ -105,7 +108,7 @@ ${message.trim()}`;
     setIsSending(true);
     try {
       const { subject, body, mailto } = buildEmailPayload();
-      const opened = await openUrl(mailto);
+      const opened = await openUrl(mailto, null, { silent: true });
       if (opened) {
         Alert.alert('Email ready', SUPPORT.responseTime, [
           { text: 'OK', onPress: () => { setMessage(''); navigation.goBack(); } },

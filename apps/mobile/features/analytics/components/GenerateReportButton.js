@@ -199,6 +199,7 @@ export default function GenerateReportButton({ style }) {
             ]}
           >
             <KeyboardAwareModal
+              style={styles.modalBodyWrapper}
               contentContainerStyle={styles.modalBodyContent}
               extraScrollHeight={40}
               scrollViewProps={{ style: styles.modalBody }}
@@ -458,9 +459,23 @@ const styles = StyleSheet.create({
   closeButton: {
     padding: spacing.xs,
   },
+  modalBodyWrapper: {
+    // Overrides KeyboardAwareModal's hardcoded flex: 1. modalContent (this
+    // wrapper's parent) is content-sized (maxHeight only, no explicit
+    // height) — a flex: 1 child there has nothing definite to resolve
+    // against and collapses to zero height, which is why the modal
+    // rendered as a dark backdrop with no visible form. flexShrink: 1
+    // keeps it shrinking (and the ScrollView below scrollable) if content
+    // ever exceeds modalContent's maxHeight.
+    flex: 0,
+    flexShrink: 1,
+  },
   modalBody: {
-    // Remove flex: 1 to prevent layout issues
-    // ScrollView will handle scrolling
+    // flex: 1 here was the same class of bug as modalBodyWrapper above,
+    // just on the ScrollView's own style instead of the wrapper actually
+    // forcing it — removing it alone didn't fix anything, since
+    // KeyboardAwareModal's internal KeyboardAvoidingView still forced
+    // flex: 1 regardless. ScrollView will handle scrolling on its own.
   },
   modalBodyContent: {
     paddingBottom: spacing.lg,

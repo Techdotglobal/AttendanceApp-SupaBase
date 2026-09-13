@@ -1056,6 +1056,7 @@ function TicketManagementDetail({ navigation, user, initialTicket, onBack }) {
         <View style={{ flex: 1, justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
           <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderBottomLeftRadius: tablet ? 24 : 0, borderBottomRightRadius: tablet ? 24 : 0, width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', maxHeight: '90%', overflow: 'hidden' }}>
             <KeyboardAwareModal
+              style={{ flex: 0, flexShrink: 1 }}
               contentContainerStyle={{ padding: 24 }}
               extraScrollHeight={40}
             >

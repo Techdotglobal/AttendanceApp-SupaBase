@@ -508,6 +508,7 @@ export default function TicketScreen({ navigation, route }) {
               }}
             >
               <KeyboardAwareModal
+                style={{ flex: 0, flexShrink: 1 }}
                 contentContainerStyle={{ padding: responsivePadding(24) }}
                 extraScrollHeight={40}
               >

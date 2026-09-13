@@ -554,6 +554,7 @@ export default function ThemeSettingsScreen({ navigation, route }) {
             }}
           >
             <KeyboardAwareModal
+              style={{ flex: 0, flexShrink: 1 }}
               contentContainerStyle={{ padding: 24 }}
               extraScrollHeight={40}
             >

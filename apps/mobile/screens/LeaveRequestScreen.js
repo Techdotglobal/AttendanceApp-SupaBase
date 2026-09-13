@@ -469,6 +469,7 @@ export default function LeaveRequestScreen({ navigation, route }) {
         <View className="flex-1" style={{ justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
           <View className="rounded-t-3xl" style={{ backgroundColor: colors.surface, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', borderBottomLeftRadius: tablet ? 24 : 0, borderBottomRightRadius: tablet ? 24 : 0, overflow: 'hidden' }}>
               <KeyboardAwareModal
+                style={{ flex: 0, flexShrink: 1 }}
                 contentContainerStyle={{ padding: 24 }}
                 extraScrollHeight={40}
               >

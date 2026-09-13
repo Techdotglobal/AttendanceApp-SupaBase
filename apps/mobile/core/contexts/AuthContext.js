@@ -11,6 +11,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../config/supabase';
+import { isPasswordRecoveryActive } from '../auth/passwordRecoveryFlag';
 import { getTenantClaimsFromSession } from '../auth/tenantClaims';
 import { normalizeEmailForAuth } from '../auth/normalizeLogin';
 import { requireValidCompanyId } from '../tenant/tenantScope';
@@ -626,6 +627,16 @@ export function AuthProvider({ children }) {
           scheduleLoadUserData(session.user.id, 'USER_UPDATED');
         }
       } else if (event === 'SIGNED_IN' && session?.user) {
+        // exchangeCodeForSession (the manual RN path AppNavigator uses for the
+        // password-reset deep link) always fires SIGNED_IN — it never emits
+        // PASSWORD_RECOVERY the way the browser SDK does. Adopting that
+        // session here would route the user into the main app instead of the
+        // reset-password screen, using a session they never meant to log in
+        // with. Skip it; ResetPasswordScreen reads the session itself.
+        if (isPasswordRecoveryActive()) {
+          console.log('[AUTH_CONTEXT] Ignoring SIGNED_IN during password recovery');
+          return;
+        }
         scheduleLoadUserData(session.user.id, 'SIGNED_IN');
       } else if (!session) {
         applyUserProfile(null);

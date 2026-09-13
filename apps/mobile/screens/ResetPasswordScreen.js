@@ -27,6 +27,7 @@ import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsi
 import Logo from '../components/Logo';
 import Trademark from '../components/Trademark';
 import { KeyboardAwareScreen } from '../shared/components/KeyboardAwareScreen';
+import { setPasswordRecoveryActive } from '../core/auth/passwordRecoveryFlag';
 
 export default function ResetPasswordScreen({ route }) {
   const navigation = useNavigation();
@@ -67,6 +68,12 @@ export default function ResetPasswordScreen({ route }) {
     };
 
     checkSession();
+
+    // Safety net: however this screen is left (success, expired-link bail-out,
+    // hardware back), clear the flag so a genuine future login isn't ignored
+    // by AuthContext. The success path also clears it explicitly before
+    // signing out, since that happens well before this screen unmounts.
+    return () => setPasswordRecoveryActive(false);
   }, []);
 
   const validateForm = () => {
@@ -171,6 +178,7 @@ export default function ResetPasswordScreen({ route }) {
             onPress: async () => {
               // Sign out to ensure clean state (Supabase recovery session is temporary)
               try {
+                setPasswordRecoveryActive(false);
                 await supabase.auth.signOut();
                 // Navigate to login screen
                 if (navigation.canGoBack()) {

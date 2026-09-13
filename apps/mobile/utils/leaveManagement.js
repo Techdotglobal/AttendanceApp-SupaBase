@@ -456,6 +456,16 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
       days = calculateWorkingDays(start, end);
     }
 
+    // A weekend-only range has no working days — reject before it can slip
+    // past the `days > availableLeaves` check below (0 is never greater than
+    // any balance) and create a spurious 0-day pending request.
+    if (days <= 0) {
+      return {
+        success: false,
+        error: 'Selected dates contain no working days. Please choose at least one weekday.'
+      };
+    }
+
     // Check if employee has enough leaves
     const leaveBalance = await getEmployeeLeaveBalance(employeeId);
     const remaining = calculateRemainingLeaves(leaveBalance);

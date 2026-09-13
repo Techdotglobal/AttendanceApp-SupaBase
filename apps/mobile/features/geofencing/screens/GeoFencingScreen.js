@@ -40,6 +40,11 @@ export default function GeoFencingScreen({ navigation, route }) {
   const user = authUser || route.params?.user || {};
   const { colors } = useTheme();
   const mapRef = useRef(null);
+  // reverseGeocode only debounces its own timer, not the in-flight Nominatim
+  // fetch — an older drag's request can resolve after a newer one and
+  // overwrite the correct name. Tracks which request is the latest so a
+  // stale response is ignored instead of applied.
+  const locationRequestIdRef = useRef(0);
 
   const [officeLocation, setOfficeLocation] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -197,6 +202,7 @@ export default function GeoFencingScreen({ navigation, route }) {
    * @param {number} longitude - Longitude
    */
   const resolveLocationName = async (latitude, longitude) => {
+    const requestId = ++locationRequestIdRef.current;
     try {
       setIsResolvingLocation(true);
       console.log('[GeoFencingScreen] Resolving location name for:', {
@@ -205,14 +211,25 @@ export default function GeoFencingScreen({ navigation, route }) {
       });
 
       const name = await reverseGeocode(latitude, longitude, 600); // 600ms debounce
+      if (requestId !== locationRequestIdRef.current) {
+        // A newer drag started (and possibly already resolved) while this
+        // request was in flight — applying this result would show a name
+        // for coordinates the marker is no longer at.
+        console.log('[GeoFencingScreen] Discarding stale location name resolution');
+        return;
+      }
       setLocationName(name);
 
       console.log('[GeoFencingScreen] Location name resolved:', name);
     } catch (err) {
       console.error('[GeoFencingScreen] Error resolving location name:', err);
-      setLocationName('Unknown location');
+      if (requestId === locationRequestIdRef.current) {
+        setLocationName('Unknown location');
+      }
     } finally {
-      setIsResolvingLocation(false);
+      if (requestId === locationRequestIdRef.current) {
+        setIsResolvingLocation(false);
+      }
     }
   };
 

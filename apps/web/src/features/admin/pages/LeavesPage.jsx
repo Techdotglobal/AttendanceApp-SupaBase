@@ -47,6 +47,26 @@ const EMPTY_CREATE_LEAVE_FORM = {
 const pad = (value) => String(value).padStart(2, '0');
 const toDateKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 
+// Mirrors the backend's countBusinessDays (payrollEngine.js, reused by
+// POST /api/admin/leaves) exactly — Mon-Fri inclusive, UTC day-of-week so a
+// "YYYY-MM-DD" string always lands on the same weekday regardless of the
+// browser's local timezone. Client-side only for instant UI feedback; the
+// backend independently recomputes and is the actual source of truth.
+function countWorkingDays(startDateStr, endDateStr) {
+  if (!startDateStr || !endDateStr) return null;
+  const [sy, sm, sd] = startDateStr.split('-').map(Number);
+  const [ey, em, ed] = endDateStr.split('-').map(Number);
+  const start = Date.UTC(sy, (sm || 1) - 1, sd || 1);
+  const end = Date.UTC(ey, (em || 1) - 1, ed || 1);
+  if (Number.isNaN(start) || Number.isNaN(end) || start > end) return null;
+  let count = 0;
+  for (let cur = start; cur <= end; cur += 86400000) {
+    const day = new Date(cur).getUTCDay();
+    if (day !== 0 && day !== 6) count += 1;
+  }
+  return count;
+}
+
 function parseDate(value) {
   if (!value) return null;
   const raw = String(value).split('T')[0];
@@ -161,6 +181,9 @@ export function LeavesPage() {
   const [createError, setCreateError] = useState('');
   const [employeeOptions, setEmployeeOptions] = useState([]);
   const [employeesLoading, setEmployeesLoading] = useState(false);
+  const [balancePreview, setBalancePreview] = useState(null); // { days, allocated, used, remaining, insufficientBalance }
+  const [balanceChecking, setBalanceChecking] = useState(false);
+  const [overrideAcknowledged, setOverrideAcknowledged] = useState(false);
 
   const canApprove = hasPermission(user, PERMISSIONS.APPROVE_LEAVE);
   const canReject = hasPermission(user, PERMISSIONS.REJECT_LEAVE);
@@ -319,6 +342,8 @@ export function LeavesPage() {
   const openCreate = async () => {
     setCreateForm(EMPTY_CREATE_LEAVE_FORM);
     setCreateError('');
+    setBalancePreview(null);
+    setOverrideAcknowledged(false);
     setCreateOpen(true);
     if (employeeOptions.length === 0) {
       setEmployeesLoading(true);
@@ -340,7 +365,61 @@ export function LeavesPage() {
     setCreateOpen(false);
     setCreateForm(EMPTY_CREATE_LEAVE_FORM);
     setCreateError('');
+    setBalancePreview(null);
+    setOverrideAcknowledged(false);
   };
+
+  const createEndDate = createForm.is_half_day ? createForm.start_date : createForm.end_date;
+  const localWorkingDays = createForm.is_half_day
+    ? createForm.start_date
+      ? 0.5
+      : null
+    : countWorkingDays(createForm.start_date, createEndDate);
+  const rangeHasNoWorkingDays = localWorkingDays !== null && localWorkingDays <= 0;
+
+  // Proactively preview the balance/override situation as soon as there's
+  // enough on the form to ask the backend — the backend recomputes this
+  // independently at actual submit time regardless of what this returns.
+  useEffect(() => {
+    if (!createOpen) return undefined;
+    setOverrideAcknowledged(false);
+    if (
+      !createForm.employee_uid ||
+      !createForm.start_date ||
+      !createEndDate ||
+      rangeHasNoWorkingDays
+    ) {
+      setBalancePreview(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setBalanceChecking(true);
+    const timer = setTimeout(async () => {
+      try {
+        const preview = await adminService.createLeave({
+          employee_uid: createForm.employee_uid,
+          leave_type: createForm.leave_type,
+          start_date: createForm.start_date,
+          end_date: createEndDate,
+          is_half_day: createForm.is_half_day,
+          dry_run: true,
+        });
+        if (!cancelled) setBalancePreview(preview);
+      } catch {
+        if (!cancelled) setBalancePreview(null);
+      } finally {
+        if (!cancelled) setBalanceChecking(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createOpen, createForm.employee_uid, createForm.leave_type, createForm.start_date, createEndDate, createForm.is_half_day, rangeHasNoWorkingDays]);
+
+  const needsOverride = Boolean(balancePreview?.insufficientBalance);
+  const canSubmitCreate = !rangeHasNoWorkingDays && (!needsOverride || overrideAcknowledged);
 
   const submitCreate = async (e) => {
     e?.preventDefault?.();
@@ -353,20 +432,31 @@ export function LeavesPage() {
       setCreateError('Start and end dates are required.');
       return;
     }
+    if (rangeHasNoWorkingDays) {
+      setCreateError('The selected date range contains no working days. Choose a range that includes at least one weekday.');
+      return;
+    }
+    if (needsOverride && !overrideAcknowledged) {
+      setCreateError('Acknowledge the insufficient-balance override before submitting.');
+      return;
+    }
     setCreateSubmitting(true);
     try {
       await adminService.createLeave({
         employee_uid: createForm.employee_uid,
         leave_type: createForm.leave_type,
         start_date: createForm.start_date,
-        end_date: createForm.is_half_day ? createForm.start_date : createForm.end_date,
+        end_date: createEndDate,
         is_half_day: createForm.is_half_day,
         half_day_period: createForm.is_half_day ? createForm.half_day_period : null,
         reason: createForm.reason.trim(),
+        override_acknowledged: overrideAcknowledged,
       });
       setNotice('Leave request created.');
       setCreateOpen(false);
       setCreateForm(EMPTY_CREATE_LEAVE_FORM);
+      setBalancePreview(null);
+      setOverrideAcknowledged(false);
       await load();
     } catch (err) {
       setCreateError(err?.response?.data?.error || err?.message || 'Failed to create leave request');
@@ -780,7 +870,7 @@ export function LeavesPage() {
             <button
               type="button"
               className="ui-btn-primary ui-btn-sm"
-              disabled={createSubmitting}
+              disabled={createSubmitting || !canSubmitCreate}
               onClick={submitCreate}
             >
               {createSubmitting ? 'Creating…' : 'Create request'}
@@ -857,6 +947,40 @@ export function LeavesPage() {
               </div>
             )}
           </div>
+
+          {!createForm.is_half_day && createForm.start_date && createEndDate && (
+            <p className={`text-xs ${rangeHasNoWorkingDays ? 'text-rose-600' : 'text-slate-400'}`}>
+              {rangeHasNoWorkingDays
+                ? 'This range contains no working days — pick at least one weekday.'
+                : `${localWorkingDays} working day${localWorkingDays === 1 ? '' : 's'}.`}
+            </p>
+          )}
+
+          {needsOverride && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              <p className="font-medium">
+                Insufficient {formatLeaveTypeLabel(createForm.leave_type).toLowerCase()} leave balance.
+              </p>
+              <p className="mt-1 text-xs text-amber-700">
+                Available: {balancePreview.remaining} day{balancePreview.remaining === 1 ? '' : 's'} · Requested:{' '}
+                {balancePreview.days} day{balancePreview.days === 1 ? '' : 's'}. This request will be created as an
+                HR override.
+              </p>
+              <label className="mt-2 flex items-center gap-2 text-xs font-medium text-amber-900">
+                <input
+                  type="checkbox"
+                  className="ui-checkbox"
+                  checked={overrideAcknowledged}
+                  onChange={(e) => setOverrideAcknowledged(e.target.checked)}
+                />
+                I acknowledge the insufficient balance and want to create this request anyway.
+              </label>
+            </div>
+          )}
+
+          {balanceChecking && !balancePreview && (
+            <p className="text-xs text-slate-400">Checking leave balance…</p>
+          )}
 
           {createForm.is_half_day && (
             <label className="block space-y-1">

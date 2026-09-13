@@ -156,6 +156,33 @@ const resolveLeaveBalanceForUser = async (uid, companyId) => {
   };
 };
 
+const LEAVE_TYPE_BALANCE_FIELD = {
+  annual: 'annual_leaves',
+  sick: 'sick_leaves',
+  casual: 'casual_leaves',
+};
+
+/**
+ * Allocated balance minus already-approved days of that type. Mirrors the
+ * mobile self-service calculation (apps/mobile/utils/leaveManagement.js
+ * calculateRemainingLeaves), just computed server-side since the admin
+ * leave-creation endpoint has no equivalent client to do it in.
+ */
+const resolveRemainingLeaveForEmployee = async (employeeUid, companyId, leaveType) => {
+  const field = LEAVE_TYPE_BALANCE_FIELD[leaveType];
+  const balance = await resolveLeaveBalanceForUser(employeeUid, companyId);
+  const allocated = Number(balance[field]) || 0;
+  const { data: approved } = await supabase
+    .from('leave_requests')
+    .select('days')
+    .eq('employee_uid', employeeUid)
+    .eq('company_id', companyId)
+    .eq('leave_type', leaveType)
+    .eq('status', 'approved');
+  const used = (approved || []).reduce((sum, row) => sum + (Number(row.days) || 0), 0);
+  return { allocated, used, remaining: allocated - used };
+};
+
 const getUsersBaseQuery = (requester, companyId) => {
   let query = supabase
     .from('users')
@@ -1591,6 +1618,45 @@ router.post('/leaves', async (req, res) => {
     }
 
     const days = isHalfDay ? 0.5 : countBusinessDays(startDate, endDate);
+    if (days <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'The selected date range contains no working days. Choose a range that includes at least one weekday.',
+      });
+    }
+
+    const { allocated, used, remaining } = await resolveRemainingLeaveForEmployee(employee.uid, companyId, leaveType);
+    const insufficientBalance = days > remaining;
+    const overrideAcknowledged = Boolean(body.override_acknowledged);
+
+    // Dry run: let the UI show the balance/override warning before the
+    // employee actually acts on it, without creating anything.
+    if (body.dry_run) {
+      return res.status(200).json({
+        success: true,
+        data: { days, allocated, used, remaining, insufficientBalance },
+      });
+    }
+
+    // HR/Admin (the only requesters who can reach this route — gated by
+    // create_leave_request above) are allowed to override an insufficient
+    // balance, but only after explicitly acknowledging it. The client
+    // cannot skip this by just sending override_acknowledged: true — the
+    // balance itself is always recomputed here, never taken from the
+    // client, so the flag only ever confirms a warning this same request
+    // already independently verified.
+    if (insufficientBalance && !overrideAcknowledged) {
+      return res.status(409).json({
+        success: false,
+        error: `Insufficient ${leaveType} leave balance. Available: ${remaining}, requested: ${days}.`,
+        code: 'INSUFFICIENT_BALANCE',
+        data: { days, allocated, used, remaining },
+      });
+    }
+
+    const overrideNote = insufficientBalance
+      ? `HR override: created despite insufficient ${leaveType} leave balance (requested ${days}, available ${remaining}).`
+      : null;
 
     const { data, error } = await supabase
       .from('leave_requests')
@@ -1609,6 +1675,7 @@ router.post('/leaves', async (req, res) => {
         reason: reason || null,
         category: employee.department_id ? String(employee.department_id) : null,
         status: 'pending',
+        admin_notes: overrideNote,
       })
       .select()
       .single();
@@ -1617,7 +1684,7 @@ router.post('/leaves', async (req, res) => {
     await writeAuditLog(supabase, {
       actorUid: requester.uid,
       targetUid: employee.uid,
-      action: 'leave_request_created',
+      action: insufficientBalance ? 'leave_request_created_override' : 'leave_request_created',
     });
 
     res.status(201).json({ success: true, data });

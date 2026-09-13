@@ -241,9 +241,16 @@ export function TicketsPage() {
       setSuccess('Ticket created.');
       setShowCreate(false);
       setForm(emptyForm);
+      // Merge the real, just-inserted row in immediately rather than relying
+      // solely on the background reload below — that reload is silent (its
+      // own errors are swallowed on purpose so a transient background poll
+      // never surfaces a scary message), so if it hiccups right after
+      // create, `tickets` would never gain the new row and the selected
+      // ticket couldn't be found until a full page reload.
+      setTickets((prev) => (prev.some((t) => t.id === created.id) ? prev : [created, ...prev]));
       setSelectedId(created.id);
-      await load(true);
-      await refreshBadge();
+      load(true);
+      refreshBadge();
     } catch (err) {
       setError(err.message);
     } finally {

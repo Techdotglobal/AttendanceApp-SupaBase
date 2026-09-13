@@ -46,12 +46,20 @@ function flattenOptions(children, group = null) {
   return items;
 }
 
+/** Flattens JSX children (e.g. `{name} ({department})`, an array of nodes —
+ * not a single string) into plain text, for search filtering. */
+function extractText(node) {
+  if (node == null || node === false) return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (isValidElement(node)) return extractText(node.props?.children);
+  return '';
+}
+
 function optionLabel(item) {
   if (item == null) return '';
-  const { label } = item;
-  if (label == null || label === false) return '';
-  if (typeof label === 'string' || typeof label === 'number') return String(label);
-  return String(item.value ?? '');
+  const text = extractText(item.label);
+  return text || String(item.value ?? '');
 }
 
 export function Select({

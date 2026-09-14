@@ -51,6 +51,18 @@ export default function LeaveRequestScreen({ navigation, route }) {
   const [departmentsLoading, setDepartmentsLoading] = useState(true);
   const [departmentsError, setDepartmentsError] = useState(null);
 
+  // ─── TEMPORARY DIAGNOSTIC — remove once the invisible-modal root cause is
+  // confirmed. Three minimal modals, each changing exactly one variable
+  // relative to the real "New Leave Request" modal below, to isolate which
+  // structural difference (if any) is responsible:
+  //   Test 1 — identical structure to the real modal (overflow:'hidden' +
+  //            KeyboardAwareModal), trivial content.
+  //   Test 2 — same as Test 1 but WITHOUT overflow:'hidden' on the sheet.
+  //   Test 3 — same as Test 2 but WITHOUT KeyboardAwareModal (plain View).
+  const [debugTest1, setDebugTest1] = useState(false);
+  const [debugTest2, setDebugTest2] = useState(false);
+  const [debugTest3, setDebugTest3] = useState(false);
+
   const loadDepartments = async () => {
     setDepartmentsLoading(true);
     setDepartmentsError(null);
@@ -386,7 +398,35 @@ export default function LeaveRequestScreen({ navigation, route }) {
         </View>
       </View>
 
-      <ScrollView 
+      {/* TEMPORARY DIAGNOSTIC ROW — remove after root cause is confirmed */}
+      <View style={{ flexDirection: 'row', gap: 8, padding: 8, backgroundColor: '#fee2e2' }}>
+        <TouchableOpacity
+          onPress={() => setDebugTest1(true)}
+          style={{ flex: 1, backgroundColor: '#dc2626', borderRadius: 8, padding: 8 }}
+        >
+          <Text style={{ color: 'white', fontSize: 11, textAlign: 'center', fontWeight: '700' }}>
+            TEST 1{'\n'}(exact copy)
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setDebugTest2(true)}
+          style={{ flex: 1, backgroundColor: '#ea580c', borderRadius: 8, padding: 8 }}
+        >
+          <Text style={{ color: 'white', fontSize: 11, textAlign: 'center', fontWeight: '700' }}>
+            TEST 2{'\n'}(no overflow)
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setDebugTest3(true)}
+          style={{ flex: 1, backgroundColor: '#7c3aed', borderRadius: 8, padding: 8 }}
+        >
+          <Text style={{ color: 'white', fontSize: 11, textAlign: 'center', fontWeight: '700' }}>
+            TEST 3{'\n'}(no KAModal)
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
         className="flex-1"
         style={{ backgroundColor: colors.background }}
         refreshControl={
@@ -908,6 +948,60 @@ export default function LeaveRequestScreen({ navigation, route }) {
                 </TouchableOpacity>
               </View>
               </KeyboardAwareModal>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ─── TEMPORARY DIAGNOSTIC MODALS — remove after root cause confirmed ─── */}
+
+      {/* TEST 1: exact structural copy of the real modal above (className +
+          overflow:'hidden' + KeyboardAwareModal), trivial content only.
+          If this is ALSO invisible, the bug is in the wrapper chain, not in
+          the real form's specific content (DatePickerCalendar, etc). If this
+          renders FINE, the bug is inside the real form's content instead. */}
+      <Modal visible={debugTest1} transparent animationType="slide" onRequestClose={() => setDebugTest1(false)}>
+        <View className="flex-1" style={{ justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
+          <View className="rounded-t-3xl" style={{ backgroundColor: colors.surface, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', borderBottomLeftRadius: tablet ? 24 : 0, borderBottomRightRadius: tablet ? 24 : 0, overflow: 'hidden' }}>
+            <KeyboardAwareModal style={{ flex: 0, flexShrink: 1 }} contentContainerStyle={{ padding: 24 }} extraScrollHeight={40}>
+              <Text style={{ fontSize: 22, fontWeight: 'bold', color: colors.text, marginBottom: 16 }}>MODAL TEST 1</Text>
+              <Text style={{ color: colors.text, marginBottom: 24 }}>Exact copy of the real modal's wrapper structure.</Text>
+              <TouchableOpacity onPress={() => setDebugTest1(false)} style={{ backgroundColor: colors.primary, borderRadius: 12, padding: 14, alignItems: 'center' }}>
+                <Text style={{ color: 'white', fontWeight: '700' }}>Close</Text>
+              </TouchableOpacity>
+            </KeyboardAwareModal>
+          </View>
+        </View>
+      </Modal>
+
+      {/* TEST 2: same as Test 1 but WITHOUT overflow:'hidden' on the sheet. */}
+      <Modal visible={debugTest2} transparent animationType="slide" onRequestClose={() => setDebugTest2(false)}>
+        <View className="flex-1" style={{ justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
+          <View className="rounded-t-3xl" style={{ backgroundColor: colors.surface, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', borderBottomLeftRadius: tablet ? 24 : 0, borderBottomRightRadius: tablet ? 24 : 0 }}>
+            <KeyboardAwareModal style={{ flex: 0, flexShrink: 1 }} contentContainerStyle={{ padding: 24 }} extraScrollHeight={40}>
+              <Text style={{ fontSize: 22, fontWeight: 'bold', color: colors.text, marginBottom: 16 }}>MODAL TEST 2</Text>
+              <Text style={{ color: colors.text, marginBottom: 24 }}>Same as Test 1, minus overflow:'hidden'.</Text>
+              <TouchableOpacity onPress={() => setDebugTest2(false)} style={{ backgroundColor: colors.primary, borderRadius: 12, padding: 14, alignItems: 'center' }}>
+                <Text style={{ color: 'white', fontWeight: '700' }}>Close</Text>
+              </TouchableOpacity>
+            </KeyboardAwareModal>
+          </View>
+        </View>
+      </Modal>
+
+      {/* TEST 3: same as Test 1 but WITHOUT KeyboardAwareModal — plain View
+          instead, matching the never-reported-broken "Assign Ticket" modal
+          pattern in TicketManagementScreen.js. overflow:'hidden' kept, so
+          only KeyboardAwareModal is the changed variable vs Test 1. */}
+      <Modal visible={debugTest3} transparent animationType="slide" onRequestClose={() => setDebugTest3(false)}>
+        <View className="flex-1" style={{ justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0, 0, 0, 0.5)' }}>
+          <View className="rounded-t-3xl" style={{ backgroundColor: colors.surface, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', borderBottomLeftRadius: tablet ? 24 : 0, borderBottomRightRadius: tablet ? 24 : 0, overflow: 'hidden' }}>
+            <View style={{ padding: 24 }}>
+              <Text style={{ fontSize: 22, fontWeight: 'bold', color: colors.text, marginBottom: 16 }}>MODAL TEST 3</Text>
+              <Text style={{ color: colors.text, marginBottom: 24 }}>Same as Test 1, minus KeyboardAwareModal (plain View).</Text>
+              <TouchableOpacity onPress={() => setDebugTest3(false)} style={{ backgroundColor: colors.primary, borderRadius: 12, padding: 14, alignItems: 'center' }}>
+                <Text style={{ color: 'white', fontWeight: '700' }}>Close</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>

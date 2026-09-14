@@ -483,7 +483,7 @@ export function TicketsPage() {
                 <p className="text-[17px] font-semibold tracking-tight text-slate-900">New ticket</p>
                 <p className="mt-1 text-sm text-slate-500">Capture the question so the right person can follow it.</p>
               </div>
-              <div className="space-y-3 px-5 py-4">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4" data-lenis-prevent>
                 <Select
                   required
                   value={form.category}

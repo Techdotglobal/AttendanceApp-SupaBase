@@ -504,7 +504,6 @@ export default function TicketScreen({ navigation, route }) {
                 width: '100%',
                 maxWidth: tablet ? 700 : undefined,
                 alignSelf: 'center',
-                overflow: 'hidden',
               }}
             >
               <KeyboardAwareModal

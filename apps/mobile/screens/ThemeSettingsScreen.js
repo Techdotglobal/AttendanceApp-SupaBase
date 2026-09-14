@@ -550,7 +550,6 @@ export default function ThemeSettingsScreen({ navigation, route }) {
               borderTopLeftRadius: 24,
               borderTopRightRadius: 24,
               maxHeight: '90%',
-              overflow: 'hidden',
             }}
           >
             <KeyboardAwareModal

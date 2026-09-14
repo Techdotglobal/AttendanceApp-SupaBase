@@ -443,7 +443,7 @@ export default function ManualAttendanceScreen({ navigation }) {
         onRequestClose={() => setShowAddModal(false)}
       >
         <View style={{ flex: 1, justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
-            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderBottomLeftRadius: tablet ? 20 : 0, borderBottomRightRadius: tablet ? 20 : 0, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', overflow: 'hidden' }}>
+            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderBottomLeftRadius: tablet ? 20 : 0, borderBottomRightRadius: tablet ? 20 : 0, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center' }}>
               <KeyboardAwareModal
                 style={{ flex: 0, flexShrink: 1 }}
                 contentContainerStyle={{ padding: responsivePadding(20) }}
@@ -631,7 +631,7 @@ export default function ManualAttendanceScreen({ navigation }) {
         onRequestClose={() => setShowEditModal(false)}
       >
         <View style={{ flex: 1, justifyContent: tablet ? 'center' : 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
-            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderBottomLeftRadius: tablet ? 20 : 0, borderBottomRightRadius: tablet ? 20 : 0, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center', overflow: 'hidden' }}>
+            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderBottomLeftRadius: tablet ? 20 : 0, borderBottomRightRadius: tablet ? 20 : 0, maxHeight: tablet ? '85%' : '90%', width: '100%', maxWidth: tablet ? 700 : undefined, alignSelf: 'center' }}>
               <KeyboardAwareModal
                 style={{ flex: 0, flexShrink: 1 }}
                 contentContainerStyle={{ padding: responsivePadding(20) }}

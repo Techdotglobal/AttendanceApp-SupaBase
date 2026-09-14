@@ -194,7 +194,6 @@ export default function GenerateReportButton({ style }) {
               styles.modalContent,
               {
                 backgroundColor: colors.surface,
-                overflow: 'hidden',
               },
             ]}
           >
@@ -442,8 +441,6 @@ const styles = StyleSheet.create({
     maxHeight: '85%',
     // Ensure modal doesn't overflow screen
     alignSelf: 'center',
-    // Prevent content from being cut off
-    overflow: 'hidden',
     // Ensure proper layout
     flexShrink: 1,
   },

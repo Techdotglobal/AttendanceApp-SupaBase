@@ -3103,6 +3103,18 @@ input[type='checkbox']:not(.sr-only):disabled {
 }
 
 .tickets-directory.admin-page-locked .tickets-workspace {
+  /* Tailwind's build occasionally emits a stale duplicate of the shared
+     ".admin-fill:not(.grid)..." rule (see admin-page-locked .admin-fill
+     below) with a different :not() argument left over from another
+     @apply'd consumer of the "grid" utility (.ui-field-affix / .ui-row-
+     action both `@apply grid`). That duplicate incorrectly matches this
+     element (it lacks .ui-field-affix/.ui-row-action) and forces
+     display:flex, collapsing the two-column layout into a single stacked
+     column that overflows its clipped parent — hiding everything below
+     the fold, including the New Ticket pane. Pin display:grid here so
+     this page's layout can't be knocked over by that unrelated rule.
+  */
+  display: grid !important;
   min-height: 0;
   align-items: stretch;
 }

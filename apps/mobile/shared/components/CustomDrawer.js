@@ -174,7 +174,7 @@ export default function CustomDrawer({ navigation, state }) {
       }
 
       employeeItems.push({
-        name: 'Theme Settings',
+        name: 'Settings',
         icon: 'color-palette-outline',
         screen: ROUTES.THEME_SETTINGS,
         roles: ['employee'],
@@ -307,7 +307,7 @@ export default function CustomDrawer({ navigation, state }) {
     }
 
     adminMenuItems.push({
-      name: 'Theme Settings',
+      name: 'Settings',
       icon: 'color-palette-outline',
       screen: ROUTES.THEME_SETTINGS,
       roles: ['super_admin', 'manager'],

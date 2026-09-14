@@ -24,6 +24,14 @@ import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTable
 import { useAuth } from '../contexts/AuthContext';
 import { useStaleWhileRevalidate } from '../shared/hooks/useStaleWhileRevalidate';
 
+// Android's "numeric" keyboard has no ":" key, so auto-insert it as the user
+// types digits (e.g. "1030" -> "10:30") instead of requiring them to type it.
+function formatTimeInput(text) {
+  const digits = text.replace(/[^0-9]/g, '').slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
 export default function ManualAttendanceScreen({ navigation }) {
   const { user: authUser } = useAuth();
   const user = authUser;
@@ -556,8 +564,9 @@ export default function ManualAttendanceScreen({ navigation }) {
                   placeholder="09:30"
                   placeholderTextColor={colors.textTertiary}
                   value={selectedTime}
-                  onChangeText={setSelectedTime}
+                  onChangeText={(text) => setSelectedTime(formatTimeInput(text))}
                   keyboardType="numeric"
+                  maxLength={5}
                 />
               </View>
 
@@ -734,8 +743,9 @@ export default function ManualAttendanceScreen({ navigation }) {
                   placeholder="09:30"
                   placeholderTextColor={colors.textTertiary}
                   value={selectedTime}
-                  onChangeText={setSelectedTime}
+                  onChangeText={(text) => setSelectedTime(formatTimeInput(text))}
                   keyboardType="numeric"
+                  maxLength={5}
                 />
               </View>
 

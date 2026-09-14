@@ -50,10 +50,13 @@ async function verifySuperAdmin(req, res, next) {
 
     let query = supabase.from('users').select('role, uid, id, email, username, company_id, name').eq('is_active', true);
 
-    if (userEmail) {
-      query = query.eq('email', userEmail);
-    } else {
+    // uid is the authoritative identity (supabase.auth session.user.id) throughout
+    // this app — match on it first. Email is only a fallback for callers that
+    // couldn't resolve a uid, since it can drift from the auth session's email.
+    if (userId) {
       query = query.or(`uid.eq.${userId},id.eq.${userId}`);
+    } else {
+      query = query.eq('email', userEmail);
     }
 
     const { data, error } = await query.single();

@@ -85,33 +85,44 @@ jobs:
           token: ${{ secrets.EXPO_TOKEN }}
 
       # ── 5a. Deploy to PREVIEW (master branch) ───────────────────────────────
+      # Commit message is passed through an env var (not interpolated
+      # directly into the shell string) so literal " characters in the
+      # message can't break out of --message's quoting and get parsed as
+      # extra positional arguments to `eas update`.
       - name: Deploy OTA → preview channel
         if: github.ref == 'refs/heads/master'
         working-directory: apps/mobile
+        env:
+          UPDATE_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           eas update \
             --branch preview \
-            --message "preview: ${{ github.sha }} — ${{ github.event.head_commit.message }}" \
+            --message "preview: ${GITHUB_SHA} — ${UPDATE_MESSAGE}" \
             --non-interactive
 
       # ── 5b. Deploy to PRODUCTION (production branch) ────────────────────────
       - name: Deploy OTA → production channel
         if: github.ref == 'refs/heads/production'
         working-directory: apps/mobile
+        env:
+          UPDATE_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           eas update \
             --branch production \
-            --message "production: ${{ github.sha }} — ${{ github.event.head_commit.message }}" \
+            --message "production: ${GITHUB_SHA} — ${UPDATE_MESSAGE}" \
             --non-interactive
 
       # ── 5c. Manual dispatch ──────────────────────────────────────────────────
       - name: Deploy OTA → manual dispatch channel
         if: github.event_name == 'workflow_dispatch'
         working-directory: apps/mobile
+        env:
+          UPDATE_CHANNEL: ${{ github.event.inputs.channel }}
+          UPDATE_MESSAGE: ${{ github.event.inputs.message }}
         run: |
           eas update \
-            --branch ${{ github.event.inputs.channel }} \
-            --message "${{ github.event.inputs.message }} (${{ github.sha }})" \
+            --branch "${UPDATE_CHANNEL}" \
+            --message "${UPDATE_MESSAGE} (${GITHUB_SHA})" \
             --non-interactive
 
       # ── 6. Summary ──────────────────────────────────────────────────────────

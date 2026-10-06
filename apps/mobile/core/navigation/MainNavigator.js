@@ -38,6 +38,15 @@ export default function MainNavigator({ user }) {
   const { colors } = useTheme();
   const can = (permissionKey) => hasPermission(user, permissionKey);
   const canAny = (permissionKeys) => hasAnyPermission(user, permissionKeys);
+  const adminAccessKeys = [
+    MANAGER_PERMISSIONS.VIEW_EMPLOYEES,
+    MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD,
+    MANAGER_PERMISSIONS.VIEW_TICKETS,
+    MANAGER_PERMISSIONS.MANUAL_ATTENDANCE,
+    MANAGER_PERMISSIONS.CREATE_USER,
+    MANAGER_PERMISSIONS.EDIT_USER,
+    MANAGER_PERMISSIONS.MANAGE_GEOFENCING,
+  ];
 
   // Hamburger menu icon component
   const HamburgerMenu = ({ navigation }) => (
@@ -66,7 +75,7 @@ export default function MainNavigator({ user }) {
     },
   });
 
-  if (user.role === ROLES.EMPLOYEE) {
+  if (user.role === ROLES.EMPLOYEE && !canAny(adminAccessKeys)) {
     return (
       <Stack.Navigator screenOptions={screenOptions}>
         <Stack.Screen 
@@ -139,7 +148,7 @@ export default function MainNavigator({ user }) {
     );
   }
 
-  if (user.role === ROLES.SUPER_ADMIN || user.role === ROLES.MANAGER) {
+  if (user.role === ROLES.SUPER_ADMIN || user.role === ROLES.MANAGER || canAny(adminAccessKeys)) {
     return (
       <Stack.Navigator screenOptions={screenOptions}>
         <Stack.Screen 
@@ -166,7 +175,20 @@ export default function MainNavigator({ user }) {
           options={{ title: 'Notifications' }}
           initialParams={{ user }}
         />
-        {can(MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD) && (
+        {user.role === ROLES.EMPLOYEE && (
+          <>
+            <Stack.Screen name={ROUTES.ATTENDANCE_HISTORY} component={AttendanceHistory} options={{ title: 'Attendance History' }} initialParams={{ user }} />
+            <Stack.Screen name={ROUTES.LEAVE_REQUEST} component={LeaveRequestScreen} options={{ title: 'Leave Requests' }} initialParams={{ user }} />
+            <Stack.Screen name={ROUTES.TICKET_SCREEN} component={TicketScreen} options={{ title: 'My Tickets' }} initialParams={{ user }} />
+          </>
+        )}
+        {canAny([
+          MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD,
+          MANAGER_PERMISSIONS.APPROVE_LEAVE,
+          MANAGER_PERMISSIONS.REJECT_LEAVE,
+          MANAGER_PERMISSIONS.APPROVE_WORK_MODE,
+          MANAGER_PERMISSIONS.REJECT_WORK_MODE,
+        ]) && (
           <Stack.Screen
             name={ROUTES.HR_DASHBOARD}
             component={HRDashboard}

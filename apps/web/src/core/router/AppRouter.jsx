@@ -3,7 +3,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { createLenis, destroyLenis, resetScrollPosition } from '../../shared/lib/smoothScroll';
 import { LucideProvider } from 'lucide-react';
 import { useAuthStore } from '../../features/auth/store/authStore';
-import { canAccessFeature, isSuperAdmin } from '../../features/admin/permissions';
+import { canAccessFeature, hasAnyPermission, hasPermission, isSuperAdmin } from '../../features/admin/permissions';
 import { AccessDenied } from '../../shared/components/PermissionGate';
 import { AppLoader } from '../../shared/components/ui';
 import { LoginPage } from '../../features/auth/pages/LoginPage';
@@ -17,6 +17,7 @@ import { UsersPage } from '../../features/admin/pages/UsersPage';
 import { DepartmentsPage } from '../../features/admin/pages/DepartmentsPage';
 import { SitesPage } from '../../features/admin/pages/SitesPage';
 import { AttendancePage } from '../../features/admin/pages/AttendancePage';
+import { AttendanceRulesPage } from '../../features/admin/pages/AttendanceRulesPage';
 import { LeavesPage } from '../../features/admin/pages/LeavesPage';
 import { TicketsPage } from '../../features/admin/pages/TicketsPage';
 import { CalendarPage } from '../../features/admin/pages/CalendarPage';
@@ -59,7 +60,9 @@ function PortalIcons({ children }) {
 
 function PermissionRoute({ feature, superAdminOnly = false, children }) {
   const { user } = useAuthStore();
-  if (superAdminOnly && !isSuperAdmin(user)) return <AccessDenied />;
+  const delegatedPayroll = feature === 'payroll' && hasAnyPermission(user, ['view_payroll', 'manage_payroll']);
+  const delegatedPermissionsAdmin = feature === 'permissions' && hasPermission(user, 'assign_user_permissions');
+  if (superAdminOnly && !isSuperAdmin(user) && !delegatedPayroll && !delegatedPermissionsAdmin) return <AccessDenied />;
   if (!canAccessFeature(user, feature)) return <AccessDenied />;
   return children;
 }
@@ -116,6 +119,7 @@ export function AppRouter() {
         <Route path="manager-permissions" element={<PermissionRoute feature="permissions" superAdminOnly><ManagerPermissionsPage /></PermissionRoute>} />
         <Route path="sites" element={<PermissionRoute feature="sites"><SitesPage /></PermissionRoute>} />
         <Route path="attendance" element={<PermissionRoute feature="attendance"><AttendancePage /></PermissionRoute>} />
+        <Route path="attendance-rules" element={<PermissionRoute feature="attendanceRules"><AttendanceRulesPage /></PermissionRoute>} />
         <Route path="leaves" element={<PermissionRoute feature="leaves"><LeavesPage /></PermissionRoute>} />
         <Route path="work-mode-requests" element={<PermissionRoute feature="workModeRequests"><WorkModeRequestsPage /></PermissionRoute>} />
         <Route path="approval-workflows" element={<PermissionRoute feature="approvalWorkflows" superAdminOnly><ApprovalWorkflowsPage /></PermissionRoute>} />

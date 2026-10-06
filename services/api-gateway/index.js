@@ -5,6 +5,9 @@ try {
   /* dotenv not installed — rely on process env */
 }
 
+const { assertProductionSecret } = require('../../shared/security/internalSecret.cjs');
+assertProductionSecret(process.env, 'api-gateway');
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');

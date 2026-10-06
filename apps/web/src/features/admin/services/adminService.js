@@ -123,6 +123,20 @@ export const adminService = {
       async () => (await api.put(apiUrl(`/api/admin/managers/${uid}/permissions`), { permissions })).data,
       'Failed to save manager permissions'
     ),
+  getUserGrants: async (uid) =>
+    executeApiCall(async () => (await api.get(apiUrl(`/api/admin/users/${uid}/grants`))).data.data, 'Failed to load user grants'),
+  updateUserGrants: async (uid, grants) =>
+    executeApiCall(
+      async () => (await api.put(apiUrl(`/api/admin/users/${uid}/grants`), { grants })).data,
+      'Failed to save user grants'
+    ),
+  getUserDepartments: async (uid) =>
+    executeApiCall(async () => (await api.get(apiUrl(`/api/admin/users/${uid}/departments`))).data.data, 'Failed to load departments'),
+  updateUserDepartments: async (uid, department_ids, primary_department_id) =>
+    executeApiCall(
+      async () => (await api.put(apiUrl(`/api/admin/users/${uid}/departments`), { department_ids, primary_department_id })).data,
+      'Failed to save department assignments'
+    ),
   getAuditLogs: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/audit-logs'))).data.data, 'Failed to load audit logs'),
   getUsers: async () =>
@@ -289,6 +303,14 @@ export const adminService = {
   },
   getDepartments: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/departments'))).data.data, 'Failed to load departments'),
+  getOrganizationRoles: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/organization-roles'))).data.data, 'Failed to load organization roles'),
+  createOrganizationRole: async (payload) =>
+    executeApiCall(async () => (await api.post(apiUrl('/api/admin/organization-roles'), payload)).data.data, 'Failed to create organizational role'),
+  updateOrganizationRole: async (id, payload) =>
+    executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/organization-roles/${id}`), payload)).data.data, 'Failed to update organizational role'),
+  deactivateOrganizationRole: async (id) =>
+    executeApiCall(async () => (await api.delete(apiUrl(`/api/admin/organization-roles/${id}`))).data.data, 'Failed to deactivate organizational role'),
   getDepartmentsOverview: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/departments/overview'))).data.data, 'Failed to load departments overview'),
   createDepartment: async (payload) =>
@@ -315,6 +337,30 @@ export const adminService = {
     executeApiCall(async () => (await api.post(apiUrl('/api/admin/employee-sites'), payload)).data, 'Failed to assign site'),
   getAttendance: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/attendance'))).data.data, 'Failed to load attendance'),
+  getAttendanceRules: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/attendance/rules'))).data.data, 'Failed to load attendance rules'),
+  createAttendanceRule: async (payload) =>
+    executeApiCall(async () => (await api.post(apiUrl('/api/admin/attendance/rules'), payload)).data.data, 'Failed to create attendance rule'),
+  updateAttendanceRule: async (id, payload) =>
+    executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/attendance/rules/${id}`), payload)).data.data, 'Failed to update attendance rule'),
+  deleteAttendanceRule: async (id) =>
+    executeApiCall(async () => (await api.delete(apiUrl(`/api/admin/attendance/rules/${id}`))).data, 'Failed to delete attendance rule'),
+  getAttendanceHolidays: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/attendance/holidays'))).data.data, 'Failed to load attendance holidays'),
+  createAttendanceHoliday: async (payload) =>
+    executeApiCall(async () => (await api.post(apiUrl('/api/admin/attendance/holidays'), payload)).data.data, 'Failed to create attendance holiday'),
+  updateAttendanceHoliday: async (id, payload) =>
+    executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/attendance/holidays/${id}`), payload)).data.data, 'Failed to update attendance holiday'),
+  deleteAttendanceHoliday: async (id) =>
+    executeApiCall(async () => (await api.delete(apiUrl(`/api/admin/attendance/holidays/${id}`))).data, 'Failed to delete attendance holiday'),
+  getAttendanceSummaries: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/attendance/summaries'))).data.data, 'Failed to load attendance summaries'),
+  getAttendanceAbsenceOutcomes: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/attendance/absence-outcomes'))).data.data, 'Failed to load absence outcomes'),
+  getAttendanceAbsenceOutcome: async (id) =>
+    executeApiCall(async () => (await api.get(apiUrl(`/api/admin/attendance/absence-outcomes/${id}`))).data.data, 'Failed to load absence outcome history'),
+  reconcileAttendanceAbsenceOutcome: async (id, reason) =>
+    executeApiCall(async () => (await api.post(apiUrl(`/api/admin/attendance/absence-outcomes/${id}/reconcile`), { reason })).data.data, 'Failed to reconcile absence outcome'),
   createManualAttendance: async (payload) =>
     executeApiCall(async () => (await api.post(apiUrl('/api/admin/attendance'), payload)).data.data, 'Failed to create attendance record'),
   updateAttendance: async (id, payload) =>

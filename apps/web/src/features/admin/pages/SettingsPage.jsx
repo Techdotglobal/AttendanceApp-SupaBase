@@ -6,6 +6,7 @@ import { Alert } from '../../../shared/components/ui/Alert';
 import { Dialog } from '../../../shared/components/ui/Dialog';
 import { Select } from '../../../shared/components/ui/Select';
 import { SkeletonForm } from '../../../shared/components/ui/Skeleton';
+import { useAuthStore } from '../../auth/store/authStore';
 
 const NAV = [
   {
@@ -101,7 +102,7 @@ function isNonNegativeNumber(value) {
 
 const NUMBER_KEYS = {
   attendance: ['graceMinutes'],
-  leave: ['defaultAnnual', 'defaultSick', 'defaultCasual'],
+  leave: ['defaultAnnual', 'defaultSick', 'defaultCasual', 'absenceDeductionDays'],
   reports: ['retentionDays'],
   geofencing: ['defaultRadiusMeters'],
   security: ['sessionTimeoutMinutes'],
@@ -129,6 +130,12 @@ function validateSection(section, values) {
     }
     if (values.yearEnd && !MONTH_DAY.test(String(values.yearEnd))) {
       errors.yearEnd = 'Use MM-DD, for example 12-31.';
+    }
+    if (values.absenceDeductionDays !== undefined && !isNonNegativeNumber(Number(values.absenceDeductionDays))) {
+      errors.absenceDeductionDays = 'Enter zero or a positive number of days.';
+    }
+    if (values.absenceEffectiveFrom && !/^\d{4}-\d{2}-\d{2}$/.test(String(values.absenceEffectiveFrom))) {
+      errors.absenceEffectiveFrom = 'Use YYYY-MM-DD.';
     }
   }
   if (section === 'reports' && !isNonNegativeNumber(Number(values.retentionDays))) {
@@ -435,11 +442,18 @@ function SectionFields({ section, values, errors = {}, onChange }) {
           checked={!!values.requireGps}
           onChange={(value) => onChange('requireGps', value)}
         />
+        <ToggleRow
+          label="Attendance rules engine"
+          hint="Enable server-side schedule summaries for this company. Raw attendance and legacy behavior remain available."
+          checked={!!values.rulesV1Enabled}
+          onChange={(value) => onChange('rulesV1Enabled', value)}
+        />
       </>
     );
   }
 
   if (section === 'leave') {
+    const isSuperAdmin = useAuthStore((state) => state.user?.role === 'super_admin');
     return (
       <>
         <NumberRow
@@ -477,6 +491,60 @@ function SectionFields({ section, values, errors = {}, onChange }) {
           error={errors.yearEnd}
           onChange={(value) => onChange('yearEnd', value)}
         />
+        {isSuperAdmin && (
+          <>
+            <ToggleRow
+              label="Automatic absence handling"
+              hint="Enable auditable absence outcomes after the finalized overtime window."
+              checked={!!values.absenceDeductionsV1Enabled}
+              onChange={(value) => onChange('absenceDeductionsV1Enabled', value)}
+            />
+            <SelectRow
+              label="Absence action"
+              hint="Choose what a finalized absence should do."
+              value={values.absenceAction || 'NONE'}
+              onChange={(value) => onChange('absenceAction', value)}
+            >
+              <option value="NONE">No automatic deduction</option>
+              <option value="DEDUCT_LEAVE">Deduct configured leave</option>
+              <option value="UNPAID_ABSENCE">Mark unpaid absence</option>
+            </SelectRow>
+            <SelectRow
+              label="Leave type"
+              hint="Leave balance used when deduction is enabled."
+              value={values.absenceLeaveType || 'annual'}
+              onChange={(value) => onChange('absenceLeaveType', value)}
+            >
+              <option value="annual">Annual</option>
+              <option value="sick">Sick</option>
+              <option value="casual">Casual</option>
+            </SelectRow>
+            <NumberRow
+              label="Deduction days"
+              hint="Amount deducted for one full-day absence."
+              value={values.absenceDeductionDays ?? 1}
+              error={errors.absenceDeductionDays}
+              onChange={(value) => onChange('absenceDeductionDays', value)}
+            />
+            <SelectRow
+              label="Insufficient balance"
+              hint="Control what happens when the selected balance is too low."
+              value={values.absenceInsufficientBalancePolicy || 'CAP_AT_ZERO_UNPAID'}
+              onChange={(value) => onChange('absenceInsufficientBalancePolicy', value)}
+            >
+              <option value="CAP_AT_ZERO_UNPAID">Cap at zero + unpaid remainder</option>
+              <option value="ALLOW_NEGATIVE">Allow negative balance</option>
+              <option value="NO_DEDUCTION">No deduction + unpaid absence</option>
+            </SelectRow>
+            <TextRow
+              label="Absence effective date"
+              hint="No automatic outcomes are created before this date (YYYY-MM-DD)."
+              value={values.absenceEffectiveFrom}
+              error={errors.absenceEffectiveFrom}
+              onChange={(value) => onChange('absenceEffectiveFrom', value)}
+            />
+          </>
+        )}
       </>
     );
   }

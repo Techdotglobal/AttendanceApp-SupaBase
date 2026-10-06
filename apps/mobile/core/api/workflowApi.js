@@ -17,9 +17,15 @@ export async function refreshPermissionsFromServer(requester = null) {
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok || !body.success) {
-      return { success: false, permissions: ctx.permissions || [] };
+      return { success: false, permissions: ctx.permissions || [], grants: ctx.grants || [] };
     }
-    return { success: true, permissions: body.data?.permissions || [], role: body.data?.role };
+    return {
+      success: true,
+      permissions: body.data?.permissions || [],
+      grants: body.data?.grants || [],
+      role: body.data?.role,
+      authorization_version: body.data?.authorization_version,
+    };
   } catch {
     return { success: false, permissions: ctx.permissions || [] };
   }
@@ -129,5 +135,52 @@ export async function fetchWorkModeRequestsAdmin(requester = null) {
     return { success: true, data: body.data || [] };
   } catch {
     return { success: false, data: [] };
+  }
+}
+
+export async function fetchLeavesAdmin(requester = null) {
+  const ctx = toRequesterContext(requester) || (await resolveCurrentRequester());
+  if (!ctx?.uid) return { success: false, data: [] };
+  try {
+    const response = await fetch(`${gatewayBase()}/api/admin/leaves`, {
+      method: 'GET',
+      headers: await buildGatewayAuthHeaders(ctx),
+    });
+    const body = await response.json().catch(() => ({}));
+    return response.ok && body.success ? { success: true, data: body.data || [] } : { success: false, data: [], error: body.error };
+  } catch (e) {
+    return { success: false, data: [], error: e?.message };
+  }
+}
+
+export async function createLeaveRequestApi(requester, payload) {
+  const ctx = toRequesterContext(requester) || (await resolveCurrentRequester());
+  if (!ctx?.uid) return { success: false, error: 'Authentication expired. Please sign in again.' };
+  try {
+    const response = await fetch(`${gatewayBase()}/api/admin/leaves`, {
+      method: 'POST',
+      headers: await buildGatewayAuthHeaders(ctx),
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json().catch(() => ({}));
+    return response.ok && body.success ? { success: true, data: body.data } : { success: false, error: body.error || 'Unable to create leave request.' };
+  } catch (e) {
+    return { success: false, error: e?.message || 'Network error. Check your connection and try again.' };
+  }
+}
+
+export async function processLeaveRequestApi(requester, id, { status, admin_notes }) {
+  const ctx = toRequesterContext(requester) || (await resolveCurrentRequester());
+  if (!ctx?.uid) return { success: false, error: 'Authentication expired. Please sign in again.' };
+  try {
+    const response = await fetch(`${gatewayBase()}/api/admin/leaves/${id}`, {
+      method: 'PATCH',
+      headers: await buildGatewayAuthHeaders(ctx),
+      body: JSON.stringify({ status, admin_notes }),
+    });
+    const body = await response.json().catch(() => ({}));
+    return response.ok && body.success ? { success: true, data: body.data } : { success: false, error: body.error || 'Failed to process leave request' };
+  } catch (e) {
+    return { success: false, error: e?.message || 'Network error. Check your connection and try again.' };
   }
 }

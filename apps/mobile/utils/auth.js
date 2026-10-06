@@ -45,7 +45,14 @@ async function resyncTenantMetadataIfSessionUsername(username) {
 }
 
 async function fetchManagerPermissions(uid, role) {
-  if (!uid || role !== 'manager') return [];
+  if (!uid) return [];
+  const { data: canonical, error: canonicalError } = await supabase
+    .from('permission_grants')
+    .select('permission_key, granted')
+    .eq('principal_uid', uid)
+    .eq('granted', true);
+  if (!canonicalError && canonical?.length) return canonical.map((row) => row.permission_key);
+  if (role !== 'manager') return [];
   const { data, error } = await supabase
     .from('manager_permissions')
     .select('permission_key, granted')

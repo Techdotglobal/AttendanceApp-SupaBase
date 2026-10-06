@@ -50,7 +50,7 @@ import {
 import { spacing, responsivePadding, responsiveFont, isTablet, getTabletGridColumns, SCREEN_WIDTH } from '../shared/utils/responsive';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
-import { MANAGER_PERMISSIONS, hasPermission, isSelfTarget } from '../shared/constants/permissions';
+import { MANAGER_PERMISSIONS, hasPermission, hasAnyPermission, isSelfTarget } from '../shared/constants/permissions';
 import { tenantDiagLog, diagQueryUsersByCompanyId, TENANT_RUNTIME_DIAG } from '../core/debug/tenantRuntimeDiag';
 import { resolveCompanyIdFromUser } from '../core/tenant/tenantScope';
 
@@ -66,6 +66,7 @@ export default function EmployeeManagement({
   const { user: authUser, isLoading: authContextLoading } = useAuth();
   /** Single source of truth for identity and tenant — never use stale navigation params. */
   const user = authUser;
+  const canApproveLeaves = hasAnyPermission(user, ['approve_leave', 'reject_leave']);
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const tablet = isTablet();
@@ -257,7 +258,7 @@ export default function EmployeeManagement({
       const allRequests = await getPendingLeaveRequests();
       
       // For super admins and HR admins, show all requests
-      if (user.role === 'super_admin' || isHRAdmin(user)) {
+      if (user.role === 'super_admin' || isHRAdmin(user) || canApproveLeaves) {
         setPendingLeaveRequests(allRequests);
         return;
       }
@@ -408,7 +409,7 @@ export default function EmployeeManagement({
     const request = pendingLeaveRequests.find(req => req.id === requestId);
     if (request) {
       // Super admins and HR admins can process any request
-      if (user.role === 'super_admin' || isHRAdmin(user)) {
+      if (user.role === 'super_admin' || isHRAdmin(user) || canApproveLeaves) {
         // Allow processing
       } else if (request.assignedTo === user.username) {
         // Manager is assigned to this request - allow processing

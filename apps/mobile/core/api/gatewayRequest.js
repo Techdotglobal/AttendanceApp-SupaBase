@@ -23,6 +23,7 @@ export function toRequesterContext(user) {
     company_id: companyId,
     companyId,
     department: user.department != null ? String(user.department) : '',
+    department_id: user.departmentId ?? user.department_id ?? null,
     username: user.username != null ? String(user.username) : undefined,
   };
 }
@@ -72,7 +73,7 @@ export async function resolveCurrentRequester() {
 
   const { data: row, error: rowError } = await supabase
     .from('users')
-    .select('uid, username, role, company_id, department')
+    .select('uid, username, role, company_id, department, department_id')
     .eq('uid', session.user.id)
     .maybeSingle();
 
@@ -83,6 +84,7 @@ export async function resolveCurrentRequester() {
       role: row.role,
       companyId: row.company_id,
       department: row.department,
+      departmentId: row.department_id,
     });
   }
 

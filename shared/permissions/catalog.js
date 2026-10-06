@@ -13,10 +13,15 @@ export const LEAVE_TYPE_TO_REQUEST_TYPE = catalog.LEAVE_TYPE_TO_REQUEST_TYPE;
 export const APPROVER_ROLES = catalog.APPROVER_ROLES;
 export const DEFAULT_WORKFLOW_TEMPLATES = catalog.DEFAULT_WORKFLOW_TEMPLATES;
 export const normalizePermissionKey = catalog.normalizePermissionKey;
+export const normalizeRole = catalog.normalizeRole;
+export const getGrantScopes = catalog.getGrantScopes;
 export const hasPermission = catalog.hasPermission;
 export const hasAnyPermission = catalog.hasAnyPermission;
 export const canAccessFeature = catalog.canAccessFeature;
 export const isSuperAdmin = catalog.isSuperAdmin;
 export const hasTenantWidePeopleAccess = catalog.hasTenantWidePeopleAccess;
+export const EMPLOYEE_FEATURES = catalog.EMPLOYEE_FEATURES;
+export const PERMISSION_SCOPES = catalog.PERMISSION_SCOPES;
+export const PERMISSION_DEFINITIONS = catalog.PERMISSION_DEFINITIONS;
 
 export default catalog;

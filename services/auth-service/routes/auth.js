@@ -28,10 +28,13 @@ const { canEditAnyProfile } = require('../lib/profileAccess');
 const { findUserByUsernameInCompany, updateUsernameForUid } = require('../lib/usernameUpdate');
 const {
   getManagerPermissions,
+  getEffectiveGrants,
+  hasPermission,
   hasAnyPermission,
   requirePermission,
   rejectSelfAdministrativeChange,
   writeAuditLog,
+  writeAuthorizationAudit,
 } = require('../lib/permissions');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -63,8 +66,8 @@ const { isGatewayVouched, STRICT_IDENTITY } = require('../lib/resolveRequester')
 
 /**
  * X-User-Context is only authoritative when the api-gateway vouched for it
- * (shared INTERNAL_API_SECRET). In legacy mode (secret unset) the previous
- * behaviour is kept so a code-only deploy does not lock admins out.
+ * (shared INTERNAL_API_SECRET). Non-production legacy mode preserves the old
+ * compatibility path; production startup fails closed without the secret.
  */
 function parseRequester(req) {
   if (STRICT_IDENTITY && !isGatewayVouched(req)) return null;
@@ -114,17 +117,20 @@ async function resolveScopedTargetByUsername(req, username) {
   const tenantWidePeopleAccess = await hasTenantWidePeopleAccess(requester);
 
   const applyScope = (q) => {
-    if (requester.role === 'manager' && !tenantWidePeopleAccess) {
-      return q.eq('department', requester.department).neq('role', 'super_admin');
-    }
-    if (requester.role === 'manager') {
-      return q.neq('role', 'super_admin');
-    }
+    if (requester.role === 'manager') return q.neq('role', 'super_admin');
     return q;
   };
 
   const data = await findUserByUsernameInCompany(supabase, companyId, username, applyScope);
   if (!data) return { errorStatus: 404, error: 'User not found' };
+  requester.company_id = companyId;
+  if (requester.role !== 'super_admin') {
+    const canSeeTarget = await hasAnyPermission(supabase, requester, [
+      'view_employees', 'edit_user', 'create_user', 'delete_user',
+      'activate_user', 'deactivate_user', 'change_user_role',
+    ], { companyId, targetUid: data.uid, userUid: data.uid, departmentId: data.department_id });
+    if (!canSeeTarget) return { errorStatus: 404, error: 'User not found' };
+  }
   requester.tenantWidePeopleAccess = tenantWidePeopleAccess;
   return { requester, companyId, target: data };
 }
@@ -145,7 +151,7 @@ async function resolveScopedTargetByUid(req, uid) {
 
   let query = supabase
     .from('users')
-    .select('uid, username, email, role, department, company_id')
+    .select('uid, username, email, role, department, department_id, company_id')
     .eq('uid', uid)
     .eq('company_id', companyId);
 
@@ -158,6 +164,14 @@ async function resolveScopedTargetByUid(req, uid) {
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
   if (!data) return { errorStatus: 404, error: 'User not found' };
+  requester.company_id = companyId;
+  if (requester.role !== 'super_admin') {
+    const canSeeTarget = await hasAnyPermission(supabase, requester, [
+      'view_employees', 'edit_user', 'create_user', 'delete_user',
+      'activate_user', 'deactivate_user', 'change_user_role',
+    ], { companyId, targetUid: data.uid, userUid: data.uid, departmentId: data.department_id });
+    if (!canSeeTarget) return { errorStatus: 404, error: 'User not found' };
+  }
   requester.tenantWidePeopleAccess = tenantWidePeopleAccess;
   return { requester, companyId, target: data };
 }
@@ -165,14 +179,12 @@ async function resolveScopedTargetByUid(req, uid) {
 async function applyUserRoleChange(req, res, scope, role) {
   const timestamp = new Date().toISOString();
   if (rejectSelfAdministrativeChange(scope.requester, scope.target.uid, res)) return;
-  if (!(await requirePermission(supabase, scope.requester, 'change_user_role', res))) return;
-  if (
-    scope.requester.role === 'manager' &&
-    !scope.requester.tenantWidePeopleAccess &&
-    role !== scope.target.role
-  ) {
-    return res.status(403).json({ success: false, error: 'Managers cannot update roles.' });
-  }
+  if (!(await requirePermission(supabase, scope.requester, 'change_user_role', res, {
+    companyId: scope.companyId,
+    targetUid: scope.target.uid,
+    userUid: scope.target.uid,
+    departmentId: scope.target.department_id,
+  }))) return;
   if (scope.target.role === 'super_admin') {
     return res.status(403).json({ success: false, error: 'Super admin role cannot be changed here.' });
   }
@@ -402,8 +414,8 @@ router.post('/login', async (req, res) => {
       if (!metaSync.ok) {
         console.error(`[${timestamp}] Auth Service: JWT user_metadata sync failed after login:`, metaSync.error);
       }
-      const permissions =
-        userData.role === 'super_admin' ? [] : await getManagerPermissions(supabase, userId);
+      const grants = await getEffectiveGrants(supabase, userData);
+      const permissions = [...new Set(grants.map((grant) => grant.permission_key))];
 
       // Step 4: Return user info (tenant fields mirror DB; client also refreshes JWT)
       return res.status(200).json({
@@ -420,6 +432,9 @@ router.post('/login', async (req, res) => {
           workMode: userData.work_mode || 'in_office',
           company_id: userData.company_id != null ? String(userData.company_id) : null,
           permissions,
+          grants,
+          organization_role_id: userData.organization_role_id || null,
+          authorization_version: userData.authorization_version || 1,
         },
       });
     } catch (authError) {
@@ -556,6 +571,7 @@ router.post('/users', async (req, res) => {
       position,
       workMode,
       hireDate,
+      organization_role_id,
     } = req.body;
 
     if (!username || !password || !email || !role) {
@@ -564,6 +580,10 @@ router.post('/users', async (req, res) => {
         success: false,
         error: 'Username, password, email, and role are required',
       });
+    }
+
+    if (!['employee', 'manager', 'super_admin'].includes(String(role).toLowerCase())) {
+      return res.status(400).json({ success: false, error: 'Invalid system role' });
     }
 
     if (String(role).toLowerCase() === 'super_admin') {
@@ -597,9 +617,17 @@ router.post('/users', async (req, res) => {
         error: 'Caller is not bound to a tenant (company_id missing). Re-login or update the client.',
       });
     }
-    if (!(await requirePermission(supabase, requester, 'create_user', res))) return;
+    // Resolve the requested department before authorizing a scoped create.
+    const requestedDepartment = await resolveDepartmentForUserCreate(companyId, department);
+    if (!(await requirePermission(supabase, { ...requester, company_id: companyId }, 'create_user', res, {
+      companyId,
+      departmentId: requestedDepartment.id,
+    }))) return;
     if (String(role).toLowerCase() !== 'employee') {
-      if (!(await requirePermission(supabase, requester, 'change_user_role', res))) return;
+      if (!(await requirePermission(supabase, { ...requester, company_id: companyId }, 'change_user_role', res, {
+        companyId,
+        departmentId: requestedDepartment.id,
+      }))) return;
     }
     // If the client supplied a different company_id, reject (signal of bug or attack).
     const suppliedCompany = req.body.company_id ?? req.body.companyId;
@@ -653,9 +681,9 @@ router.post('/users', async (req, res) => {
       departmentInput: department != null ? String(department).slice(0, 80) : '',
     });
 
-    let resolvedDepartment = { id: null, name: '' };
+    let resolvedDepartment = requestedDepartment;
     try {
-      resolvedDepartment = await resolveDepartmentForUserCreate(companyId, department);
+      resolvedDepartment = requestedDepartment;
       traceCreateUser('department_ensured', {
         companyId,
         resolvedDepartmentName: resolvedDepartment.name,
@@ -677,6 +705,12 @@ router.post('/users', async (req, res) => {
     }
 
     const normalizedPosition = position ? normalizePosition(position) : '';
+
+    if (organization_role_id) {
+      const { data: organizationRole } = await supabase
+        .from('organization_roles').select('id').eq('id', organization_role_id).eq('company_id', companyId).eq('is_active', true).maybeSingle();
+      if (!organizationRole) return res.status(400).json({ success: false, error: 'Invalid organizational role' });
+    }
 
     traceCreateUser('auth_create_start', { email: canonicalEmail, username, role });
     const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
@@ -736,6 +770,7 @@ router.post('/users', async (req, res) => {
       work_mode: workMode || 'in_office',
       hire_date: hireDate || new Date().toISOString().split('T')[0],
       is_active: true,
+      organization_role_id: organization_role_id || null,
     };
 
     traceCreateUser('users_insert_start', { payload: usersInsertPayload });
@@ -781,6 +816,26 @@ router.post('/users', async (req, res) => {
         build: CREATE_USER_BUILD,
       });
     }
+
+    if (resolvedDepartment.id) {
+      const { error: assignmentError } = await supabase.from('user_department_assignments').upsert({
+        company_id: companyId,
+        user_uid: userData.uid,
+        department_id: resolvedDepartment.id,
+        is_primary: true,
+        is_active: true,
+        assigned_by_uid: requester.uid,
+      }, { onConflict: 'user_uid,department_id' });
+      if (assignmentError) console.warn('[create-user] department assignment backfill failed:', assignmentError.message);
+    }
+
+    await writeAuthorizationAudit(supabase, {
+      companyId,
+      actorUid: requester.uid,
+      targetUid: userData.uid,
+      action: 'user_created',
+      afterState: { role, organization_role_id: organization_role_id || null, department_id: resolvedDepartment.id || null },
+    });
 
     traceCreateUser('users_insert_ok', {
       uid: userData.uid,
@@ -1484,15 +1539,23 @@ router.get('/me/permissions', async (req, res) => {
   try {
     const { data: user } = await supabase
       .from('users')
-      .select('uid, role')
+      .select('uid, role, company_id, department_id, department, organization_role_id, authorization_version')
       .eq('uid', requester.uid)
       .eq('is_active', true)
       .maybeSingle();
     if (!user) return res.status(404).json({ success: false, error: 'User not found' });
-    const permissions = user.role === 'super_admin' ? [] : await getManagerPermissions(supabase, user.uid);
+    const grants = await getEffectiveGrants(supabase, user);
+    const permissions = [...new Set(grants.map((grant) => grant.permission_key))];
     return res.status(200).json({
       success: true,
-      data: { uid: user.uid, role: user.role, permissions },
+      data: {
+        uid: user.uid,
+        role: user.role,
+        permissions,
+        grants,
+        organization_role_id: user.organization_role_id || null,
+        authorization_version: user.authorization_version || 1,
+      },
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || 'Failed to load permissions' });
@@ -1598,8 +1661,22 @@ router.post('/work-mode-requests', async (req, res) => {
         employeeUid: user.uid,
       });
       if (init.workflowId) {
-        await supabase.from('work_mode_requests').update({ workflow_id: init.workflowId }).eq('id', row.id);
+        const { data: assignment } = await supabase
+          .from('user_department_assignments')
+          .select('department_id')
+          .eq('user_uid', user.uid)
+          .eq('is_active', true)
+          .order('is_primary', { ascending: false })
+          .order('created_at', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        const approvalDepartmentId = assignment?.department_id || user.department_id || null;
+        await supabase.from('work_mode_requests').update({
+          workflow_id: init.workflowId,
+          approval_department_id: approvalDepartmentId,
+        }).eq('id', row.id);
         row.workflow_id = init.workflowId;
+        row.approval_department_id = approvalDepartmentId;
       }
       console.log(`[${timestamp}] work-mode-requests: approval initialized`, {
         id: row.id,

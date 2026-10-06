@@ -5,6 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  ALL_MANAGER_PERMISSIONS,
   hasPermission,
   hasAnyPermission,
   canAccessFeature,
@@ -16,9 +17,13 @@ const managerNoPerm = { role: 'manager', permissions: [] };
 const managerGeo = { role: 'manager', permissions: ['manage_geofencing'] };
 const superAdmin = { role: 'super_admin' };
 
-test('employee has no admin permissions and no geofencing feature', () => {
+test('employee has no admin permissions but receives only employee web features', () => {
   assert.equal(hasPermission(employee, 'manage_geofencing'), false);
   assert.equal(canAccessFeature(employee, 'sites'), false);
+  for (const feature of ['attendance', 'leaves', 'tickets', 'calendar', 'notifications']) {
+    assert.equal(canAccessFeature(employee, feature), true);
+  }
+  assert.equal(canAccessFeature(employee, 'users'), false);
   assert.equal(isSuperAdmin(employee), false);
 });
 
@@ -43,4 +48,33 @@ test('unknown permission keys are rejected', () => {
 test('null / undefined user is denied', () => {
   assert.equal(hasPermission(null, 'manage_geofencing'), false);
   assert.equal(canAccessFeature(undefined, 'sites'), false);
+});
+
+test('employee can receive an explicit delegated capability without changing system role', () => {
+  const delegated = {
+    role: 'employee',
+    permissions: ['view_employees'],
+    grants: [{ permission_key: 'view_employees', granted: true, scope_type: 'DEPARTMENT' }],
+  };
+  assert.equal(hasPermission(delegated, 'view_employees'), true);
+  assert.equal(canAccessFeature(delegated, 'users'), true);
+});
+
+test('catalog includes permission keys used by workflow and leave administration', () => {
+  assert.deepEqual(
+    [
+      'create_leave_request',
+      'view_work_mode_requests',
+      'approve_work_mode',
+      'reject_work_mode',
+      'manage_approval_workflows',
+    ].filter((key) => ALL_MANAGER_PERMISSIONS.includes(key)),
+    [
+      'create_leave_request',
+      'view_work_mode_requests',
+      'approve_work_mode',
+      'reject_work_mode',
+      'manage_approval_workflows',
+    ]
+  );
 });

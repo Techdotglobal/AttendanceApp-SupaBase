@@ -18,6 +18,7 @@ const assertCanManageUser = (requester, targetUser, options = {}) => {
   if (targetUser.role === ROLES.SUPER_ADMIN && !isSuperAdmin(requester)) {
     return { ok: false, status: 403, error: 'Cannot modify super admin accounts' };
   }
+  if (options.scopedAllowed) return { ok: true };
   if (isSuperAdmin(requester) || tenantWide) {
     return { ok: true };
   }
@@ -35,7 +36,7 @@ const assertCanManageUser = (requester, targetUser, options = {}) => {
 };
 
 const canEditAnyProfile = (requester, options = {}) =>
-  isSuperAdmin(requester) || Boolean(options.tenantWide);
+  isSuperAdmin(requester) || Boolean(options.tenantWide) || Boolean(options.scopedAllowed);
 
 module.exports = {
   ROLES,

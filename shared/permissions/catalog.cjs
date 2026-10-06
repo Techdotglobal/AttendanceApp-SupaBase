@@ -13,6 +13,8 @@ const MANAGER_PERMISSION_GROUPS = [
       ['activate_user', 'Activate Users'],
       ['deactivate_user', 'Deactivate Users'],
       ['change_user_role', 'Change User Roles'],
+      ['assign_user_department', 'Assign User Departments'],
+      ['assign_user_permissions', 'Assign User Permissions'],
       ['view_employees', 'View Employees'],
     ],
   },
@@ -23,6 +25,7 @@ const MANAGER_PERMISSION_GROUPS = [
       ['view_attendance', 'View Attendance'],
       ['export_attendance', 'Export Attendance'],
       ['attendance_analytics', 'Attendance Analytics'],
+      ['manage_attendance_rules', 'Manage Attendance Rules'],
     ],
   },
   {
@@ -66,6 +69,7 @@ const MANAGER_PERMISSION_GROUPS = [
       ['view_hr_dashboard', 'View HR Dashboard'],
       ['view_analytics', 'View Analytics'],
       ['export_reports', 'Export Reports'],
+      ['view_reports', 'View Reports'],
     ],
   },
   {
@@ -84,6 +88,9 @@ const MANAGER_PERMISSION_GROUPS = [
       ['manage_departments', 'Manage Departments'],
       ['manage_approval_workflows', 'Manage Approval Workflows'],
       ['access_system_settings', 'Access System Settings'],
+      ['manage_workflows', 'Manage Workflows'],
+      ['view_payroll', 'View Payroll'],
+      ['manage_payroll', 'Manage Payroll'],
     ],
   },
 ];
@@ -91,6 +98,26 @@ const MANAGER_PERMISSION_GROUPS = [
 const ALL_MANAGER_PERMISSIONS = MANAGER_PERMISSION_GROUPS.flatMap((g) =>
   g.permissions.map(([key]) => key)
 );
+
+const PERMISSION_SCOPES = ['OWN', 'DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'];
+
+const PERMISSION_DEFINITIONS = Object.freeze({
+  view_attendance: { resource: 'attendance', action: 'view', scopes: PERMISSION_SCOPES },
+  manual_attendance: { resource: 'attendance', action: 'manage', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'] },
+  manage_attendance_rules: { resource: 'attendance', action: 'configure', scopes: ['COMPANY'], delegable: false },
+  view_leave_requests: { resource: 'leave', action: 'view', scopes: PERMISSION_SCOPES },
+  create_leave_request: { resource: 'leave', action: 'create', scopes: ['OWN', 'DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'] },
+  approve_leave: { resource: 'leave', action: 'approve', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: true },
+  reject_leave: { resource: 'leave', action: 'reject', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: true },
+  view_employees: { resource: 'users', action: 'view', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: true },
+  create_user: { resource: 'users', action: 'create', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: true },
+  edit_user: { resource: 'users', action: 'edit', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: true },
+  assign_user_department: { resource: 'users', action: 'assign_department', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: true },
+  assign_user_permissions: { resource: 'users', action: 'assign_permissions', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: true },
+  change_user_role: { resource: 'users', action: 'assign_system_role', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: false },
+  view_payroll: { resource: 'payroll', action: 'view', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: true },
+  manage_payroll: { resource: 'payroll', action: 'manage', scopes: ['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'], delegable: false },
+});
 
 const DEFAULT_MANAGER_PERMISSIONS = [
   'view_employees',
@@ -129,12 +156,13 @@ const FEATURE_PERMISSIONS = {
   departments: ['manage_departments'],
   sites: ['manage_geofencing'],
   attendance: ['view_attendance', 'manual_attendance'],
+  attendanceRules: ['manage_attendance_rules'],
   leaves: ['view_leave_requests'],
   workModeRequests: ['view_work_mode_requests'],
   tickets: ['view_tickets', 'manage_tickets', 'assign_tickets', 'close_tickets'],
   calendar: ['create_events', 'edit_events', 'delete_events'],
   analytics: ['view_analytics', 'view_hr_dashboard'],
-  reports: ['export_reports'],
+  reports: ['export_reports', 'view_reports'],
   settings: ['access_system_settings'],
   permissions: [],
   notifications: ['manage_notifications'],
@@ -143,8 +171,19 @@ const FEATURE_PERMISSIONS = {
   // payroll access merely by managing attendance/leave) — the route/nav is
   // additionally guarded with superAdminOnly so this stays super_admin-only
   // even though an empty array would otherwise let any authenticated role in.
-  payroll: [],
+  payroll: ['view_payroll', 'manage_payroll'],
 };
+
+// Employees do not have rows in manager_permissions. These are the safe,
+// read/submit features available to every employee account in the web portal;
+// the API still scopes every employee request to the authenticated user.
+const EMPLOYEE_FEATURES = [
+  'attendance',
+  'leaves',
+  'tickets',
+  'calendar',
+  'notifications',
+];
 
 const REQUEST_TYPES = {
   ANNUAL_LEAVE: 'annual_leave',
@@ -188,39 +227,60 @@ function normalizePermissionKey(key) {
   return String(key || '').trim();
 }
 
+function normalizeRole(role) {
+  return String(role || '').trim().toLowerCase();
+}
+
 function hasPermission(user, permissionKey) {
   if (!user || !permissionKey) return false;
-  if (user.role === 'super_admin') return true;
+  const role = normalizeRole(user.role);
+  if (role === 'super_admin') return true;
   const key = normalizePermissionKey(permissionKey);
   if (!ALL_MANAGER_PERMISSIONS.includes(key)) return false;
-  if (user.role !== 'manager') return false;
   return Array.isArray(user.permissions) && user.permissions.includes(key);
 }
 
 function hasAnyPermission(user, permissionKeys = []) {
   if (!user) return false;
-  if (user.role === 'super_admin') return true;
+  const role = normalizeRole(user.role);
+  if (role === 'super_admin') return true;
   const keys = permissionKeys.map(normalizePermissionKey).filter((k) => ALL_MANAGER_PERMISSIONS.includes(k));
   if (keys.length === 0) return false;
-  if (user.role !== 'manager') return false;
   return keys.some((k) => user.permissions?.includes(k));
+}
+
+function getGrantScopes(user, permissionKey) {
+  const key = normalizePermissionKey(permissionKey);
+  if (!user || !key) return [];
+  if (normalizeRole(user.role) === 'super_admin') return [...PERMISSION_SCOPES];
+  const grants = Array.isArray(user.grants) ? user.grants : [];
+  const scoped = grants
+    .filter((grant) => grant?.permission_key === key && grant?.granted !== false)
+    .map((grant) => grant.scope_type)
+    .filter((scope) => PERMISSION_SCOPES.includes(scope));
+  if (scoped.length) return [...new Set(scoped)];
+  return hasPermission(user, key) ? ['DEPARTMENT'] : [];
 }
 
 function canAccessFeature(user, feature) {
   const required = FEATURE_PERMISSIONS[feature];
   if (!user) return false;
-  if (user.role === 'super_admin') return true;
+  const role = normalizeRole(user.role);
+  if (role === 'super_admin') return true;
+  if (role === 'employee' && !required.some((key) => hasPermission(user, key))) {
+    return EMPLOYEE_FEATURES.includes(feature);
+  }
   if (!required || required.length === 0) return true;
   return hasAnyPermission(user, required);
 }
 
 function isSuperAdmin(user) {
-  return user?.role === 'super_admin';
+  return normalizeRole(user?.role) === 'super_admin';
 }
 
 function hasTenantWidePeopleAccess(user) {
   if (!user) return false;
-  if (user.role === 'super_admin') return true;
+  if (normalizeRole(user.role) === 'super_admin') return true;
   return hasAnyPermission(user, TENANT_WIDE_PEOPLE_PERMISSIONS);
 }
 
@@ -228,13 +288,18 @@ module.exports = {
   MANAGER_PERMISSION_GROUPS,
   ALL_MANAGER_PERMISSIONS,
   DEFAULT_MANAGER_PERMISSIONS,
+  PERMISSION_SCOPES,
+  PERMISSION_DEFINITIONS,
   TENANT_WIDE_PEOPLE_PERMISSIONS,
   FEATURE_PERMISSIONS,
+  EMPLOYEE_FEATURES,
   REQUEST_TYPES,
   LEAVE_TYPE_TO_REQUEST_TYPE,
   APPROVER_ROLES,
   DEFAULT_WORKFLOW_TEMPLATES,
   normalizePermissionKey,
+  normalizeRole,
+  getGrantScopes,
   hasPermission,
   hasAnyPermission,
   canAccessFeature,

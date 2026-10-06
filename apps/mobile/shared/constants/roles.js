@@ -1,4 +1,4 @@
-import { MANAGER_PERMISSIONS, hasAnyPermission } from './permissions';
+import { MANAGER_PERMISSIONS, hasAnyPermission, hasPermission } from './permissions';
 import { hasTenantWidePeopleAccess } from '../../../../shared/permissions/catalog.cjs';
 
 // User Roles Constants
@@ -78,7 +78,7 @@ export const isHRAdmin = (user) => hasTenantWidePeopleAccess(user);
 export const canManageGeofence = (user, departmentId = null) => {
   if (!user) return false;
   if (user.role === ROLES.SUPER_ADMIN) return true;
-  if (user.role !== ROLES.MANAGER) return false;
+  if (user.role !== ROLES.MANAGER && !hasPermission(user, MANAGER_PERMISSIONS.MANAGE_GEOFENCING)) return false;
   const targetId = departmentId || user.departmentId || user.department_id;
   const userDeptId = user.departmentId || user.department_id;
   return Boolean(targetId && userDeptId && String(targetId) === String(userDeptId));

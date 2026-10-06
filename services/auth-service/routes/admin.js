@@ -15,7 +15,15 @@ const {
   ALL_MANAGER_PERMISSIONS,
   DEFAULT_MANAGER_PERMISSIONS,
   getManagerPermissions,
+  getEffectiveGrants,
+  upsertPermissionGrant,
+  writeAuthorizationAudit,
+  canDelegatePermission,
+  hasPermission,
+  PERMISSION_DEFINITIONS,
   hasAnyPermission,
+  getUserDepartmentIds,
+  resolveScopedUserUids,
   requirePermission,
   rejectSelfAdministrativeChange,
   writeAuditLog,
@@ -26,8 +34,10 @@ const {
   initializeApprovalSteps,
   getApprovalProgress,
   processApprovalStep,
+  canUserActOnStep,
   mapLeaveTypeToRequestType,
 } = require('../lib/approvalEngine');
+const { markAttendanceSummaryDirty } = require('../lib/attendanceFinalizer');
 
 const router = express.Router();
 
@@ -81,8 +91,8 @@ const hasTenantWidePeopleAccess = async (requester) =>
     requester.role !== ROLES.SUPER_ADMIN &&
     (await hasAnyPermission(supabase, requester, TENANT_WIDE_PEOPLE_PERMISSIONS)));
 
-const requireAdminPermission = async (requester, permissionKey, res) =>
-  requirePermission(supabase, requester, permissionKey, res);
+const requireAdminPermission = async (requester, permissionKey, res, target = null) =>
+  requirePermission(supabase, requester, permissionKey, res, target);
 
 const requireAnyAdminPermission = async (requester, permissionKeys, res) => {
   const ok = await hasAnyPermission(supabase, requester, permissionKeys);
@@ -122,6 +132,18 @@ const withTenantContext = async (req, res) => {
   return { requester, companyId };
 };
 
+async function replaceDepartmentAssignmentsAtomic({ companyId, targetUid, departmentIds, primaryDepartmentId, actorUid }) {
+  const { data, error } = await supabase.rpc('replace_user_department_assignments', {
+    p_company_id: companyId,
+    p_user_uid: targetUid,
+    p_department_ids: departmentIds,
+    p_primary_department_id: primaryDepartmentId || null,
+    p_actor_uid: actorUid || null,
+  });
+  if (error) throw error;
+  return data;
+}
+
 const LEAVE_FALLBACK = { annual: 20, sick: 10, casual: 5 };
 
 const getCompanyLeaveDefaults = async (companyId) => {
@@ -139,6 +161,20 @@ const getCompanyLeaveDefaults = async (companyId) => {
 
 const resolveLeaveBalanceForUser = async (uid, companyId) => {
   const defaults = await getCompanyLeaveDefaults(companyId);
+  const { data: effective, error: effectiveError } = await supabase.rpc('get_effective_leave_balance', {
+    p_user_uid: uid,
+  });
+  if (!effectiveError && effective) {
+    return {
+      annual_leaves: Number(effective.annualLeaves ?? defaults.annual_leaves),
+      sick_leaves: Number(effective.sickLeaves ?? defaults.sick_leaves),
+      casual_leaves: Number(effective.casualLeaves ?? defaults.casual_leaves),
+      used_annual_leaves: Number(effective.usedAnnualLeaves || 0),
+      used_sick_leaves: Number(effective.usedSickLeaves || 0),
+      used_casual_leaves: Number(effective.usedCasualLeaves || 0),
+      is_custom: Boolean(effective.isCustom),
+    };
+  }
   const { data } = await supabase
     .from('leave_balances')
     .select('annual_leaves, sick_leaves, casual_leaves, is_custom')
@@ -172,6 +208,11 @@ const resolveRemainingLeaveForEmployee = async (employeeUid, companyId, leaveTyp
   const field = LEAVE_TYPE_BALANCE_FIELD[leaveType];
   const balance = await resolveLeaveBalanceForUser(employeeUid, companyId);
   const allocated = Number(balance[field]) || 0;
+  const usedField = `used_${leaveType}_leaves`;
+  if (Object.prototype.hasOwnProperty.call(balance, usedField)) {
+    const used = Number(balance[usedField]);
+    if (Number.isFinite(used)) return { allocated, used, remaining: allocated - used };
+  }
   const { data: approved } = await supabase
     .from('leave_requests')
     .select('days')
@@ -186,12 +227,9 @@ const resolveRemainingLeaveForEmployee = async (employeeUid, companyId, leaveTyp
 const getUsersBaseQuery = (requester, companyId) => {
   let query = supabase
     .from('users')
-    .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, hire_date, is_active, created_at, company_id')
+    .select('uid, username, email, report_email, name, role, department, department_id, organization_role_id, authorization_version, position, work_mode, hire_date, is_active, created_at, company_id')
     .eq('company_id', companyId)
     .order('created_at', { ascending: false });
-  if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
-    query = query.eq('department', requester.department);
-  }
   return query;
 };
 
@@ -205,39 +243,23 @@ router.get('/analytics', async (req, res) => {
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     const sinceIso = sevenDaysAgo.toISOString();
+    const analyticsUserUids = await resolveScopedUserUids(supabase, requester, companyId, 'view_analytics');
 
     let usersQuery = supabase
       .from('users')
       .select('uid, department, department_id, is_active')
       .eq('company_id', companyId);
-    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
-      usersQuery = usersQuery.eq('department', requester.department);
-    }
+    if (analyticsUserUids) usersQuery = usersQuery.in('uid', analyticsUserUids.length ? analyticsUserUids : ['00000000-0000-0000-0000-000000000000']);
 
     let departmentsQuery = supabase
       .from('departments')
       .select('id, name')
       .eq('company_id', companyId)
       .order('name', { ascending: true });
-    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
-      const managerDept = await getRequesterDepartment(requester, companyId);
-      if (!managerDept) {
-        return res.status(200).json({
-          success: true,
-          data: {
-            departmentDistribution: [],
-            insights: {
-              totalUsers: 0,
-              activeUsers: 0,
-              attendanceLast7Days: 0,
-              avgAttendancePerActiveUser7d: 0,
-              trackedDepartments: 0,
-              unassignedUsers: 0,
-            },
-          },
-        });
-      }
-      departmentsQuery = departmentsQuery.eq('id', managerDept.id);
+    if (analyticsUserUids) {
+      const { data: scopedUsers } = await supabase.from('users').select('department_id').eq('company_id', companyId).in('uid', analyticsUserUids.length ? analyticsUserUids : ['00000000-0000-0000-0000-000000000000']);
+      const departmentIds = [...new Set((scopedUsers || []).map((row) => row.department_id).filter(Boolean))];
+      departmentsQuery = departmentsQuery.in('id', departmentIds.length ? departmentIds : ['00000000-0000-0000-0000-000000000000']);
     }
 
     let attendance7dQuery = supabase
@@ -245,16 +267,10 @@ router.get('/analytics', async (req, res) => {
       .select('id', { count: 'exact', head: true })
       .eq('company_id', companyId)
       .gte('timestamp', sinceIso);
-    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
-      const { data: deptUsers } = await supabase
-        .from('users')
-        .select('uid')
-        .eq('company_id', companyId)
-        .eq('department', requester.department);
-      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
+    if (analyticsUserUids) {
       attendance7dQuery = attendance7dQuery.in(
         'user_uid',
-        muids.length ? muids : ['00000000-0000-0000-0000-000000000000']
+        analyticsUserUids.length ? analyticsUserUids : ['00000000-0000-0000-0000-000000000000']
       );
     }
 
@@ -336,13 +352,12 @@ router.get('/dashboard/stats', async (req, res) => {
   const { requester, companyId } = ctx;
   if (!(await requireAdminPermission(requester, 'view_hr_dashboard', res))) return;
   try {
+    const dashboardUserUids = await resolveScopedUserUids(supabase, requester, companyId, 'view_hr_dashboard');
     let usersQuery = supabase
       .from('users')
-      .select('uid, department, is_active', { count: 'exact' })
+      .select('uid, department, department_id, is_active', { count: 'exact' })
       .eq('company_id', companyId);
-    if (requester.role === ROLES.MANAGER) {
-      usersQuery = usersQuery.eq('department', requester.department);
-    }
+    if (dashboardUserUids) usersQuery = usersQuery.in('uid', dashboardUserUids.length ? dashboardUserUids : ['00000000-0000-0000-0000-000000000000']);
 
     const departmentsQuery = supabase
       .from('departments')
@@ -353,36 +368,24 @@ router.get('/dashboard/stats', async (req, res) => {
       .from('attendance_records')
       .select('id', { count: 'exact' })
       .eq('company_id', companyId);
-    if (requester.role === ROLES.MANAGER) {
-      const { data: deptUsers } = await supabase
-        .from('users')
-        .select('uid')
-        .eq('company_id', companyId)
-        .eq('department', requester.department);
-      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
+    if (dashboardUserUids) {
       attendanceQuery = supabase
         .from('attendance_records')
         .select('id', { count: 'exact' })
         .eq('company_id', companyId)
-        .in('user_uid', muids.length ? muids : ['00000000-0000-0000-0000-000000000000']);
+        .in('user_uid', dashboardUserUids.length ? dashboardUserUids : ['00000000-0000-0000-0000-000000000000']);
     }
 
     let leaveQuery = supabase
       .from('leave_requests')
       .select('id, status', { count: 'exact' })
       .eq('company_id', companyId);
-    if (requester.role === ROLES.MANAGER) {
-      const { data: deptUsers } = await supabase
-        .from('users')
-        .select('uid')
-        .eq('company_id', companyId)
-        .eq('department', requester.department);
-      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
+    if (dashboardUserUids) {
       leaveQuery = supabase
         .from('leave_requests')
         .select('id, status', { count: 'exact' })
         .eq('company_id', companyId)
-        .in('employee_uid', muids.length ? muids : ['00000000-0000-0000-0000-000000000000']);
+        .in('employee_uid', dashboardUserUids.length ? dashboardUserUids : ['00000000-0000-0000-0000-000000000000']);
     }
 
     const [{ data: users }, { count: departments }, { count: attendance }, { data: leaves }] = await Promise.all([
@@ -414,11 +417,25 @@ router.get('/users', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  if (!(await requireAdminPermission(requester, 'view_employees', res))) return;
+  const canViewUsers = await hasPermission(supabase, requester, 'view_employees');
+  const canAssignUsers = await hasPermission(supabase, requester, 'assign_user_permissions');
+  if (!canViewUsers && !canAssignUsers && requester.role !== ROLES.SUPER_ADMIN) {
+    res.status(403).json({ success: false, error: 'Permission required: view_employees or assign_user_permissions' });
+    return;
+  }
   try {
     const { data, error } = await getUsersBaseQuery(requester, companyId);
     if (error) throw error;
-    res.status(200).json({ success: true, data: data || [] });
+    let visible = data || [];
+    if (requester.role !== ROLES.SUPER_ADMIN && !requester.tenantWidePeopleAccess) {
+      visible = [];
+      for (const target of data || []) {
+        const targetScope = { companyId, targetUid: target.uid, userUid: target.uid, departmentId: target.department_id, departmentIds: await getUserDepartmentIds(supabase, target.uid, target) };
+        if ((canViewUsers && await hasPermission(supabase, { ...requester, company_id: companyId }, 'view_employees', targetScope)) ||
+            (canAssignUsers && await hasPermission(supabase, { ...requester, company_id: companyId }, 'assign_user_permissions', targetScope))) visible.push(target);
+      }
+    }
+    res.status(200).json({ success: true, data: visible });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to fetch users' });
   }
@@ -433,15 +450,21 @@ router.get('/users/:uid', async (req, res) => {
   try {
     const { data: targetUser, error: targetError } = await supabase
       .from('users')
-      .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, hire_date, is_active, created_at, updated_at, company_id')
+      .select('uid, username, email, report_email, name, role, department, department_id, organization_role_id, authorization_version, position, work_mode, hire_date, is_active, created_at, updated_at, company_id')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();
     if (targetError || !targetUser) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
+    if (role !== undefined && !Object.values(ROLES).includes(String(role).toLowerCase())) {
+      return res.status(400).json({ success: false, error: 'Invalid system role' });
+    }
     const access = assertCanManageUser(requester, targetUser, {
       tenantWide: requester.tenantWidePeopleAccess,
+      scopedAllowed: requester.role === ROLES.SUPER_ADMIN || await hasPermission(supabase, { ...requester, company_id: companyId }, 'view_employees', {
+        companyId, targetUid: uid, userUid: uid, departmentId: targetUser.department_id,
+      }),
     });
     if (!access.ok) {
       return res.status(access.status).json({ success: false, error: access.error });
@@ -476,6 +499,7 @@ router.patch('/users/:uid', async (req, res) => {
     annual_leaves,
     sick_leaves,
     casual_leaves,
+    organization_role_id,
     password,
   } = body;
 
@@ -491,7 +515,7 @@ router.patch('/users/:uid', async (req, res) => {
   try {
     const { data: targetUser, error: targetError } = await supabase
       .from('users')
-      .select('uid, username, email, role, department, company_id, is_active')
+      .select('uid, username, email, role, department, department_id, organization_role_id, company_id, is_active')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();
@@ -501,6 +525,9 @@ router.patch('/users/:uid', async (req, res) => {
 
     const access = assertCanManageUser(requester, targetUser, {
       tenantWide: requester.tenantWidePeopleAccess,
+      scopedAllowed: requester.role === ROLES.SUPER_ADMIN || await hasPermission(supabase, { ...requester, company_id: companyId }, 'edit_user', {
+        companyId, targetUid: uid, userUid: uid, departmentId: targetUser.department_id,
+      }),
     });
     if (!access.ok) {
       return res.status(access.status).json({ success: false, error: access.error });
@@ -515,9 +542,21 @@ router.patch('/users/:uid', async (req, res) => {
       position !== undefined ||
       hire_date !== undefined ||
       work_mode !== undefined ||
+      organization_role_id !== undefined ||
       annual_leaves !== undefined ||
       sick_leaves !== undefined ||
       casual_leaves !== undefined;
+
+    if (organization_role_id !== undefined && organization_role_id !== null) {
+      const { data: organizationRole } = await supabase
+        .from('organization_roles')
+        .select('id')
+        .eq('id', organization_role_id)
+        .eq('company_id', companyId)
+        .eq('is_active', true)
+        .maybeSingle();
+      if (!organizationRole) return res.status(400).json({ success: false, error: 'Invalid organizational role' });
+    }
 
     const VALID_WORK_MODES = ['in_office', 'semi_remote', 'fully_remote'];
     if (work_mode !== undefined && !VALID_WORK_MODES.includes(work_mode)) {
@@ -527,30 +566,27 @@ router.patch('/users/:uid', async (req, res) => {
       });
     }
 
-    if (profileFieldsTouched && !canEditAnyProfile(requester, { tenantWide: requester.tenantWidePeopleAccess })) {
+    if (profileFieldsTouched && !canEditAnyProfile(requester, {
+      tenantWide: requester.tenantWidePeopleAccess,
+      scopedAllowed: await hasPermission(supabase, { ...requester, company_id: companyId }, 'edit_user', {
+        companyId, targetUid: uid, userUid: uid, departmentId: targetUser.department_id,
+      }),
+    })) {
       return res.status(403).json({
         success: false,
         error: 'Permission denied: edit_user with tenant-wide people access is required',
       });
     }
-    if (profileFieldsTouched && !(await requireAdminPermission(requester, 'edit_user', res))) return;
-    if (role !== undefined && role !== targetUser.role && !(await requireAdminPermission(requester, 'change_user_role', res))) return;
+    const targetScope = { companyId, targetUid: uid, userUid: uid, departmentId: targetUser.department_id };
+    if (profileFieldsTouched && !(await requireAdminPermission(requester, 'edit_user', res, targetScope))) return;
+    if (role !== undefined && role !== targetUser.role && !(await requireAdminPermission(requester, 'change_user_role', res, targetScope))) return;
     if (is_active !== undefined && Boolean(is_active) !== Boolean(targetUser.is_active)) {
       const key = is_active ? 'activate_user' : 'deactivate_user';
-      if (!(await requireAdminPermission(requester, key, res))) return;
+      if (!(await requireAdminPermission(requester, key, res, targetScope))) return;
     }
     const leaveTouched =
       annual_leaves !== undefined || sick_leaves !== undefined || casual_leaves !== undefined;
-    if (leaveTouched && !(await requireAdminPermission(requester, 'edit_leave_balance', res))) return;
-
-    if (
-      requester.role === ROLES.MANAGER &&
-      !requester.tenantWidePeopleAccess &&
-      role &&
-      role !== targetUser.role
-    ) {
-      return res.status(403).json({ success: false, error: 'Managers cannot update roles' });
-    }
+    if (leaveTouched && !(await requireAdminPermission(requester, 'edit_leave_balance', res, targetScope))) return;
     if (targetUser.role === ROLES.SUPER_ADMIN && role && role !== targetUser.role) {
       return res.status(403).json({ success: false, error: 'Super admin role cannot be changed here' });
     }
@@ -563,6 +599,7 @@ router.patch('/users/:uid', async (req, res) => {
 
     const authCredentialUpdates = {};
     const updates = { updated_at: new Date().toISOString() };
+    let departmentReplacement = null;
 
     if (username !== undefined) {
       const usernameResult = await updateUsernameForUid(supabase, companyId, uid, username);
@@ -619,12 +656,13 @@ router.patch('/users/:uid', async (req, res) => {
     if (department !== undefined) {
       const trimmedDept = department != null ? String(department).trim() : '';
       if (!trimmedDept) {
-        updates.department = null;
-        updates.department_id = null;
+        departmentReplacement = { departmentIds: [], primaryDepartmentId: null };
       } else {
         const ensured = await ensureDepartmentForCompany(companyId, trimmedDept);
-        updates.department = ensured?.name || normalizeDepartmentName(trimmedDept);
-        updates.department_id = ensured?.id || null;
+        departmentReplacement = {
+          departmentIds: ensured?.id ? [String(ensured.id)] : [],
+          primaryDepartmentId: ensured?.id ? String(ensured.id) : null,
+        };
       }
     }
 
@@ -640,6 +678,31 @@ router.patch('/users/:uid', async (req, res) => {
     }
 
     if (is_active !== undefined) updates.is_active = is_active;
+    if (organization_role_id !== undefined) updates.organization_role_id = organization_role_id || null;
+
+    if (departmentReplacement
+        && String(departmentReplacement.primaryDepartmentId || '') !== String(targetUser.department_id || '')) {
+      if (requester.role !== ROLES.SUPER_ADMIN) {
+        const departmentsToAuthorize = departmentReplacement.departmentIds.length
+          ? departmentReplacement.departmentIds
+          : [targetUser.department_id].filter(Boolean);
+        if (!departmentsToAuthorize.length) {
+          return res.status(403).json({ success: false, error: 'You cannot clear this user\'s department assignment' });
+        }
+        for (const departmentId of departmentsToAuthorize) {
+          if (!(await hasPermission(supabase, { ...requester, company_id: companyId }, 'assign_user_department', {
+            companyId, targetUid: uid, userUid: uid, departmentId,
+          }))) return res.status(403).json({ success: false, error: 'Permission required: assign_user_department' });
+        }
+      }
+      await replaceDepartmentAssignmentsAtomic({
+        companyId,
+        targetUid: uid,
+        departmentIds: departmentReplacement.departmentIds,
+        primaryDepartmentId: departmentReplacement.primaryDepartmentId,
+        actorUid: requester.uid,
+      });
+    }
 
     const profileRowTouched = Object.keys(updates).length > 1;
     if (profileRowTouched) {
@@ -701,11 +764,21 @@ router.patch('/users/:uid', async (req, res) => {
         action: 'role_changed',
       });
     }
+    if (organization_role_id !== undefined && String(organization_role_id || '') !== String(targetUser.organization_role_id || '')) {
+      await writeAuthorizationAudit(supabase, {
+        companyId,
+        actorUid: requester.uid,
+        targetUid: uid,
+        action: 'organization_role_assigned',
+        beforeState: { organization_role_id: targetUser.organization_role_id || null },
+        afterState: { organization_role_id: organization_role_id || null },
+      });
+    }
 
     const leave_balance = await resolveLeaveBalanceForUser(uid, companyId);
     const { data: refreshed } = await supabase
       .from('users')
-      .select('uid, username, email, report_email, name, role, department, department_id, position, work_mode, hire_date, is_active, updated_at')
+      .select('uid, username, email, report_email, name, role, department, department_id, organization_role_id, position, work_mode, hire_date, is_active, updated_at')
       .eq('uid', uid)
       .eq('company_id', companyId)
       .single();
@@ -1364,21 +1437,28 @@ router.get('/attendance', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  if (!(await requireAnyAdminPermission(requester, ATTENDANCE_READ_PERMISSIONS, res))) return;
+  const isEmployee = requester.role === ROLES.EMPLOYEE;
+  const hasAttendanceGrant = await hasAnyPermission(supabase, requester, ATTENDANCE_READ_PERMISSIONS);
+  if (!isEmployee && !hasAttendanceGrant && !(await requireAnyAdminPermission(requester, ATTENDANCE_READ_PERMISSIONS, res))) return;
+  if (isEmployee && !hasAttendanceGrant) {
+    // Default employee behavior remains own attendance only.
+  }
   try {
     let query = supabase
       .from('attendance_records')
       .select('*')
       .eq('company_id', companyId)
       .order('timestamp', { ascending: false });
-    if (requester.role === ROLES.MANAGER) {
-      const { data: deptUsers } = await supabase
-        .from('users')
-        .select('uid')
+    if (isEmployee && !hasAttendanceGrant) {
+      query = supabase
+        .from('attendance_records')
+        .select('*')
         .eq('company_id', companyId)
-        .eq('department', requester.department);
-      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
-      const mfilter = muids.length ? muids : ['00000000-0000-0000-0000-000000000000'];
+        .eq('user_uid', requester.uid)
+        .order('timestamp', { ascending: false });
+    } else if (hasAttendanceGrant && requester.role !== ROLES.SUPER_ADMIN) {
+      const visibleUids = await resolveScopedUserUids(supabase, requester, companyId, 'view_attendance');
+      const mfilter = visibleUids?.length ? visibleUids : ['00000000-0000-0000-0000-000000000000'];
       query = supabase
         .from('attendance_records')
         .select('*')
@@ -1412,7 +1492,7 @@ router.post('/attendance', async (req, res) => {
 
     let employeeQuery = supabase
       .from('users')
-      .select('uid, username, name, department')
+      .select('uid, username, name, department, department_id')
       .eq('company_id', companyId)
       .eq('username', username)
       .maybeSingle();
@@ -1421,9 +1501,9 @@ router.post('/attendance', async (req, res) => {
     if (!employee) {
       return res.status(404).json({ success: false, error: 'Employee not found' });
     }
-    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess && employee.department !== requester.department) {
-      return res.status(403).json({ success: false, error: 'Managers can only correct attendance for their department' });
-    }
+    if (!(await hasPermission(supabase, { ...requester, company_id: companyId }, 'manual_attendance', {
+      companyId, targetUid: employee.uid, userUid: employee.uid, departmentId: employee.department_id, department: employee.department,
+    }))) return res.status(403).json({ success: false, error: 'You cannot correct attendance for this department' });
 
     const { data, error } = await supabase
       .from('attendance_records')
@@ -1442,6 +1522,15 @@ router.post('/attendance', async (req, res) => {
       .select()
       .single();
     if (error) throw error;
+    await markAttendanceSummaryDirty(companyId, employee.uid, timestamp || new Date().toISOString());
+    await writeAuthorizationAudit(supabase, {
+      companyId,
+      actorUid: requester.uid,
+      targetUid: employee.uid,
+      action: 'manual_attendance_created',
+      afterState: data,
+      metadata: { source: 'manual' },
+    });
     res.status(201).json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to create attendance record' });
@@ -1468,21 +1557,31 @@ router.patch('/attendance/:id', async (req, res) => {
     if (timestamp) updates.timestamp = timestamp;
     if (location !== undefined) updates.location = location;
 
-    let existingQuery = supabase.from('attendance_records').select('id, username').eq('id', id).eq('company_id', companyId);
+    let existingQuery = supabase.from('attendance_records').select('id, username, user_uid, timestamp, type, checkout_source, is_manual').eq('id', id).eq('company_id', companyId);
     const { data: existing, error: existingError } = await existingQuery.maybeSingle();
     if (existingError) throw existingError;
     if (!existing) return res.status(404).json({ success: false, error: 'Attendance record not found' });
 
-    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
+    if (String(existing.checkout_source || '').toLowerCase() === 'automatic_schedule') {
+      // Editing the scheduled event is an explicit manual correction. Keep the
+      // raw row, but make the correction visible to the authoritative pairing
+      // layer instead of leaving the automatic source authoritative.
+      updates.checkout_source = 'manual';
+      updates.checkout_reason = 'MANUAL_CORRECTION';
+      updates.is_manual = true;
+      updates.auth_method = 'manual';
+    }
+
+    if (requester.role !== ROLES.SUPER_ADMIN) {
       const { data: employee } = await supabase
         .from('users')
-        .select('department')
+        .select('department, department_id, uid')
         .eq('company_id', companyId)
-        .eq('username', existing.username)
+        .eq('uid', existing.user_uid)
         .maybeSingle();
-      if (!employee || employee.department !== requester.department) {
-        return res.status(403).json({ success: false, error: 'Managers can only correct attendance for their department' });
-      }
+      if (!employee || !(await hasPermission(supabase, { ...requester, company_id: companyId }, 'manual_attendance', {
+        companyId, targetUid: employee.uid, userUid: employee.uid, departmentId: employee.department_id, department: employee.department,
+      }))) return res.status(403).json({ success: false, error: 'You cannot correct attendance for this department' });
     }
 
     const { data, error } = await supabase
@@ -1493,6 +1592,16 @@ router.patch('/attendance/:id', async (req, res) => {
       .select()
       .single();
     if (error) throw error;
+    await markAttendanceSummaryDirty(companyId, existing.user_uid, existing.timestamp, updates.timestamp || existing.timestamp);
+    await writeAuthorizationAudit(supabase, {
+      companyId,
+      actorUid: requester.uid,
+      targetUid: existing.user_uid,
+      action: 'manual_attendance_updated',
+      beforeState: existing,
+      afterState: data,
+      metadata: { source: 'manual' },
+    });
     res.status(200).json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to update attendance record' });
@@ -1509,27 +1618,36 @@ router.delete('/attendance/:id', async (req, res) => {
     const { id } = req.params;
     const { data: existing, error: existingError } = await supabase
       .from('attendance_records')
-      .select('id, username')
+      .select('id, username, user_uid, timestamp')
       .eq('id', id)
       .eq('company_id', companyId)
       .maybeSingle();
     if (existingError) throw existingError;
     if (!existing) return res.status(404).json({ success: false, error: 'Attendance record not found' });
 
-    if (requester.role === ROLES.MANAGER && !requester.tenantWidePeopleAccess) {
+    if (requester.role !== ROLES.SUPER_ADMIN) {
       const { data: employee } = await supabase
         .from('users')
-        .select('department')
+        .select('department, department_id, uid')
         .eq('company_id', companyId)
-        .eq('username', existing.username)
+        .eq('uid', existing.user_uid)
         .maybeSingle();
-      if (!employee || employee.department !== requester.department) {
-        return res.status(403).json({ success: false, error: 'Managers can only correct attendance for their department' });
-      }
+      if (!employee || !(await hasPermission(supabase, { ...requester, company_id: companyId }, 'manual_attendance', {
+        companyId, targetUid: employee.uid, userUid: employee.uid, departmentId: employee.department_id, department: employee.department,
+      }))) return res.status(403).json({ success: false, error: 'You cannot correct attendance for this department' });
     }
 
     const { error } = await supabase.from('attendance_records').delete().eq('id', id).eq('company_id', companyId);
     if (error) throw error;
+    await markAttendanceSummaryDirty(companyId, existing.user_uid, existing.timestamp);
+    await writeAuthorizationAudit(supabase, {
+      companyId,
+      actorUid: requester.uid,
+      targetUid: existing.user_uid,
+      action: 'manual_attendance_deleted',
+      beforeState: existing,
+      metadata: { source: 'manual' },
+    });
     res.status(200).json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to delete attendance record' });
@@ -1540,31 +1658,65 @@ router.get('/leaves', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  if (!(await requireAdminPermission(requester, 'view_leave_requests', res))) return;
+  const isEmployee = requester.role === ROLES.EMPLOYEE;
+  const hasLeaveViewGrant = await hasPermission(supabase, requester, 'view_leave_requests');
+  const hasApprovalGrant = await hasAnyPermission(supabase, requester, ['approve_leave', 'reject_leave']);
+  if (!isEmployee && !hasLeaveViewGrant && !hasApprovalGrant && requester.role !== ROLES.SUPER_ADMIN) {
+    res.status(403).json({ success: false, error: 'Permission required: view_leave_requests or approval authority' });
+    return;
+  }
   try {
     let query = supabase
       .from('leave_requests')
       .select('*')
       .eq('company_id', companyId)
       .order('requested_at', { ascending: false });
-    if (requester.role === ROLES.MANAGER) {
-      const { data: deptUsers } = await supabase
-        .from('users')
-        .select('uid')
-        .eq('company_id', companyId)
-        .eq('department', requester.department);
-      const muids = (deptUsers || []).map((u) => u.uid).filter(Boolean);
-      const mfilter = muids.length ? muids : ['00000000-0000-0000-0000-000000000000'];
+    if (isEmployee && !hasLeaveViewGrant && !hasApprovalGrant) {
       query = supabase
         .from('leave_requests')
         .select('*')
         .eq('company_id', companyId)
-        .in('employee_uid', mfilter)
+        .eq('employee_uid', requester.uid)
         .order('requested_at', { ascending: false });
     }
     const { data, error } = await query;
     if (error) throw error;
-    const enriched = await enrichLeaveRequestsWithEmployees(supabase, companyId, data || []);
+    const visible = [];
+    for (const row of data || []) {
+      if (isEmployee && !hasLeaveViewGrant && !hasApprovalGrant && String(row.employee_uid) === String(requester.uid)) {
+        visible.push(row);
+        continue;
+      }
+      const { data: subject } = await supabase
+        .from('users')
+        .select('uid, department, department_id')
+        .eq('uid', row.employee_uid)
+        .eq('company_id', companyId)
+        .maybeSingle();
+      if (!subject) continue;
+      const target = {
+        companyId,
+        targetUid: subject.uid,
+        employeeUid: subject.uid,
+        userUid: subject.uid,
+        departmentId: subject.department_id,
+        department: subject.department,
+      };
+      let allowed = requester.role === ROLES.SUPER_ADMIN;
+      if (!allowed && hasLeaveViewGrant) allowed = await hasPermission(supabase, requester, 'view_leave_requests', target);
+      if (!allowed && hasApprovalGrant && row.status === 'pending') {
+        const progress = await getApprovalProgress(supabase, mapLeaveTypeToRequestType(row.leave_type), row.id);
+        const pending = progress.find((step) => step.action === 'pending');
+        if (pending) {
+          allowed = await canUserActOnStep(supabase, requester, {
+            ...pending,
+            authority_type: pending.authority_type || (pending.required_permission_key ? 'PERMISSION' : 'LEGACY_ROLE'),
+          }, subject.uid, companyId, mapLeaveTypeToRequestType(row.leave_type));
+        }
+      }
+      if (allowed) visible.push(row);
+    }
+    const enriched = await enrichLeaveRequestsWithEmployees(supabase, companyId, visible);
     res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to fetch leaves' });
@@ -1577,10 +1729,11 @@ router.post('/leaves', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  if (!(await requireAdminPermission(requester, 'create_leave_request', res))) return;
+  const isEmployee = requester.role === ROLES.EMPLOYEE;
   try {
     const body = req.body || {};
-    const employeeUid = String(body.employee_uid || '').trim();
+    const requestedEmployeeUid = String(body.employee_uid || '').trim();
+    const employeeUid = isEmployee && !requestedEmployeeUid ? requester.uid : requestedEmployeeUid || requester.uid;
     const leaveType = String(body.leave_type || '').trim().toLowerCase();
     const startDate = String(body.start_date || '').trim();
     const endDate = String(body.end_date || '').trim();
@@ -1613,8 +1766,13 @@ router.post('/leaves', async (req, res) => {
     if (employeeError || !employee) {
       return res.status(404).json({ success: false, error: 'Employee not found' });
     }
-    if (requester.role === ROLES.MANAGER && employee.department !== requester.department) {
-      return res.status(403).json({ success: false, error: 'Managers can only file leave for their own department' });
+    const isOwnRequest = String(employee.uid) === String(requester.uid);
+    if (!isOwnRequest || !isEmployee) {
+      if (!(await requireAdminPermission(requester, 'create_leave_request', res, {
+        companyId, targetUid: employee.uid, employeeUid: employee.uid, departmentId: employee.department_id, department: employee.department,
+      }))) return;
+    } else if (!isOwnRequest) {
+      return res.status(403).json({ success: false, error: 'You can only create your own leave request' });
     }
 
     const days = isHalfDay ? 0.5 : countBusinessDays(startDate, endDate);
@@ -1627,7 +1785,7 @@ router.post('/leaves', async (req, res) => {
 
     const { allocated, used, remaining } = await resolveRemainingLeaveForEmployee(employee.uid, companyId, leaveType);
     const insufficientBalance = days > remaining;
-    const overrideAcknowledged = Boolean(body.override_acknowledged);
+    const overrideAcknowledged = !isEmployee && Boolean(body.override_acknowledged);
 
     // Dry run: let the UI show the balance/override warning before the
     // employee actually acts on it, without creating anything.
@@ -1681,6 +1839,41 @@ router.post('/leaves', async (req, res) => {
       .single();
     if (error) throw error;
 
+    // Initialize the approval snapshot at submission time so later workflow
+    // edits or department changes cannot reroute this request. The existing
+    // lazy initialization path remains available for older rows.
+    try {
+      const requestType = mapLeaveTypeToRequestType(leaveType);
+      const init = await initializeApprovalSteps(supabase, {
+        companyId,
+        requestType,
+        requestId: data.id,
+        employeeUid: employee.uid,
+      });
+      if (init.workflowId) {
+        const approvalDepartmentId = await (async () => {
+          const { data: assignment } = await supabase
+            .from('user_department_assignments')
+            .select('department_id')
+            .eq('user_uid', employee.uid)
+            .eq('is_active', true)
+            .order('is_primary', { ascending: false })
+            .order('created_at', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          return assignment?.department_id || employee.department_id || null;
+        })();
+        await supabase.from('leave_requests').update({
+          workflow_id: init.workflowId,
+          approval_department_id: approvalDepartmentId,
+        }).eq('id', data.id).eq('company_id', companyId);
+        data.workflow_id = init.workflowId;
+        data.approval_department_id = approvalDepartmentId;
+      }
+    } catch (approvalError) {
+      console.warn('[approvalEngine] leave approval initialization deferred:', approvalError.message);
+    }
+
     await writeAuditLog(supabase, {
       actorUid: requester.uid,
       targetUid: employee.uid,
@@ -1708,7 +1901,7 @@ router.patch('/leaves/:id', async (req, res) => {
     const tenantUids = await fetchCompanyUserUids(supabase, companyId);
     const { data: requestRow } = await supabase
       .from('leave_requests')
-      .select('id, employee_uid, status, leave_type, current_step')
+      .select('id, employee_uid, status, leave_type, start_date, end_date, current_step')
       .eq('id', id)
       .eq('company_id', companyId)
       .single();
@@ -1717,18 +1910,6 @@ router.patch('/leaves/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Leave request not found' });
     }
     if (requestRow.status !== 'pending') return res.status(400).json({ success: false, error: 'Leave already processed' });
-    if (requester.role === ROLES.MANAGER) {
-      const { data: emp } = await supabase
-        .from('users')
-        .select('uid, department')
-        .eq('uid', requestRow.employee_uid)
-        .eq('company_id', companyId)
-        .single();
-      if (!emp || emp.department !== requester.department) {
-        return res.status(403).json({ success: false, error: 'Managers can only process department leaves' });
-      }
-    }
-
     const requestType = mapLeaveTypeToRequestType(requestRow.leave_type);
     let progress = await getApprovalProgress(supabase, requestType, id);
     if (!progress.length) {
@@ -1739,7 +1920,10 @@ router.patch('/leaves/:id', async (req, res) => {
         employeeUid: requestRow.employee_uid,
       });
       if (init.workflowId) {
-        await supabase.from('leave_requests').update({ workflow_id: init.workflowId }).eq('id', id);
+        await supabase.from('leave_requests').update({
+          workflow_id: init.workflowId,
+          approval_department_id: init.steps?.[0]?.approval_department_id || null,
+        }).eq('id', id);
       }
     }
 
@@ -1772,6 +1956,13 @@ router.patch('/leaves/:id', async (req, res) => {
       .eq('id', id)
       .eq('company_id', companyId);
     if (error) throw error;
+    if (result.final && finalStatus === 'approved') {
+      const start = new Date(`${requestRow.start_date}T00:00:00Z`);
+      const end = new Date(`${requestRow.end_date}T00:00:00Z`);
+      for (let cursor = start; cursor <= end; cursor = new Date(cursor.getTime() + 86400000)) {
+        await markAttendanceSummaryDirty(companyId, requestRow.employee_uid, cursor.toISOString());
+      }
+    }
     res.status(200).json({ success: true, data: { status: finalStatus, approval: result } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to process leave request' });
@@ -1800,7 +1991,7 @@ router.get('/managers', async (req, res) => {
       .from('users')
       .select('uid, username, email, name, role, department, is_active, created_at')
       .eq('company_id', companyId)
-      .neq('role', ROLES.SUPER_ADMIN)
+      .eq('role', ROLES.MANAGER)
       .order('name', { ascending: true });
     if (error) throw error;
     const rows = await Promise.all((data || []).map(async (permissionUser) => ({
@@ -1824,11 +2015,12 @@ router.get('/managers/:uid/permissions', async (req, res) => {
       .select('uid, role')
       .eq('uid', uid)
       .eq('company_id', companyId)
-      .neq('role', ROLES.SUPER_ADMIN)
+      .eq('role', ROLES.MANAGER)
       .maybeSingle();
-    if (!permissionUser) return res.status(404).json({ success: false, error: 'User not found' });
+    if (!permissionUser) return res.status(404).json({ success: false, error: 'Manager not found' });
     const permissions = await getManagerPermissions(supabase, uid);
-    res.status(200).json({ success: true, data: permissions });
+    const grants = await getEffectiveGrants(supabase, permissionUser);
+    res.status(200).json({ success: true, data: permissions, grants });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to fetch permissions' });
   }
@@ -1843,12 +2035,13 @@ router.put('/managers/:uid/permissions', async (req, res) => {
   try {
     const { data: permissionUser } = await supabase
       .from('users')
-      .select('uid, role')
+      .select('uid, role, company_id, department_id, department, is_active')
       .eq('uid', uid)
       .eq('company_id', companyId)
-      .neq('role', ROLES.SUPER_ADMIN)
+      .eq('role', ROLES.MANAGER)
       .maybeSingle();
-    if (!permissionUser) return res.status(404).json({ success: false, error: 'User not found' });
+    if (!permissionUser) return res.status(404).json({ success: false, error: 'Manager not found' });
+    if (permissionUser.is_active === false) return res.status(400).json({ success: false, error: 'Inactive users cannot receive permissions' });
 
     const requested = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
     const requestedSet = new Set(requested.filter((key) => ALL_MANAGER_PERMISSIONS.includes(key)));
@@ -1862,6 +2055,16 @@ router.put('/managers/:uid/permissions', async (req, res) => {
       .from('manager_permissions')
       .upsert(rows, { onConflict: 'manager_uid,permission_key' });
     if (error) throw error;
+
+    const defaultScope = permissionUser.department_id ? 'DEPARTMENT' : 'COMPANY';
+    const defaultDepartmentId = defaultScope === 'DEPARTMENT' ? permissionUser.department_id : null;
+    await writeAuthorizationAudit(supabase, {
+      companyId,
+      actorUid: requester.uid,
+      targetUid: uid,
+      action: 'permissions_changed',
+      afterState: { permissions: Array.from(requestedSet), scope_type: defaultScope, department_id: defaultDepartmentId },
+    });
     await writeAuditLog(supabase, {
       actorUid: requester.uid,
       targetUid: uid,
@@ -1871,6 +2074,272 @@ router.put('/managers/:uid/permissions', async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to update permissions' });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Scoped authorization administration. Legacy manager endpoints above remain
+// unchanged for older web/mobile clients; these endpoints work for any user.
+// ---------------------------------------------------------------------------
+
+router.get('/organization-roles', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  if (ctx.requester.role !== ROLES.SUPER_ADMIN && !(await hasAnyPermission(supabase, ctx.requester, ['view_employees', 'edit_user']))) {
+    return res.status(403).json({ success: false, error: 'Permission denied' });
+  }
+  const { data, error } = await supabase
+    .from('organization_roles')
+    .select('*')
+    .eq('company_id', ctx.companyId)
+    .order('name');
+  if (error) return res.status(500).json({ success: false, error: error.message });
+  return res.json({ success: true, data: data || [] });
+});
+
+router.post('/organization-roles', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const name = String(req.body?.name || '').trim();
+  const code = String(req.body?.code || name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  if (!name || !code) return res.status(400).json({ success: false, error: 'Role name is required' });
+  const { data, error } = await supabase
+    .from('organization_roles')
+    .insert({ company_id: ctx.companyId, name, code, description: req.body?.description || null })
+    .select('*')
+    .single();
+  if (error) return res.status(400).json({ success: false, error: error.message });
+  await writeAuthorizationAudit(supabase, {
+    companyId: ctx.companyId,
+    actorUid: ctx.requester.uid,
+    action: 'organization_role_created',
+    afterState: data,
+  });
+  return res.status(201).json({ success: true, data });
+});
+
+router.patch('/organization-roles/:id', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const roleId = String(req.params.id || '');
+  const { data: existing, error: findError } = await supabase
+    .from('organization_roles')
+    .select('*')
+    .eq('id', roleId)
+    .eq('company_id', ctx.companyId)
+    .maybeSingle();
+  if (findError) return res.status(500).json({ success: false, error: findError.message });
+  if (!existing) return res.status(404).json({ success: false, error: 'Organizational role not found' });
+
+  const name = req.body?.name !== undefined ? String(req.body.name).trim() : existing.name;
+  const code = req.body?.code !== undefined
+    ? String(req.body.code).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
+    : existing.code;
+  if (!name || !code) return res.status(400).json({ success: false, error: 'Role name and code are required' });
+  const updates = {
+    name,
+    code,
+    description: req.body?.description !== undefined ? (req.body.description || null) : existing.description,
+    is_active: req.body?.is_active !== undefined ? Boolean(req.body.is_active) : existing.is_active,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase
+    .from('organization_roles')
+    .update(updates)
+    .eq('id', roleId)
+    .eq('company_id', ctx.companyId)
+    .select('*')
+    .single();
+  if (error) return res.status(400).json({ success: false, error: error.message });
+  await writeAuthorizationAudit(supabase, {
+    companyId: ctx.companyId,
+    actorUid: ctx.requester.uid,
+    action: 'organization_role_updated',
+    beforeState: existing,
+    afterState: data,
+  });
+  return res.json({ success: true, data });
+});
+
+router.delete('/organization-roles/:id', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx || !requireSuperAdmin(ctx.requester, res)) return;
+  const roleId = String(req.params.id || '');
+  const { data: existing, error: findError } = await supabase
+    .from('organization_roles')
+    .select('*')
+    .eq('id', roleId)
+    .eq('company_id', ctx.companyId)
+    .maybeSingle();
+  if (findError) return res.status(500).json({ success: false, error: findError.message });
+  if (!existing) return res.status(404).json({ success: false, error: 'Organizational role not found' });
+  const { data, error } = await supabase
+    .from('organization_roles')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('id', roleId)
+    .eq('company_id', ctx.companyId)
+    .select('*')
+    .single();
+  if (error) return res.status(400).json({ success: false, error: error.message });
+  await writeAuthorizationAudit(supabase, {
+    companyId: ctx.companyId,
+    actorUid: ctx.requester.uid,
+    action: 'organization_role_deactivated',
+    beforeState: existing,
+    afterState: data,
+  });
+  return res.json({ success: true, data });
+});
+
+router.get('/users/:uid/departments', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const targetUid = String(req.params.uid || '');
+  if (String(ctx.requester.uid) !== targetUid && ctx.requester.role !== ROLES.SUPER_ADMIN) {
+    const { data: targetUser } = await supabase.from('users').select('uid, department_id, department').eq('uid', targetUid).eq('company_id', ctx.companyId).maybeSingle();
+    if (!targetUser) return res.status(404).json({ success: false, error: 'User not found' });
+    const allowed = await hasAnyPermission(supabase, ctx.requester, ['view_employees', 'assign_user_department'], {
+      companyId: ctx.companyId,
+      targetUid,
+      userUid: targetUid,
+      departmentId: targetUser.department_id,
+      departmentIds: await getUserDepartmentIds(supabase, targetUid, targetUser),
+      department: targetUser.department,
+    });
+    if (!allowed) return res.status(403).json({ success: false, error: 'Permission denied' });
+  }
+  const { data, error } = await supabase
+    .from('user_department_assignments')
+    .select('id, user_uid, department_id, is_primary, is_active, assigned_by_uid, departments(id, name)')
+    .eq('company_id', ctx.companyId)
+    .eq('user_uid', targetUid)
+    .eq('is_active', true)
+    .order('is_primary', { ascending: false });
+  if (error) return res.status(500).json({ success: false, error: error.message });
+  return res.json({ success: true, data: data || [] });
+});
+
+router.put('/users/:uid/departments', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
+  const targetUid = req.params.uid;
+  if (rejectSelfAdministrativeChange(requester, targetUid, res)) return;
+  const { data: target } = await supabase
+    .from('users')
+    .select('uid, role, department_id, company_id, is_active')
+    .eq('uid', targetUid)
+    .eq('company_id', companyId)
+    .maybeSingle();
+  if (!target) return res.status(404).json({ success: false, error: 'User not found' });
+  if (target.role === ROLES.SUPER_ADMIN) return res.status(403).json({ success: false, error: 'Cannot modify super admin departments' });
+  if (target.is_active === false) return res.status(400).json({ success: false, error: 'Inactive users cannot receive department assignments' });
+  const requested = Array.isArray(req.body?.department_ids) ? [...new Set(req.body.department_ids.map(String))] : [];
+  const primary = req.body?.primary_department_id ? String(req.body.primary_department_id) : requested[0] || null;
+  if (primary && !requested.includes(primary)) return res.status(400).json({ success: false, error: 'Primary department must be assigned' });
+  const { data: departments, error: departmentError } = await supabase
+    .from('departments').select('id, name').eq('company_id', companyId).in('id', requested.length ? requested : ['00000000-0000-0000-0000-000000000000']);
+  if (departmentError) return res.status(500).json({ success: false, error: departmentError.message });
+  if ((departments || []).length !== requested.length) return res.status(400).json({ success: false, error: 'Invalid department assignment' });
+  const { data: before, error: beforeError } = await supabase.from('user_department_assignments')
+    .select('*').eq('company_id', companyId).eq('user_uid', targetUid).eq('is_active', true);
+  if (beforeError) return res.status(500).json({ success: false, error: beforeError.message });
+  if (requester.role !== ROLES.SUPER_ADMIN) {
+    const departmentsToAuthorize = [...new Set([...requested, ...(requested.length ? [] : (before || []).map((row) => String(row.department_id)))])];
+    if (!departmentsToAuthorize.length) return res.status(403).json({ success: false, error: 'A scoped administrator cannot clear an unassigned user' });
+    for (const departmentId of departmentsToAuthorize) {
+      if (!(await hasPermission(supabase, { ...requester, company_id: companyId }, 'assign_user_department', { companyId, targetUid, userUid: targetUid, departmentId }))) {
+        return res.status(403).json({ success: false, error: 'You cannot assign users to one or more selected departments' });
+      }
+    }
+  }
+  try {
+    await replaceDepartmentAssignmentsAtomic({
+      companyId,
+      targetUid,
+      departmentIds: requested,
+      primaryDepartmentId: primary,
+      actorUid: requester.uid,
+    });
+  } catch (error) {
+    return res.status(400).json({ success: false, error: error.message || 'Failed to replace department assignments' });
+  }
+  await writeAuthorizationAudit(supabase, {
+    companyId, actorUid: requester.uid, targetUid, action: 'department_assignments_changed',
+    beforeState: { assignments: before || [] }, afterState: { department_ids: requested, primary_department_id: primary },
+  });
+  return res.json({ success: true, data: { department_ids: requested, primary_department_id: primary } });
+});
+
+router.get('/users/:uid/grants', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { data: target } = await supabase.from('users').select('uid, role, company_id, department_id, department').eq('uid', req.params.uid).eq('company_id', ctx.companyId).maybeSingle();
+  if (!target) return res.status(404).json({ success: false, error: 'User not found' });
+  if (ctx.requester.role !== ROLES.SUPER_ADMIN && !(await hasAnyPermission(supabase, ctx.requester, ['view_employees', 'assign_user_permissions'], { companyId: ctx.companyId, targetUid: target.uid, userUid: target.uid, departmentId: target.department_id, departmentIds: await getUserDepartmentIds(supabase, target.uid, target), department: target.department }))) {
+    return res.status(403).json({ success: false, error: 'Permission denied' });
+  }
+  const grants = await getEffectiveGrants(supabase, target);
+  return res.json({ success: true, data: grants });
+});
+
+router.put('/users/:uid/grants', async (req, res) => {
+  const ctx = await withTenantContext(req, res);
+  if (!ctx) return;
+  const { requester, companyId } = ctx;
+  const targetUid = req.params.uid;
+  if (rejectSelfAdministrativeChange(requester, targetUid, res)) return;
+  const { data: target } = await supabase.from('users').select('uid, role, company_id, department_id, department, is_active').eq('uid', targetUid).eq('company_id', companyId).maybeSingle();
+  if (!target) return res.status(404).json({ success: false, error: 'User not found' });
+  if (target.role === ROLES.SUPER_ADMIN) return res.status(403).json({ success: false, error: 'Cannot modify super admin permissions' });
+  if (target.is_active === false) return res.status(400).json({ success: false, error: 'Inactive users cannot receive permissions' });
+  const grants = Array.isArray(req.body?.grants) ? req.body.grants : [];
+  if (grants.length > 100) return res.status(400).json({ success: false, error: 'Too many grants' });
+  for (const grant of grants) {
+    const key = String(grant.permission_key || '').trim();
+    const scopeType = String(grant.scope_type || 'DEPARTMENT').toUpperCase();
+    const departmentId = grant.department_id ? String(grant.department_id) : null;
+    const definition = PERMISSION_DEFINITIONS[key];
+    if (!ALL_MANAGER_PERMISSIONS.includes(key) || !['OWN', 'DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY'].includes(scopeType) || (definition?.scopes && !definition.scopes.includes(scopeType))) {
+      return res.status(400).json({ success: false, error: `Invalid permission grant: ${key}` });
+    }
+    if (scopeType === 'DEPARTMENT' && !departmentId) return res.status(400).json({ success: false, error: 'Department scope requires department_id' });
+    if (requester.role !== ROLES.SUPER_ADMIN && !(await canDelegatePermission(supabase, requester, targetUid, key, scopeType, departmentId))) {
+      return res.status(403).json({ success: false, error: `You cannot delegate ${key} with ${scopeType} scope` });
+    }
+  }
+  const before = await getEffectiveGrants(supabase, target);
+  try {
+    const requestedRows = grants.map((grant) => ({
+      permissionKey: String(grant.permission_key).trim(),
+      scopeType: String(grant.scope_type || 'DEPARTMENT').toUpperCase(),
+      departmentId: grant.department_id || null,
+      granted: grant.granted !== false,
+    }));
+    const existingCanonical = before.filter((grant) => grant.source !== 'legacy_manager');
+    const revokedRows = existingCanonical
+      .filter((existing) => !requestedRows.some((row) => row.permissionKey === existing.permission_key && row.scopeType === existing.scope_type && String(row.departmentId || '') === String(existing.department_id || '')))
+      .map((existing) => ({
+        permissionKey: existing.permission_key,
+        scopeType: existing.scope_type,
+        departmentId: existing.department_id || null,
+        granted: false,
+      }));
+    await Promise.all([...requestedRows, ...revokedRows].map((grant) => upsertPermissionGrant(supabase, {
+      companyId,
+      principalUid: targetUid,
+      permissionKey: grant.permissionKey,
+      granted: grant.granted,
+      scopeType: grant.scopeType,
+      departmentId: grant.departmentId,
+      source: requester.role === ROLES.SUPER_ADMIN ? 'super_admin' : 'delegated',
+      delegatedByUid: requester.uid,
+    })));
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message || 'Failed to update grants' });
+  }
+  const after = await getEffectiveGrants(supabase, target);
+  await writeAuthorizationAudit(supabase, { companyId, actorUid: requester.uid, targetUid, action: 'permission_grants_changed', beforeState: { grants: before }, afterState: { grants: after } });
+  return res.json({ success: true, data: after });
 });
 
 router.get('/audit-logs', async (req, res) => {

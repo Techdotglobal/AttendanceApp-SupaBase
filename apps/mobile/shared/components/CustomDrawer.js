@@ -117,16 +117,30 @@ export default function CustomDrawer({ navigation, state }) {
   const getMenuItems = () => {
     if (!user) return [];
 
+    const employeeHasAdminAccess = user.role === 'employee' && hasAnyPermission(user, [
+      MANAGER_PERMISSIONS.VIEW_EMPLOYEES,
+      MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD,
+      MANAGER_PERMISSIONS.VIEW_TICKETS,
+      MANAGER_PERMISSIONS.MANUAL_ATTENDANCE,
+      MANAGER_PERMISSIONS.CREATE_USER,
+      MANAGER_PERMISSIONS.EDIT_USER,
+      MANAGER_PERMISSIONS.MANAGE_GEOFENCING,
+      MANAGER_PERMISSIONS.APPROVE_LEAVE,
+      MANAGER_PERMISSIONS.REJECT_LEAVE,
+      MANAGER_PERMISSIONS.APPROVE_WORK_MODE,
+      MANAGER_PERMISSIONS.REJECT_WORK_MODE,
+    ]);
+
     const baseItems = [
       {
         name: 'Dashboard',
         icon: 'home-outline',
-        screen: user.role === 'employee' ? ROUTES.EMPLOYEE_DASHBOARD : ROUTES.ADMIN_DASHBOARD,
+        screen: user.role === 'employee' && !employeeHasAdminAccess ? ROUTES.EMPLOYEE_DASHBOARD : ROUTES.ADMIN_DASHBOARD,
         roles: ['employee', 'super_admin', 'manager'],
       },
     ];
 
-    if (user.role === 'employee') {
+    if (user.role === 'employee' && !employeeHasAdminAccess) {
       const employeeItems = [
         ...baseItems,
         {
@@ -197,7 +211,13 @@ export default function CustomDrawer({ navigation, state }) {
         icon: 'briefcase-outline',
         screen: ROUTES.HR_DASHBOARD,
         roles: ['super_admin', 'manager'],
-        permissions: [MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD],
+        permissions: [
+          MANAGER_PERMISSIONS.VIEW_HR_DASHBOARD,
+          MANAGER_PERMISSIONS.APPROVE_LEAVE,
+          MANAGER_PERMISSIONS.REJECT_LEAVE,
+          MANAGER_PERMISSIONS.APPROVE_WORK_MODE,
+          MANAGER_PERMISSIONS.REJECT_WORK_MODE,
+        ],
       },
       {
         name: 'Ticket Management',
@@ -292,7 +312,7 @@ export default function CustomDrawer({ navigation, state }) {
         return hasAnyPermission(user, item.permissions);
       }),
       ...filteredSuperAdminItems,
-      ...(user.role === 'manager' ? managerItems : []),
+      ...(user.role === 'manager' || employeeHasAdminAccess ? managerItems : []),
     ];
 
     // Geo-fencing: super admins (all departments) and managers (own department)

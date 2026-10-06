@@ -13,17 +13,37 @@ import {
 const extractErrorMessage = (error, fallbackMessage) =>
   error?.response?.data?.error || error?.message || fallbackMessage;
 
+const normalizeRole = (role) => String(role || '').trim().toLowerCase();
+
 const fetchUserPermissions = async (uid, role) => {
-  if (!uid || role === 'super_admin') return [];
+  if (!uid) return { permissions: [], grants: [] };
+  const canonical = await supabase
+    .from('permission_grants')
+    .select('permission_key, granted, scope_type, department_id')
+    .eq('principal_uid', uid)
+    .eq('granted', true);
+  if (!canonical.error && canonical.data?.length) {
+    return {
+      permissions: [...new Set(canonical.data.map((row) => row.permission_key))],
+      grants: canonical.data,
+    };
+  }
+  if (role !== 'manager') return { permissions: [], grants: [] };
   const { data, error } = await supabase
     .from('manager_permissions')
     .select('permission_key, granted')
     .eq('manager_uid', uid);
   if (error) {
     console.warn('[authStore] permissions load failed:', error.message);
-    return [];
+    return { permissions: [], grants: [] };
   }
-  return (data || []).filter((row) => row.granted === true).map((row) => row.permission_key);
+  const granted = (data || []).filter((row) => row.granted === true).map((row) => ({
+    permission_key: row.permission_key,
+    granted: true,
+    scope_type: 'DEPARTMENT',
+    department_id: null,
+  }));
+  return { permissions: granted.map((row) => row.permission_key), grants: granted };
 };
 
 export const useAuthStore = create((set) => ({
@@ -41,7 +61,7 @@ export const useAuthStore = create((set) => ({
           console.warn('[authStore] bootstrap tenant metadata sync:', syncRes.error);
         }
       }
-      const permissions = data ? await fetchUserPermissions(data.uid, data.role) : [];
+      const access = data ? await fetchUserPermissions(data.uid, normalizeRole(data.role)) : { permissions: [], grants: [] };
       set({
         loading: false,
         user: data
@@ -49,12 +69,15 @@ export const useAuthStore = create((set) => ({
               uid: data.uid,
               username: data.username,
               email: data.email,
-              role: data.role,
+              role: normalizeRole(data.role),
               department: data.department,
               companyId: data.company_id != null ? String(data.company_id) : null,
               company_id: data.company_id != null ? String(data.company_id) : null,
               departmentId: data.department_id != null ? String(data.department_id) : null,
-              permissions,
+              permissions: access.permissions,
+              grants: access.grants,
+              organizationRoleId: data.organization_role_id || null,
+              authorizationVersion: data.authorization_version || 1,
             }
           : null,
       });
@@ -87,12 +110,15 @@ export const useAuthStore = create((set) => ({
         uid: data.user.uid,
         username: data.user.username,
         email: data.user.email,
-        role: data.user.role,
+        role: normalizeRole(data.user.role),
         department: data.user.department,
         companyId: data.user.company_id != null ? String(data.user.company_id) : null,
         company_id: data.user.company_id != null ? String(data.user.company_id) : null,
         departmentId: data.user.department_id != null ? String(data.user.department_id) : null,
         permissions: data.user.permissions || [],
+        grants: data.user.grants || [],
+        organizationRoleId: data.user.organization_role_id || null,
+        authorizationVersion: data.user.authorization_version || 1,
       };
       if (session && shouldSyncTenantMetadata(session, { ...profile, company_id: profile.companyId, department: profile.department, role: profile.role })) {
         const syncRes = await syncTenantMetadataViaGateway();
@@ -104,7 +130,7 @@ export const useAuthStore = create((set) => ({
         loading: false,
         user: profile,
       });
-      return { success: true, role: data.user.role };
+      return { success: true, role: normalizeRole(data.user.role) };
     } catch (error) {
       console.error('[authStore] Gateway login failed:', {
         message: error?.message,
@@ -180,12 +206,12 @@ export const useAuthStore = create((set) => ({
                 uid: profile.uid,
                 username: profile.username,
                 email: profile.email,
-                role: profile.role,
+                role: normalizeRole(profile.role),
                 department: profile.department,
                 companyId: profile.company_id != null ? String(profile.company_id) : null,
                 company_id: profile.company_id != null ? String(profile.company_id) : null,
                 departmentId: profile.department_id != null ? String(profile.department_id) : null,
-                permissions: await fetchUserPermissions(profile.uid, profile.role),
+                ...(await fetchUserPermissions(profile.uid, normalizeRole(profile.role))),
               }
             : null;
 
@@ -226,29 +252,32 @@ export const useAuthStore = create((set) => ({
     const state = useAuthStore.getState();
     if (!state.user?.uid) return;
 
-    const samePermissions = (nextPermissions = [], nextRole = state.user.role) => {
+    const samePermissions = (nextPermissions = [], nextRole = state.user.role, nextGrants = state.user.grants || []) => {
       const current = state.user.permissions || [];
       if ((nextRole || state.user.role) !== state.user.role) return false;
       if (current.length !== nextPermissions.length) return false;
       for (let i = 0; i < current.length; i += 1) {
         if (current[i] !== nextPermissions[i]) return false;
       }
-      return true;
+      return JSON.stringify(state.user.grants || []) === JSON.stringify(nextGrants || []);
     };
 
     try {
       const { data } = await api.get(apiUrl('/api/auth/me/permissions'));
       if (data?.success && data?.data) {
         const permissions = data.data.permissions || [];
-        const role = data.data.role || state.user.role;
+        const grants = data.data.grants || [];
+        const role = normalizeRole(data.data.role || state.user.role);
         // Avoid a new user object when nothing changed — DashboardPage keys
         // loadDashboard off `user`, and a noop refresh was forcing a full reload.
-        if (samePermissions(permissions, role)) return;
+        if (samePermissions(permissions, role, grants)) return;
         set({
           user: {
             ...state.user,
             permissions,
+            grants,
             role,
+            authorizationVersion: data.data.authorization_version || state.user.authorizationVersion || 1,
           },
         });
         return;
@@ -256,8 +285,8 @@ export const useAuthStore = create((set) => ({
     } catch {
       /* fallback below */
     }
-    const permissions = await fetchUserPermissions(state.user.uid, state.user.role);
-    if (samePermissions(permissions)) return;
-    set({ user: { ...state.user, permissions } });
+    const access = await fetchUserPermissions(state.user.uid, state.user.role);
+    if (samePermissions(access.permissions, state.user.role, access.grants)) return;
+    set({ user: { ...state.user, permissions: access.permissions, grants: access.grants } });
   },
 }));

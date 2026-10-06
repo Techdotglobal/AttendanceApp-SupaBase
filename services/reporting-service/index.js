@@ -6,8 +6,12 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+const { assertProductionSecret } = require('../../shared/security/internalSecret.cjs');
+assertProductionSecret(process.env, 'reporting-service');
+
 const reportRoutes = require('./routes/reports');
 const { startMonthlyReportJob } = require('./jobs/monthlyReportJob');
+const { startAttendanceFinalizationJob } = require('./jobs/attendanceFinalizationJob');
 const { cleanupExpiredReports } = require('./services/reportStorage');
 const { deletePDFFile } = require('./services/pdfGenerator');
 const {
@@ -106,6 +110,9 @@ app.listen(PORT, HOST, () => {
   
   // Start monthly report cron job
   startMonthlyReportJob();
+  // Reuse this service's scheduler; the auth service remains the sole
+  // authority for attendance calculations and writes.
+  startAttendanceFinalizationJob();
   
   // Start cleanup job for expired reports (runs every 5 minutes)
   setInterval(() => {

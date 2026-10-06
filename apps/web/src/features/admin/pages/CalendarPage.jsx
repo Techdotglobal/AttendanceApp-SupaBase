@@ -11,6 +11,7 @@ import { DatePickerField, TimePickerField } from './calendarPickers';
 import { PageActions } from '../../../shared/components/pageChrome';
 import { formatEmployeeDisplay, formatLeaveStatus, formatLeaveTypeLabel } from '../utils/leaveDisplay';
 import { normalizeAttendanceType } from '../utils/analyticsCharts';
+import { useAuthStore } from '../../auth/store/authStore';
 
 const RAIL = '#00B0FF';
 const SIDEBAR_GRADIENT = 'linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%)';
@@ -487,6 +488,7 @@ function MonthGrid({ monthDate, selectedDate, eventsByDay, summariesByDay, onSel
   );
 }
 export function CalendarPage() {
+  const user = useAuthStore((state) => state.user);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -507,9 +509,11 @@ export function CalendarPage() {
   const timelineBodyRef = useRef(null);
   const [hourHeight, setHourHeight] = useState(48);
 
-  const canViewAttendance = useAnyPermission([PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
-  const canViewLeaves = useAnyPermission([PERMISSIONS.VIEW_LEAVE_REQUESTS, PERMISSIONS.APPROVE_LEAVE, PERMISSIONS.REJECT_LEAVE]);
+  const hasAttendancePermission = useAnyPermission([PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
+  const hasLeavePermission = useAnyPermission([PERMISSIONS.VIEW_LEAVE_REQUESTS, PERMISSIONS.APPROVE_LEAVE, PERMISSIONS.REJECT_LEAVE]);
   const canViewWorkModes = useAnyPermission([PERMISSIONS.VIEW_WORK_MODE_REQUESTS, PERMISSIONS.APPROVE_WORK_MODE, PERMISSIONS.REJECT_WORK_MODE]);
+  const canViewAttendance = user?.role === 'employee' || hasAttendancePermission;
+  const canViewLeaves = user?.role === 'employee' || hasLeavePermission;
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -519,7 +523,7 @@ export function CalendarPage() {
         canViewAttendance ? adminService.getAttendance().catch(() => []) : Promise.resolve([]),
         canViewLeaves ? adminService.getLeaves().catch(() => []) : Promise.resolve([]),
         canViewWorkModes ? adminService.getWorkModeRequests().catch(() => []) : Promise.resolve([]),
-        adminService.getUsers().catch(() => []),
+        user?.role === 'employee' ? Promise.resolve([]) : adminService.getUsers().catch(() => []),
       ]);
       setEvents(eventData || []);
       setAttendanceRows(attendanceData || []);
@@ -532,7 +536,7 @@ export function CalendarPage() {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [canViewAttendance, canViewLeaves, canViewWorkModes]);
+  }, [canViewAttendance, canViewLeaves, canViewWorkModes, user?.role]);
 
   useEffect(() => { load(); }, [load]);
   useSilentPoll(load, 30000, []);

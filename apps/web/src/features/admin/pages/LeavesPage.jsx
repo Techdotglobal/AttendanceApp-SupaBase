@@ -187,7 +187,7 @@ export function LeavesPage() {
 
   const canApprove = hasPermission(user, PERMISSIONS.APPROVE_LEAVE);
   const canReject = hasPermission(user, PERMISSIONS.REJECT_LEAVE);
-  const canCreate = hasPermission(user, PERMISSIONS.CREATE_LEAVE_REQUEST);
+  const canCreate = user?.role === 'employee' || hasPermission(user, PERMISSIONS.CREATE_LEAVE_REQUEST);
   const canViewUsers = canAccessFeature(user, 'users');
   const today = useMemo(() => startOfDay(new Date()), []);
   const todayKey = toDateKey(today);
@@ -345,6 +345,11 @@ export function LeavesPage() {
     setBalancePreview(null);
     setOverrideAcknowledged(false);
     setCreateOpen(true);
+    if (user?.role === 'employee') {
+      setEmployeeOptions([user]);
+      setCreateForm((current) => ({ ...current, employee_uid: user.uid }));
+      return;
+    }
     if (employeeOptions.length === 0) {
       setEmployeesLoading(true);
       try {
@@ -418,8 +423,9 @@ export function LeavesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createOpen, createForm.employee_uid, createForm.leave_type, createForm.start_date, createEndDate, createForm.is_half_day, rangeHasNoWorkingDays]);
 
-  const needsOverride = Boolean(balancePreview?.insufficientBalance);
-  const canSubmitCreate = !rangeHasNoWorkingDays && (!needsOverride || overrideAcknowledged);
+  const insufficientBalance = Boolean(balancePreview?.insufficientBalance);
+  const needsOverride = insufficientBalance && user?.role !== 'employee';
+  const canSubmitCreate = !rangeHasNoWorkingDays && (!insufficientBalance || (needsOverride && overrideAcknowledged));
 
   const submitCreate = async (e) => {
     e?.preventDefault?.();
@@ -861,7 +867,9 @@ export function LeavesPage() {
         open={createOpen}
         onClose={closeCreate}
         title="New leave request"
-        description="File a leave request on behalf of an employee. It follows the same approval workflow as a self-filed request."
+        description={user?.role === 'employee'
+          ? 'Submit your leave request for approval.'
+          : 'File a leave request on behalf of an employee. It follows the same approval workflow as a self-filed request.'}
         footer={
           <>
             <button type="button" className="ui-btn-secondary ui-btn-sm" disabled={createSubmitting} onClick={closeCreate}>
@@ -886,7 +894,7 @@ export function LeavesPage() {
             <Select
               value={createForm.employee_uid}
               onChange={(e) => setCreateForm((f) => ({ ...f, employee_uid: e.target.value }))}
-              disabled={employeesLoading}
+              disabled={employeesLoading || user?.role === 'employee'}
             >
               <option value="">{employeesLoading ? 'Loading…' : 'Select employee'}</option>
               {employeeOptions.map((row) => (
@@ -956,25 +964,29 @@ export function LeavesPage() {
             </p>
           )}
 
-          {needsOverride && (
+          {insufficientBalance && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               <p className="font-medium">
                 Insufficient {formatLeaveTypeLabel(createForm.leave_type).toLowerCase()} leave balance.
               </p>
               <p className="mt-1 text-xs text-amber-700">
                 Available: {balancePreview.remaining} day{balancePreview.remaining === 1 ? '' : 's'} · Requested:{' '}
-                {balancePreview.days} day{balancePreview.days === 1 ? '' : 's'}. This request will be created as an
-                HR override.
+                {balancePreview.days} day{balancePreview.days === 1 ? '' : 's'}.{' '}
+                {user?.role === 'employee'
+                  ? 'Please contact HR if you need an exception.'
+                  : 'This request will be created as an HR override.'}
               </p>
-              <label className="mt-2 flex items-center gap-2 text-xs font-medium text-amber-900">
-                <input
-                  type="checkbox"
-                  className="ui-checkbox"
-                  checked={overrideAcknowledged}
-                  onChange={(e) => setOverrideAcknowledged(e.target.checked)}
-                />
-                I acknowledge the insufficient balance and want to create this request anyway.
-              </label>
+              {needsOverride && (
+                <label className="mt-2 flex items-center gap-2 text-xs font-medium text-amber-900">
+                  <input
+                    type="checkbox"
+                    className="ui-checkbox"
+                    checked={overrideAcknowledged}
+                    onChange={(e) => setOverrideAcknowledged(e.target.checked)}
+                  />
+                  I acknowledge the insufficient balance and want to create this request anyway.
+                </label>
+              )}
             </div>
           )}
 

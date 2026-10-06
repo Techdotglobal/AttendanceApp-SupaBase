@@ -69,20 +69,32 @@ async function verifySuperAdmin(req, res, next) {
       });
     }
 
-    if (data.role !== 'super_admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'Forbidden',
-        message: 'Only super admins can access reports',
-      });
-    }
-
     if (!data.company_id) {
       return res.status(403).json({
         success: false,
         error: 'Forbidden',
         message: 'User missing tenant scope (company_id)',
       });
+    }
+
+    if (data.role !== 'super_admin') {
+      const { data: grants, error: grantError } = await supabase
+        .from('permission_grants')
+        .select('permission_key, scope_type')
+        .eq('principal_uid', data.uid)
+        .eq('granted', true)
+        .in('permission_key', ['view_reports', 'export_reports']);
+      if (grantError) {
+        const { data: legacy } = await supabase
+          .from('manager_permissions')
+          .select('permission_key, granted')
+          .eq('manager_uid', data.uid)
+          .eq('granted', true)
+          .in('permission_key', ['view_reports', 'export_reports']);
+        if (!(legacy || []).length) return res.status(403).json({ success: false, error: 'Report permission required' });
+      } else if (!(grants || []).some((grant) => grant.scope_type === 'COMPANY')) {
+        return res.status(403).json({ success: false, error: 'Company-scoped report permission required' });
+      }
     }
 
     req.user = data;

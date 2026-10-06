@@ -2,10 +2,15 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+const { assertProductionSecret } = require('../../shared/security/internalSecret.cjs');
+assertProductionSecret(process.env, 'auth-service');
+
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
 const opsRoutes = require('./routes/opsRoutes');
 const payrollRoutes = require('./routes/payroll');
+const attendanceInternalRoutes = require('./routes/attendanceInternalRoutes');
+const attendanceRulesRoutes = require('./routes/attendanceRulesRoutes');
 const { checkSupabase } = require('./lib/health');
 
 const app = express();
@@ -42,9 +47,12 @@ app.use((req, res, next) => {
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/admin', attendanceRulesRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin', opsRoutes);
 app.use('/api/admin/payroll', payrollRoutes);
+// Scheduler-only endpoint. It is not exposed through the public API gateway.
+app.use('/api/internal/attendance', attendanceInternalRoutes);
 
 // Health / readiness. Docker Compose probes /health?deep=1.
 app.get('/health', async (req, res) => {

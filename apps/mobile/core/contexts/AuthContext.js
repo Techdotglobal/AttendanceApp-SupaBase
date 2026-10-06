@@ -35,7 +35,14 @@ const TOKEN_REFRESH_LOAD_THROTTLE_MS = 15_000;
 const SKIP_TOKEN_REFRESH_LOAD_TTL_MS = 5_000;
 
 async function fetchManagerPermissions(uid, role) {
-  if (!uid || role !== 'manager') return [];
+  if (!uid) return [];
+  const canonical = await supabase
+    .from('permission_grants')
+    .select('permission_key, granted, scope_type, department_id')
+    .eq('principal_uid', uid)
+    .eq('granted', true);
+  if (!canonical.error && canonical.data?.length) return canonical.data;
+  if (role !== 'manager') return [];
   const { data, error } = await supabase
     .from('manager_permissions')
     .select('permission_key, granted')
@@ -44,7 +51,12 @@ async function fetchManagerPermissions(uid, role) {
     console.warn('[AUTH_CONTEXT] manager permissions load failed:', error.message);
     return [];
   }
-  return (data || []).filter((row) => row.granted === true).map((row) => row.permission_key);
+  return (data || []).filter((row) => row.granted === true).map((row) => ({
+    permission_key: row.permission_key,
+    granted: true,
+    scope_type: 'DEPARTMENT',
+    department_id: null,
+  }));
 }
 
 /**
@@ -56,6 +68,8 @@ function areAuthProfilesEqual(a, b) {
   if (!a || !b) return false;
   const permsA = Array.isArray(a.permissions) ? [...a.permissions].map(String).sort().join('\0') : '';
   const permsB = Array.isArray(b.permissions) ? [...b.permissions].map(String).sort().join('\0') : '';
+  const grantsA = JSON.stringify(a.grants || []);
+  const grantsB = JSON.stringify(b.grants || []);
   return (
     String(a.uid ?? '') === String(b.uid ?? '') &&
     String(a.id ?? '') === String(b.id ?? '') &&
@@ -69,7 +83,8 @@ function areAuthProfilesEqual(a, b) {
     String(a.position ?? '') === String(b.position ?? '') &&
     String(a.workMode ?? a.work_mode ?? '') === String(b.workMode ?? b.work_mode ?? '') &&
     String(a.hireDate ?? '') === String(b.hireDate ?? '') &&
-    permsA === permsB
+    permsA === permsB &&
+    grantsA === grantsB
   );
 }
 
@@ -425,15 +440,28 @@ export function AuthProvider({ children }) {
           permissions: await (async () => {
             try {
               const { refreshPermissionsFromServer } = await import('../api/workflowApi');
+              const fallbackGrants = await fetchManagerPermissions(userId, dbRole);
               const refreshed = await refreshPermissionsFromServer({
                 uid: userId,
                 role: dbRole,
-                permissions: await fetchManagerPermissions(userId, dbRole),
+                permissions: fallbackGrants.map((grant) => grant.permission_key || grant),
+                grants: fallbackGrants,
               });
               if (refreshed.success) return refreshed.permissions;
             } catch (_) {}
+            const fallback = await fetchManagerPermissions(userId, dbRole);
+            return fallback.map((grant) => grant.permission_key || grant);
+          })(),
+          grants: await (async () => {
+            try {
+              const { refreshPermissionsFromServer } = await import('../api/workflowApi');
+              const refreshed = await refreshPermissionsFromServer({ uid: userId, role: dbRole });
+              if (refreshed.success) return refreshed.grants || [];
+            } catch (_) {}
             return fetchManagerPermissions(userId, dbRole);
           })(),
+          organizationRoleId: userData.organization_role_id || null,
+          authorizationVersion: userData.authorization_version || 1,
           id: userId,
         };
 

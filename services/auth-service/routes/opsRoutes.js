@@ -4,7 +4,7 @@
 const express = require('express');
 const { supabase } = require('../config/supabase');
 const { getTenantCompanyId } = require('../lib/tenantScope');
-const { hasAnyPermission, requirePermission } = require('../lib/permissions');
+const { hasAnyPermission, hasPermission, requirePermission, writeAuthorizationAudit } = require('../lib/permissions');
 const { insertNotification, notifyUsernames } = require('../lib/notificationHelper');
 
 const router = express.Router();
@@ -17,7 +17,7 @@ const VISIBILITY = ['all', 'none', 'selected'];
 
 const DEFAULT_APP_SETTINGS = {
   company: { timezone: 'UTC' },
-  attendance: { autoCheckoutEnabled: true, graceMinutes: 15, requireGps: true },
+  attendance: { autoCheckoutEnabled: true, graceMinutes: 15, requireGps: true, rulesV1Enabled: false },
   leave: {},
   tickets: { defaultPriority: 'medium', notifyOnAssign: true },
   calendar: { defaultVisibility: 'all' },
@@ -39,7 +39,7 @@ async function withTenantContext(req, res) {
   // Re-load the authoritative row by the VERIFIED uid.
   const { data: user } = await supabase
     .from('users')
-    .select('uid, username, email, role, department, company_id, name')
+    .select('uid, username, email, role, department, department_id, company_id, name')
     .eq('uid', requester.uid)
     .eq('is_active', true)
     .maybeSingle();
@@ -61,6 +61,20 @@ async function requireAnyPerm(requester, keys, res) {
     return false;
   }
   return true;
+}
+
+async function canAccessTicket(requester, companyId, ticket, permissionKey) {
+  if (requester.role === ROLES.SUPER_ADMIN) return true;
+  if (ticket.created_by_uid === requester.uid || ticket.assigned_to === requester.username) return true;
+  const { data: creator } = await supabase
+    .from('users')
+    .select('uid, department, department_id')
+    .eq('uid', ticket.created_by_uid)
+    .eq('company_id', companyId)
+    .maybeSingle();
+  return Boolean(creator && await hasPermission(supabase, { ...requester, company_id: companyId }, permissionKey, {
+    companyId, targetUid: creator.uid, userUid: creator.uid, departmentId: creator.department_id, department: creator.department,
+  }));
 }
 
 function applyNotificationScope(query, requester, companyId) {
@@ -95,17 +109,22 @@ router.get('/tickets', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  if (!(await requireAnyPerm(requester, ['view_tickets', 'manage_tickets', 'assign_tickets', 'close_tickets'], res))) return;
+  const isEmployee = requester.role === ROLES.EMPLOYEE;
+  const hasTicketGrant = await hasAnyPermission(supabase, requester, ['view_tickets', 'manage_tickets', 'assign_tickets', 'close_tickets']);
+  if (!isEmployee && !hasTicketGrant && !(await requireAnyPerm(requester, ['view_tickets', 'manage_tickets', 'assign_tickets', 'close_tickets'], res))) return;
   try {
     let query = supabase
       .from('tickets')
       .select('*')
       .eq('company_id', companyId)
       .order('created_at', { ascending: false });
+    if (isEmployee && !hasTicketGrant) {
+      query = query.eq('created_by_uid', requester.uid);
+    }
     const { data, error } = await query;
     if (error) throw error;
     let rows = data || [];
-    if (requester.role === ROLES.MANAGER) {
+    if (requester.role === ROLES.MANAGER && !hasTicketGrant) {
       const { data: depts } = await supabase
         .from('departments')
         .select('id, name')
@@ -119,6 +138,25 @@ router.get('/tickets', async (req, res) => {
           t.assigned_to === requester.username
       );
     }
+    if (hasTicketGrant && requester.role !== ROLES.SUPER_ADMIN) {
+      const creatorUids = [...new Set(rows.map((ticket) => ticket.created_by_uid).filter(Boolean))];
+      const { data: creators } = creatorUids.length
+        ? await supabase.from('users').select('uid, department, department_id').eq('company_id', companyId).in('uid', creatorUids)
+        : { data: [] };
+      const creatorMap = new Map((creators || []).map((user) => [user.uid, user]));
+      const visible = [];
+      for (const ticket of rows) {
+        if (ticket.created_by_uid === requester.uid || ticket.assigned_to === requester.username) {
+          visible.push(ticket);
+          continue;
+        }
+        const creator = creatorMap.get(ticket.created_by_uid);
+        if (creator && await hasPermission(supabase, { ...requester, company_id: companyId }, 'view_tickets', {
+          companyId, targetUid: creator.uid, userUid: creator.uid, departmentId: creator.department_id, department: creator.department,
+        })) visible.push(ticket);
+      }
+      rows = visible;
+    }
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -129,7 +167,7 @@ router.post('/tickets', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  if (!(await requirePerm(requester, 'manage_tickets', res))) return;
+  if (requester.role !== ROLES.EMPLOYEE && !(await requirePerm(requester, 'manage_tickets', res))) return;
   const { category, priority, subject, description } = req.body;
   if (!subject?.trim() || !description?.trim()) {
     return res.status(400).json({ success: false, error: 'Subject and description are required' });
@@ -192,6 +230,10 @@ router.patch('/tickets/:id/assign', async (req, res) => {
       .maybeSingle();
     if (!assignee) return res.status(400).json({ success: false, error: 'Assignee not found' });
 
+    const { data: ticket } = await supabase.from('tickets').select('*').eq('id', req.params.id).eq('company_id', companyId).maybeSingle();
+    if (!ticket) return res.status(404).json({ success: false, error: 'Ticket not found' });
+    if (!(await canAccessTicket(requester, companyId, ticket, 'assign_tickets'))) return res.status(403).json({ success: false, error: 'Ticket is outside your permission scope' });
+
     const { data, error } = await supabase
       .from('tickets')
       .update({
@@ -235,6 +277,7 @@ router.patch('/tickets/:id/close', async (req, res) => {
       .eq('company_id', companyId)
       .maybeSingle();
     if (!existing) return res.status(404).json({ success: false, error: 'Ticket not found' });
+    if (!(await canAccessTicket(requester, companyId, existing, 'close_tickets'))) return res.status(403).json({ success: false, error: 'Ticket is outside your permission scope' });
 
     const { data, error } = await supabase
       .from('tickets')
@@ -277,6 +320,7 @@ router.patch('/tickets/:id/reopen', async (req, res) => {
       .eq('company_id', companyId)
       .maybeSingle();
     if (!existing) return res.status(404).json({ success: false, error: 'Ticket not found' });
+    if (!(await canAccessTicket(requester, companyId, existing, 'close_tickets'))) return res.status(403).json({ success: false, error: 'Ticket is outside your permission scope' });
 
     const nextStatus = existing.assigned_to ? 'in_progress' : 'open';
     const { data, error } = await supabase
@@ -304,7 +348,8 @@ router.get('/calendar-events', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  if (!(await requireAnyPerm(requester, ['create_events', 'edit_events', 'delete_events'], res))) return;
+  const isEmployee = requester.role === ROLES.EMPLOYEE;
+  if (!isEmployee && !(await requireAnyPerm(requester, ['create_events', 'edit_events', 'delete_events'], res))) return;
   try {
     const { data, error } = await supabase
       .from('calendar_events')
@@ -312,7 +357,18 @@ router.get('/calendar-events', async (req, res) => {
       .eq('company_id', companyId)
       .order('date', { ascending: true });
     if (error) throw error;
-    res.json({ success: true, data: data || [] });
+    const events = isEmployee
+      ? (data || []).filter((event) => {
+          const visibility = String(event.visibility || 'all').toLowerCase();
+          if (visibility === 'none') return event.created_by_uid === requester.uid;
+          if (visibility === 'selected') {
+            const selected = Array.isArray(event.visible_to) ? event.visible_to : [];
+            return event.created_by_uid === requester.uid || selected.includes(requester.uid) || selected.includes(requester.username);
+          }
+          return true;
+        })
+      : (data || []);
+    res.json({ success: true, data: events });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -523,9 +579,10 @@ router.get('/settings', async (req, res) => {
   const { requester, companyId } = ctx;
   if (!(await requirePerm(requester, 'access_system_settings', res))) return;
   try {
-    const [{ data: company }, { data: leaveSettings }] = await Promise.all([
+    const [{ data: company }, { data: leaveSettings }, { data: absencePolicy }] = await Promise.all([
       supabase.from('companies').select('id, name, logo_url, app_settings').eq('id', companyId).single(),
       supabase.from('leave_settings').select('*').eq('company_id', companyId).maybeSingle(),
+      supabase.from('attendance_absence_policies').select('*').eq('company_id', companyId).maybeSingle(),
     ]);
     const appSettings = mergeSettings(company?.app_settings);
     if (leaveSettings) {
@@ -537,6 +594,16 @@ router.get('/settings', async (req, res) => {
         yearEnd: leaveSettings.leave_year_end,
       };
     }
+    appSettings.leave = {
+      ...(appSettings.leave || {}),
+      absenceDeductionsV1Enabled: company?.app_settings?.leave?.absenceDeductionsV1Enabled === true,
+      absencePolicy: absencePolicy || null,
+      absenceAction: absencePolicy?.action || 'NONE',
+      absenceLeaveType: absencePolicy?.leave_type || 'annual',
+      absenceDeductionDays: absencePolicy?.deduction_days ?? 1,
+      absenceInsufficientBalancePolicy: absencePolicy?.insufficient_balance_policy || 'CAP_AT_ZERO_UNPAID',
+      absenceEffectiveFrom: absencePolicy?.effective_from || '',
+    };
     appSettings.company = {
       ...appSettings.company,
       name: company?.name,
@@ -555,19 +622,70 @@ router.put('/settings', async (req, res) => {
   if (!(await requirePerm(requester, 'access_system_settings', res))) return;
   const { section, values, reset } = req.body;
   if (!section) return res.status(400).json({ success: false, error: 'section is required' });
+  const absenceTouched = section === 'leave' && (reset || Object.keys(values || {}).some((key) => [
+    'absenceDeductionsV1Enabled', 'absenceEnabled', 'absenceAction', 'absenceLeaveType',
+    'absenceDeductionDays', 'absenceInsufficientBalancePolicy', 'absenceEffectiveFrom',
+  ].includes(key)));
+  if (absenceTouched && requester.role !== ROLES.SUPER_ADMIN) {
+    return res.status(403).json({ success: false, error: 'Only super admins can configure automatic absence handling' });
+  }
+  if (section === 'attendance' && (values?.rulesV1Enabled !== undefined || reset)
+      && !(await requirePerm(requester, 'manage_attendance_rules', res))) return;
   try {
-    if (section === 'leave' && values) {
+    let previousAbsencePolicy = null;
+    if (section === 'leave') {
+      const leaveValues = values || DEFAULT_APP_SETTINGS.leave || {};
       const row = {
         company_id: companyId,
-        default_annual_leaves: Number(values.defaultAnnual) || 20,
-        default_sick_leaves: Number(values.defaultSick) || 10,
-        default_casual_leaves: Number(values.defaultCasual) || 5,
-        leave_year_start: values.yearStart || '01-01',
-        leave_year_end: values.yearEnd || '12-31',
+        default_annual_leaves: Number(leaveValues.defaultAnnual) || 20,
+        default_sick_leaves: Number(leaveValues.defaultSick) || 10,
+        default_casual_leaves: Number(leaveValues.defaultCasual) || 5,
+        leave_year_start: leaveValues.yearStart || '01-01',
+        leave_year_end: leaveValues.yearEnd || '12-31',
         updated_at: new Date().toISOString(),
       };
       const { error } = await supabase.from('leave_settings').upsert(row, { onConflict: 'company_id' });
       if (error) throw error;
+      if (absenceTouched) {
+        const { data: existingPolicy } = await supabase
+          .from('attendance_absence_policies').select('*').eq('company_id', companyId).maybeSingle();
+        previousAbsencePolicy = existingPolicy || null;
+        const action = reset ? 'NONE' : String(values.absenceAction || values.absencePolicy?.action || existingPolicy?.action || 'NONE').toUpperCase();
+        const leaveType = reset ? null : (values.absenceLeaveType || values.absencePolicy?.leave_type || existingPolicy?.leave_type || null);
+        const deductionDays = reset ? 1 : Number(values.absenceDeductionDays ?? values.absencePolicy?.deduction_days ?? existingPolicy?.deduction_days ?? 1);
+        const insufficient = reset ? 'CAP_AT_ZERO_UNPAID' : String(values.absenceInsufficientBalancePolicy || values.absencePolicy?.insufficient_balance_policy || existingPolicy?.insufficient_balance_policy || 'CAP_AT_ZERO_UNPAID').toUpperCase();
+        const policy = {
+          company_id: companyId,
+          enabled: reset ? false : values.absenceDeductionsV1Enabled === true,
+          action,
+          leave_type: leaveType,
+          deduction_days: Number.isFinite(deductionDays) ? deductionDays : 1,
+          insufficient_balance_policy: insufficient,
+          effective_from: reset ? null : (values.absenceEffectiveFrom || values.absencePolicy?.effective_from || existingPolicy?.effective_from || null),
+          updated_by_uid: requester.uid,
+          updated_at: new Date().toISOString(),
+        };
+        const { data: savedPolicy, error: policyError } = await supabase
+          .from('attendance_absence_policies')
+          .upsert(policy, { onConflict: 'company_id' })
+          .select('*').single();
+        if (policyError) throw policyError;
+        const { data: companySettings } = await supabase.from('companies').select('app_settings').eq('id', companyId).single();
+        const appSettings = mergeSettings(companySettings?.app_settings);
+        appSettings.leave = {
+          ...(appSettings.leave || {}),
+          absenceDeductionsV1Enabled: policy.enabled,
+        };
+        const { error: companySettingsError } = await supabase.from('companies').update({ app_settings: appSettings, updated_at: new Date().toISOString() }).eq('id', companyId);
+        if (companySettingsError) throw companySettingsError;
+        await writeAuthorizationAudit(supabase, {
+          companyId,
+          actorUid: requester.uid,
+          action: 'attendance_absence_policy_changed',
+          beforeState: previousAbsencePolicy || {},
+          afterState: savedPolicy,
+        });
+      }
     } else if (section === 'company' && values) {
       const updates = { updated_at: new Date().toISOString() };
       if (values.name) updates.name = String(values.name).trim();
@@ -581,6 +699,7 @@ router.put('/settings', async (req, res) => {
         .eq('id', companyId)
         .single();
       const current = mergeSettings(company?.app_settings);
+      const previousRulesEnabled = current.attendance?.rulesV1Enabled === true;
       if (reset) {
         current[section] = DEFAULT_APP_SETTINGS[section] || {};
       } else if (values) {
@@ -591,11 +710,21 @@ router.put('/settings', async (req, res) => {
         .update({ app_settings: current, updated_at: new Date().toISOString() })
         .eq('id', companyId);
       if (error) throw error;
+      if (section === 'attendance' && previousRulesEnabled !== (current.attendance?.rulesV1Enabled === true)) {
+        await writeAuthorizationAudit(supabase, {
+          companyId,
+          actorUid: requester.uid,
+          action: 'attendance_rules_feature_changed',
+          beforeState: { rulesV1Enabled: previousRulesEnabled },
+          afterState: { rulesV1Enabled: current.attendance?.rulesV1Enabled === true },
+        });
+      }
     }
 
-    const [{ data: company }, { data: leaveSettings }] = await Promise.all([
+    const [{ data: company }, { data: leaveSettings }, { data: absencePolicy }] = await Promise.all([
       supabase.from('companies').select('id, name, logo_url, app_settings').eq('id', companyId).single(),
       supabase.from('leave_settings').select('*').eq('company_id', companyId).maybeSingle(),
+      supabase.from('attendance_absence_policies').select('*').eq('company_id', companyId).maybeSingle(),
     ]);
     const appSettings = mergeSettings(company?.app_settings);
     if (leaveSettings) {
@@ -607,6 +736,16 @@ router.put('/settings', async (req, res) => {
         yearEnd: leaveSettings.leave_year_end,
       };
     }
+    appSettings.leave = {
+      ...(appSettings.leave || {}),
+      absenceDeductionsV1Enabled: company?.app_settings?.leave?.absenceDeductionsV1Enabled === true,
+      absencePolicy: absencePolicy || null,
+      absenceAction: absencePolicy?.action || 'NONE',
+      absenceLeaveType: absencePolicy?.leave_type || 'annual',
+      absenceDeductionDays: absencePolicy?.deduction_days ?? 1,
+      absenceInsufficientBalancePolicy: absencePolicy?.insufficient_balance_policy || 'CAP_AT_ZERO_UNPAID',
+      absenceEffectiveFrom: absencePolicy?.effective_from || '',
+    };
     appSettings.company = { ...appSettings.company, name: company?.name, logoUrl: company?.logo_url };
 
     res.json({ success: true, message: reset ? 'Settings reset' : 'Settings saved', data: appSettings });

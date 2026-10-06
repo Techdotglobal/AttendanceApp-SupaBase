@@ -9,7 +9,7 @@ const { normalizedUsernameKey, usernameEqVariants } = require('./loginNormalize'
  */
 async function findUserByUsernameInCompany(supabase, companyId, username, applyScope) {
   const select =
-    'uid, username, email, role, department, company_id, normalized_username';
+    'uid, username, email, role, department, department_id, company_id, normalized_username';
   const base = () => {
     let q = supabase.from('users').select(select).eq('company_id', companyId);
     if (typeof applyScope === 'function') {

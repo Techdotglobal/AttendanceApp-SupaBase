@@ -5,7 +5,7 @@ import { usePageScrollLock } from '../lib/usePageScrollLock';
 import { Menu, X } from 'lucide-react';
 import { AppIcon } from './AppIcon';
 import { useAuthStore } from '../../features/auth/store/authStore';
-import { canAccessFeature, isSuperAdmin } from '../../features/admin/permissions';
+import { canAccessFeature, hasAnyPermission, hasPermission, isSuperAdmin } from '../../features/admin/permissions';
 import { useNotificationStore } from '../../features/notifications/store/notificationStore';
 import { useSilentPoll } from '../hooks/useSilentPoll';
 import { Sidebar } from './Sidebar';
@@ -52,7 +52,9 @@ export function AppShell() {
 
   const canSee = useMemo(() => {
     return (item) => {
-      if (item.superAdminOnly && !isSuperAdmin(user)) return false;
+      const delegatedPayroll = item.feature === 'payroll' && hasAnyPermission(user, ['view_payroll', 'manage_payroll']);
+      const delegatedPermissionsAdmin = item.feature === 'permissions' && hasPermission(user, 'assign_user_permissions');
+      if (item.superAdminOnly && !isSuperAdmin(user) && !delegatedPayroll && !delegatedPermissionsAdmin) return false;
       if (item.feature && !canAccessFeature(user, item.feature)) return false;
       return true;
     };

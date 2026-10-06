@@ -5,6 +5,8 @@ export const MANAGER_PERMISSIONS = {
   ACTIVATE_USER: 'activate_user',
   DEACTIVATE_USER: 'deactivate_user',
   CHANGE_USER_ROLE: 'change_user_role',
+  ASSIGN_USER_DEPARTMENT: 'assign_user_department',
+  ASSIGN_USER_PERMISSIONS: 'assign_user_permissions',
   VIEW_EMPLOYEES: 'view_employees',
   MANUAL_ATTENDANCE: 'manual_attendance',
   VIEW_ATTENDANCE: 'view_attendance',
@@ -35,12 +37,15 @@ export const MANAGER_PERMISSIONS = {
   MANAGE_DEPARTMENTS: 'manage_departments',
   MANAGE_APPROVAL_WORKFLOWS: 'manage_approval_workflows',
   ACCESS_SYSTEM_SETTINGS: 'access_system_settings',
+  VIEW_REPORTS: 'view_reports',
+  VIEW_PAYROLL: 'view_payroll',
+  MANAGE_PAYROLL: 'manage_payroll',
+  MANAGE_WORKFLOWS: 'manage_workflows',
 };
 
 export const hasPermission = (user, permissionKey) => {
   if (!user || !permissionKey) return false;
   if (user.role === 'super_admin') return true;
-  if (user.role !== 'manager') return false;
   return Array.isArray(user.permissions) && user.permissions.includes(permissionKey);
 };
 

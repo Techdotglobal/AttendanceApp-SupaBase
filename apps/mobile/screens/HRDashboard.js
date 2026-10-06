@@ -33,6 +33,7 @@ import { generateAttendanceReport, generateLeaveReport, shareReportFile, downloa
 import { ROUTES } from '../shared/constants/routes';
 import { spacing, fontSize, responsivePadding, responsiveFont, iconSize, isTablet } from '../shared/utils/responsive';
 import { isHRAdmin } from '../shared/constants/roles';
+import { hasAnyPermission } from '../shared/constants/permissions';
 import { useStaleWhileRevalidate } from '../shared/hooks/useStaleWhileRevalidate';
 
 export default function HRDashboard({ navigation, route }) {
@@ -57,10 +58,11 @@ export default function HRDashboard({ navigation, route }) {
   // CRITICAL FIX: Role guard - prevent rendering if user is not manager/super_admin
   // Use authUser from context (most up-to-date) with fallback to route params
   const user = authUser || routeUser;
+  const canApproveRequests = hasAnyPermission(user, ['approve_leave', 'reject_leave', 'approve_work_mode', 'reject_work_mode']);
   
   // Guard: Redirect if user doesn't have manager/super_admin role
   useEffect(() => {
-    if (!user || (user.role !== 'manager' && user.role !== 'super_admin')) {
+    if (!user || (user.role !== 'manager' && user.role !== 'super_admin' && !canApproveRequests)) {
       if (navigation) {
         if (user && user.role === 'employee') {
           navigation.replace('EmployeeDashboard', { user });
@@ -69,10 +71,10 @@ export default function HRDashboard({ navigation, route }) {
         }
       }
     }
-  }, [user, navigation]);
+  }, [user, navigation, canApproveRequests]);
   
   // Guard: Only render if user has manager or super_admin role
-  if (!user || (user.role !== 'manager' && user.role !== 'super_admin')) {
+  if (!user || (user.role !== 'manager' && user.role !== 'super_admin' && !canApproveRequests)) {
     return null;
   }
   // Set initial tab from route params if provided (for notification navigation)
@@ -441,7 +443,7 @@ export default function HRDashboard({ navigation, route }) {
 
     // Check permissions
     // HR admins and super admins can manage all leave requests
-    if (user.role !== 'super_admin' && !isHRAdmin(user)) {
+    if (user.role !== 'super_admin' && !isHRAdmin(user) && !canApproveRequests) {
       // For regular managers, check if they can manage this request
       let canManage = false;
       
@@ -512,7 +514,7 @@ export default function HRDashboard({ navigation, route }) {
 
     // Check permissions
     // HR admins and super admins can manage all tickets
-    if (user.role !== 'super_admin' && !isHRAdmin(user)) {
+    if (user.role !== 'super_admin' && !isHRAdmin(user) && !canApproveRequests) {
       const canManage = managerCanManageTicket(ticket, user, ticketDepartments);
       if (!canManage) {
         Alert.alert('Permission Denied', 'You can only close tickets assigned to you or from your department.');

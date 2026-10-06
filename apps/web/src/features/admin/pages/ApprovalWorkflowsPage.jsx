@@ -34,6 +34,25 @@ const APPROVER_ROLE_LABELS = {
   super_admin: 'Super Admin',
 };
 
+const AUTHORITY_TYPE_LABELS = {
+  LEGACY_ROLE: 'Legacy role',
+  PERMISSION: 'Permission + scope',
+  ORGANIZATION_ROLE: 'Organization role + permission',
+};
+
+const APPROVAL_PERMISSION_OPTIONS = [
+  ['approve_leave', 'Approve leave'],
+  ['reject_leave', 'Reject leave'],
+  ['approve_work_mode', 'Approve work mode'],
+  ['reject_work_mode', 'Reject work mode'],
+];
+
+const APPROVAL_SCOPE_OPTIONS = [
+  ['DEPARTMENT', 'Specific department'],
+  ['ASSIGNED_DEPARTMENTS', 'Approver assigned departments'],
+  ['COMPANY', 'Entire company'],
+];
+
 const WORK_MODE_LABELS = {
   in_office: 'Office',
   office: 'Office',
@@ -194,6 +213,10 @@ export function ApprovalWorkflowsPage() {
   const [saving, setSaving] = useState(false);
   const [dragIndex, setDragIndex] = useState(null);
   const [message, setMessage] = useState(null);
+  const [departments, setDepartments] = useState([]);
+  const [organizationRoles, setOrganizationRoles] = useState([]);
+  const [workflowDepartmentId, setWorkflowDepartmentId] = useState('');
+  const [workflowActive, setWorkflowActive] = useState(true);
 
   const canApproveLeave = hasPermission(user, PERMISSIONS.APPROVE_LEAVE);
   const canRejectLeave = hasPermission(user, PERMISSIONS.REJECT_LEAVE);
@@ -220,16 +243,29 @@ export function ApprovalWorkflowsPage() {
   const loadWorkflows = useCallback(async () => {
     setWorkflowLoading(true);
     try {
-      const data = await adminService.getApprovalWorkflows();
+      const [data, departmentRows, roleRows] = await Promise.all([
+        adminService.getApprovalWorkflows(),
+        adminService.getDepartments().catch(() => []),
+        adminService.getOrganizationRoles().catch(() => []),
+      ]);
       setWorkflows(data || []);
-      const current = (data || []).find((w) => w.request_type === selectedType);
-      setSteps(current?.steps?.map((s, i) => ({ ...s, step_order: i + 1 })) || []);
+      setDepartments(departmentRows || []);
+      setOrganizationRoles(roleRows || []);
+      const current = (data || []).find((w) => w.request_type === selectedType && String(w.department_id || '') === workflowDepartmentId);
+      setWorkflowDepartmentId(String(current?.department_id || ''));
+      setWorkflowActive(current?.is_active !== false);
+      setSteps(current?.steps?.map((s, i) => ({
+        ...s,
+        step_order: i + 1,
+        authority_type: s.authority_type || (s.required_permission_key ? 'PERMISSION' : 'LEGACY_ROLE'),
+        required_scope_type: s.required_scope_type || 'DEPARTMENT',
+      })) || []);
     } catch (err) {
       setMessage({ ok: false, text: err.message });
     } finally {
       setWorkflowLoading(false);
     }
-  }, [selectedType]);
+  }, [selectedType, workflowDepartmentId]);
 
   useEffect(() => {
     loadInbox();
@@ -242,9 +278,17 @@ export function ApprovalWorkflowsPage() {
   useSilentPoll(loadInbox, 30000);
 
   useEffect(() => {
-    const current = workflows.find((w) => w.request_type === selectedType);
-    setSteps(current?.steps?.map((s, i) => ({ ...s, step_order: i + 1 })) || []);
-  }, [selectedType, workflows]);
+    const current = workflows.find((w) => w.request_type === selectedType && String(w.department_id || '') === workflowDepartmentId);
+    if (current) {
+      setWorkflowActive(current.is_active !== false);
+      setSteps(current.steps?.map((s, i) => ({
+        ...s,
+        step_order: i + 1,
+        authority_type: s.authority_type || (s.required_permission_key ? 'PERMISSION' : 'LEGACY_ROLE'),
+        required_scope_type: s.required_scope_type || 'DEPARTMENT',
+      })) || []);
+    }
+  }, [selectedType, workflows, workflowDepartmentId]);
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -322,6 +366,11 @@ export function ApprovalWorkflowsPage() {
         step_order: prev.length + 1,
         step_label: 'Approver',
         approver_role: 'department_manager',
+        authority_type: 'LEGACY_ROLE',
+        required_permission_key: 'approve_leave',
+        required_scope_type: 'DEPARTMENT',
+        department_id: '',
+        organization_role_id: '',
       },
     ]);
   }
@@ -350,10 +399,17 @@ export function ApprovalWorkflowsPage() {
     try {
       await adminService.updateApprovalWorkflow(selectedType, {
         name: REQUEST_TYPE_LABELS[selectedType],
+        department_id: workflowDepartmentId || null,
+        is_active: workflowActive,
         steps: steps.map((s) => ({
           step_order: s.step_order,
           step_label: s.step_label,
           approver_role: s.approver_role,
+          authority_type: s.authority_type || 'LEGACY_ROLE',
+          organization_role_id: s.organization_role_id || null,
+          required_permission_key: s.authority_type === 'LEGACY_ROLE' ? null : s.required_permission_key,
+          required_scope_type: s.authority_type === 'LEGACY_ROLE' ? null : s.required_scope_type,
+          department_id: s.authority_type === 'LEGACY_ROLE' || s.required_scope_type !== 'DEPARTMENT' ? null : (s.department_id || workflowDepartmentId || null),
         })),
       });
       setMessage({ ok: true, text: 'Workflow saved.' });
@@ -479,6 +535,7 @@ export function ApprovalWorkflowsPage() {
         <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-900">Approval chains</summary>
         <div className="space-y-4 border-t border-slate-100 px-4 py-4">
           <p className="text-sm text-slate-500">Configure multi-level approval chains per request type. Drag steps to reorder.</p>
+          <label className="mt-3 flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={workflowActive} onChange={(event) => setWorkflowActive(event.target.checked)} /> Workflow active for newly initialized requests</label>
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(REQUEST_TYPE_LABELS).map(([type, label]) => (
               <button
@@ -505,6 +562,26 @@ export function ApprovalWorkflowsPage() {
 
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-slate-900">{REQUEST_TYPE_LABELS[selectedType]} chain</h2>
+            <Select
+              value={workflowDepartmentId}
+              onChange={(e) => {
+                setWorkflowDepartmentId(e.target.value);
+                const current = workflows.find((w) => w.request_type === selectedType && String(w.department_id || '') === e.target.value);
+                setSteps(current?.steps?.map((s, i) => ({
+                  ...s,
+                  step_order: i + 1,
+                  authority_type: s.authority_type || (s.required_permission_key ? 'PERMISSION' : 'LEGACY_ROLE'),
+                  required_scope_type: s.required_scope_type || 'DEPARTMENT',
+                })) || []);
+              }}
+              className="w-auto min-w-[12rem]"
+              aria-label="Workflow department"
+            >
+              <option value="">All departments</option>
+              {departments.map((department) => (
+                <option key={department.id} value={department.id}>{department.name}</option>
+              ))}
+            </Select>
             <button type="button" onClick={addStep} className="ui-btn-secondary ui-btn-sm">
               Add step
             </button>
@@ -547,22 +624,74 @@ export function ApprovalWorkflowsPage() {
                     placeholder="Step label"
                   />
                   <Select
-                    value={step.approver_role}
-                    onChange={(e) => setSteps((prev) => prev.map((s, i) => (i === index ? { ...s, approver_role: e.target.value } : s)))}
+                    value={step.authority_type || 'LEGACY_ROLE'}
+                    onChange={(e) => setSteps((prev) => prev.map((s, i) => (i === index ? { ...s, authority_type: e.target.value } : s)))}
                     className="w-auto"
                   >
-                    {Object.entries(APPROVER_ROLE_LABELS).map(([value, label]) => (
+                    {Object.entries(AUTHORITY_TYPE_LABELS).map(([value, label]) => (
                       <option key={value} value={value}>
                         {label}
                       </option>
                     ))}
                   </Select>
+                  {(step.authority_type || 'LEGACY_ROLE') === 'LEGACY_ROLE' ? (
+                    <Select
+                      value={step.approver_role || 'department_manager'}
+                      onChange={(e) => setSteps((prev) => prev.map((s, i) => (i === index ? { ...s, approver_role: e.target.value } : s)))}
+                      className="w-auto"
+                    >
+                      {Object.entries(APPROVER_ROLE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </Select>
+                  ) : (
+                    <>
+                      {(step.authority_type === 'ORGANIZATION_ROLE') && (
+                        <Select
+                          value={step.organization_role_id || ''}
+                          onChange={(e) => setSteps((prev) => prev.map((s, i) => (i === index ? { ...s, organization_role_id: e.target.value } : s)))}
+                          className="w-auto min-w-[10rem]"
+                        >
+                          <option value="">Organization role</option>
+                          {organizationRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                        </Select>
+                      )}
+                      <Select
+                        value={step.required_permission_key || 'approve_leave'}
+                        onChange={(e) => setSteps((prev) => prev.map((s, i) => (i === index ? { ...s, required_permission_key: e.target.value } : s)))}
+                        className="w-auto"
+                      >
+                        {APPROVAL_PERMISSION_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                      </Select>
+                      <Select
+                        value={step.required_scope_type || 'DEPARTMENT'}
+                        onChange={(e) => setSteps((prev) => prev.map((s, i) => (i === index ? { ...s, required_scope_type: e.target.value } : s)))}
+                        className="w-auto"
+                      >
+                        {APPROVAL_SCOPE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                      </Select>
+                      {step.required_scope_type === 'DEPARTMENT' && (
+                        <Select
+                          value={step.department_id || workflowDepartmentId || ''}
+                          onChange={(e) => setSteps((prev) => prev.map((s, i) => (i === index ? { ...s, department_id: e.target.value } : s)))}
+                          className="w-auto min-w-[10rem]"
+                        >
+                          <option value="">Department</option>
+                          {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+                        </Select>
+                      )}
+                    </>
+                  )}
                   <button type="button" onClick={() => removeStep(index)} className="text-xs font-medium text-rose-500 hover:text-rose-600">
                     Remove
                   </button>
                 </li>
               ))}
             </ul>
+          )}
+
+          {steps.some((step) => step.eligibility_warning || step.eligible_approver_count === 0) && (
+            <Alert type="warning">
+              One or more steps currently has no eligible approver. Requests will remain pending until the required role, permission, scope, and department configuration is satisfied.
+            </Alert>
           )}
 
           <button type="button" onClick={handleSave} disabled={saving} className="ui-btn-primary ui-btn-sm">

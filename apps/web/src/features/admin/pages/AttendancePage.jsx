@@ -14,11 +14,12 @@ import { Alert } from '../../../shared/components/ui/Alert';
 import { Select } from '../../../shared/components/ui/Select';
 import { DatePickerField } from './calendarPickers';
 import { KpiMetricCard, KpiMetricGrid } from '../../../shared/components/ui/KpiMetricCard';
-import { PermissionGate, useAnyPermission, usePermission } from '../../../shared/components/PermissionGate';
+import { useAnyPermission, usePermission } from '../../../shared/components/PermissionGate';
 import { PageActions } from '../../../shared/components/pageChrome';
 import { PERMISSIONS } from '../permissions';
 import { useSilentPoll } from '../../../shared/hooks/useSilentPoll';
 import { normalizeAttendanceType } from '../utils/analyticsCharts';
+import { useAuthStore } from '../../auth/store/authStore';
 
 const LATE_CUTOFF_MINUTES = 9 * 60 + 15;
 const PERIODS = [
@@ -301,9 +302,12 @@ function aggregatePeriod(events, start, end, todayInRange) {
 }
 
 export function AttendancePage() {
+  const user = useAuthStore((state) => state.user);
   const [rows, setRows] = useState([]);
   const [users, setUsers] = useState([]);
   const [leaves, setLeaves] = useState([]);
+  const [absenceOutcomes, setAbsenceOutcomes] = useState([]);
+  const [summaryRows, setSummaryRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState('');
@@ -322,17 +326,22 @@ export function AttendancePage() {
   const [workModeFilter, setWorkModeFilter] = useState('all');
   const [employeeQuery, setEmployeeQuery] = useState('');
   const [activeSession, setActiveSession] = useState(null);
+  const [outcomeDetail, setOutcomeDetail] = useState(null);
+  const [outcomeLoading, setOutcomeLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
-  const canViewAttendance = useAnyPermission([PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
+  const hasAttendancePermission = useAnyPermission([PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
+  const canViewAttendance = user?.role === 'employee' || hasAttendancePermission;
   const canManual = usePermission(PERMISSIONS.MANUAL_ATTENDANCE);
+  const canReconcile = canManual || usePermission(PERMISSIONS.EDIT_LEAVE_BALANCE);
   const canExport = usePermission(PERMISSIONS.EXPORT_ATTENDANCE);
-  const canViewLeaves = useAnyPermission([
+  const hasLeavePermission = useAnyPermission([
     PERMISSIONS.VIEW_LEAVE_REQUESTS,
     PERMISSIONS.APPROVE_LEAVE,
     PERMISSIONS.REJECT_LEAVE,
   ]);
+  const canViewLeaves = user?.role === 'employee' || hasLeavePermission;
 
   const loadAttendance = useCallback(
     async (silent = false) => {
@@ -353,17 +362,22 @@ export function AttendancePage() {
 
   const loadDirectory = useCallback(async () => {
     try {
-      const [userRows, leaveRows] = await Promise.all([
-        adminService.getUsers().catch(() => []),
+      const [userRows, leaveRows, outcomeRows, finalizedRows] = await Promise.all([
+        user?.role === 'employee' ? Promise.resolve([user]) : adminService.getUsers().catch(() => []),
         canViewLeaves ? adminService.getLeaves().catch(() => []) : Promise.resolve([]),
+        adminService.getAttendanceAbsenceOutcomes().catch(() => []),
+        adminService.getAttendanceSummaries().catch(() => []),
       ]);
       setUsers(userRows || []);
       setLeaves(leaveRows || []);
+      setAbsenceOutcomes(outcomeRows || []);
+      setSummaryRows(finalizedRows || []);
     } catch {
       setUsers([]);
       setLeaves([]);
+      setAbsenceOutcomes([]);
     }
-  }, [canViewLeaves]);
+  }, [canViewLeaves, user?.role, user?.uid]);
 
   useEffect(() => {
     loadAttendance();
@@ -437,6 +451,11 @@ export function AttendancePage() {
           ? sessionFromEvents(events)
           : aggregatePeriod(events, bounds.start, bounds.end, isTodayInRange);
       const profile = resolveUser(person) || person;
+      const personUid = profile.uid || profile.user_uid || person.uid;
+      const outcome = (absenceOutcomes || []).find((row) =>
+        String(row.user_uid) === String(personUid) && String(row.work_date).slice(0, 10) === toDateInput(bounds.start)
+      );
+      const finalizedSummary = (summaryRows || []).find((row) => String(row.user_uid) === String(personUid) && String(row.work_date).slice(0, 10) === toDateInput(bounds.start));
       const onLeave = leaves.some((leave) => {
         const leaveKeys = personKeys(leave);
         const samePerson =
@@ -485,6 +504,8 @@ export function AttendancePage() {
         department: profile.department || '—',
         workMode: profile.work_mode || 'in_office',
         onLeave,
+        absenceOutcome: outcome || null,
+        finalizedSummary: finalizedSummary || null,
         location,
         status,
       });
@@ -494,7 +515,7 @@ export function AttendancePage() {
       const rank = (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9);
       return rank || a.name.localeCompare(b.name);
     });
-  }, [rows, users, leaves, bounds, period, resolveUser, isTodayInRange]);
+  }, [rows, users, leaves, absenceOutcomes, summaryRows, bounds, period, resolveUser, isTodayInRange]);
 
   const departments = useMemo(
     () => ['all', ...Array.from(new Set(sessions.map((row) => row.department).filter((value) => value && value !== '—'))).sort()],
@@ -573,6 +594,35 @@ export function AttendancePage() {
       setNotice({ type: 'error', message: err?.message || 'Export failed.' });
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const openOutcomeDetail = async (outcome) => {
+    if (!outcome?.id) return;
+    setOutcomeLoading(true);
+    try {
+      setOutcomeDetail(await adminService.getAttendanceAbsenceOutcome(outcome.id));
+    } catch (err) {
+      setNotice({ type: 'error', message: err?.message || 'Failed to load absence outcome history.' });
+    } finally {
+      setOutcomeLoading(false);
+    }
+  };
+
+  const reconcileOutcome = async () => {
+    if (!outcomeDetail?.outcome?.id) return;
+    const reason = window.prompt('Reason for reconciliation', 'Manual attendance or leave correction');
+    if (!reason) return;
+    setOutcomeLoading(true);
+    try {
+      await adminService.reconcileAttendanceAbsenceOutcome(outcomeDetail.outcome.id, reason);
+      setNotice({ type: 'success', message: 'Absence outcome reconciled.' });
+      setOutcomeDetail(null);
+      await loadDirectory();
+    } catch (err) {
+      setNotice({ type: 'error', message: err?.message || 'Failed to reconcile absence outcome.' });
+    } finally {
+      setOutcomeLoading(false);
     }
   };
 
@@ -710,7 +760,7 @@ export function AttendancePage() {
         </Alert>
       )}
 
-      <PermissionGate anyOf={[PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]}>
+      {canViewAttendance ? (
         <div className="flex flex-col gap-4">
         {error && <Alert type="error">{error}</Alert>}
 
@@ -858,7 +908,16 @@ export function AttendancePage() {
                   <WorkModeMark workMode={session.workMode} />
                 </TableCell>
                 <TableCell>
-                  <StatusMark status={session.status} />
+                  <div>
+                    <StatusMark status={session.status} />
+                    {session.absenceOutcome && (
+                      <button type="button" className="mt-1 text-left text-[11px] text-slate-400 underline" onClick={(event) => { event.stopPropagation(); openOutcomeDetail(session.absenceOutcome); }}>
+                        {session.absenceOutcome.status === 'DEDUCTED' || session.absenceOutcome.status === 'PARTIALLY_DEDUCTED'
+                          ? `${session.absenceOutcome.deducted_days} day(s) deducted`
+                          : session.absenceOutcome.status.replace(/_/g, ' ').toLowerCase()}
+                      </button>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <span data-row-action>
@@ -889,7 +948,7 @@ export function AttendancePage() {
           )}
         </div>
         </div>
-      </PermissionGate>
+      ) : null}
 
       <SlideOverPanel open={showManual} onClose={() => (actionLoading ? null : setShowManual(false))}>
         <form className="flex h-full flex-col" onSubmit={handleManualSubmit}>
@@ -977,6 +1036,8 @@ export function AttendancePage() {
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
               <dl>
+                {activeSession.absenceOutcome && <DetailField label="Absence outcome"><button type="button" className="text-sky-600 underline" onClick={() => openOutcomeDetail(activeSession.absenceOutcome)}>View deduction history</button></DetailField>}
+                {activeSession.finalizedSummary && <DetailField label="Finalized summary">{activeSession.finalizedSummary.status} · {Math.round(Number(activeSession.finalizedSummary.regular_seconds || 0) / 3600 * 100) / 100} regular hours · {Math.round(Number(activeSession.finalizedSummary.overtime_seconds || 0) / 3600 * 100) / 100} overtime hours</DetailField>}
                 <DetailField label="Status"><StatusMark status={activeSession.status} /></DetailField>
                 <DetailField label="Check-in">{formatEventStamp(activeSession.checkin?.timestamp, period !== 'day')}</DetailField>
                 <DetailField label="Check-out">
@@ -1023,6 +1084,9 @@ export function AttendancePage() {
             </div>
           </div>
         )}
+      </SlideOverPanel>
+      <SlideOverPanel open={Boolean(outcomeDetail)} onClose={() => setOutcomeDetail(null)}>
+        {outcomeDetail?.outcome && <div className="flex h-full flex-col"><div className="border-b border-slate-200 px-5 py-4"><p className="text-[17px] font-semibold text-slate-900">Absence outcome</p><p className="mt-1 text-sm text-slate-500">{outcomeDetail.outcome.work_date} · {outcomeDetail.outcome.status}</p></div><div className="space-y-3 overflow-y-auto px-5 py-4"><DetailField label="Reason">{outcomeDetail.outcome.reason}</DetailField><DetailField label="Requested days">{outcomeDetail.outcome.requested_days} day(s)</DetailField><DetailField label="Deducted days">{outcomeDetail.outcome.deducted_days} day(s)</DetailField><DetailField label="Unpaid remainder">{outcomeDetail.outcome.unpaid_days} day(s)</DetailField><DetailField label="Reconciliation status">{outcomeDetail.outcome.status}</DetailField><p className="pt-4 text-xs font-medium uppercase tracking-wide text-slate-400">Stored policy snapshot</p><pre className="max-h-48 overflow-auto rounded-lg bg-slate-50 p-3 text-xs text-slate-600">{JSON.stringify(outcomeDetail.outcome.policy_snapshot || {}, null, 2)}</pre><p className="pt-4 text-xs font-medium uppercase tracking-wide text-slate-400">Ledger history</p>{(outcomeDetail.ledger || []).map((entry) => <div key={entry.id} className="flex justify-between border-b border-slate-100 py-2 text-sm"><span>{entry.transaction_type || entry.reason}</span><span>{entry.amount}</span></div>)}{canReconcile && outcomeDetail.outcome.status !== 'RECONCILED' && outcomeDetail.outcome.status !== 'REVERSED' && <button type="button" className="ui-btn-primary ui-btn-sm mt-4" disabled={outcomeLoading} onClick={reconcileOutcome}>{outcomeLoading ? 'Reconciling…' : 'Reconcile outcome'}</button>}</div></div>}
       </SlideOverPanel>
     </div>
   );

@@ -17,7 +17,7 @@
     "db:new": "supabase migration new",
     "db:status": "supabase migration list",
     "sync-auth-metadata": "node scripts/sync-all-auth-metadata.js",
-    "test": "node --test apps/web/src/features/admin/utils/geofence.test.mjs services/auth-service/test/*.cjs shared/permissions/catalog.test.cjs"
+    "test": "node --test apps/web/src/features/admin/utils/geofence.test.mjs services/auth-service/test/approvalEngine.test.cjs services/auth-service/test/phase2Contract.test.cjs services/auth-service/test/payrollEngine.test.cjs services/auth-service/test/resolveRequester.test.cjs services/auth-service/test/siteValidation.test.cjs services/auth-service/test/attendancePhase3Contract.test.cjs services/auth-service/test/attendanceFinalizer.test.cjs services/auth-service/test/attendanceFinalizationLock.test.cjs services/auth-service/test/attendanceAbsence.test.cjs services/auth-service/test/internalSecret.test.cjs services/reporting-service/jobs/attendanceFinalizationJob.test.cjs shared/permissions/catalog.test.cjs shared/attendance/attendanceRules.test.cjs"
   },
   "devDependencies": {
     "@supabase/supabase-js": "^2.89.0",

@@ -54,6 +54,7 @@ const EMPTY_CREATE_FORM = {
   name: '',
   role: 'employee',
   department: '',
+  organizationRoleId: '',
   position: '',
   workMode: 'in_office',
   hireDate: '',
@@ -309,6 +310,10 @@ export function UsersPage() {
   const [createError, setCreateError] = useState('');
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [tenantDepartments, setTenantDepartments] = useState([]);
+  const [organizationRoles, setOrganizationRoles] = useState([]);
+  const [assignmentIds, setAssignmentIds] = useState([]);
+  const [primaryAssignmentId, setPrimaryAssignmentId] = useState('');
+  const [assignmentSaving, setAssignmentSaving] = useState(false);
   const [positionSuggestions, setPositionSuggestions] = useState([]);
   const [editForm, setEditForm] = useState(null);
   const [editLoading, setEditLoading] = useState(false);
@@ -362,6 +367,15 @@ export function UsersPage() {
     }
   };
 
+  const loadOrganizationRoles = async () => {
+    try {
+      const roles = await adminService.getOrganizationRoles();
+      setOrganizationRoles(roles || []);
+    } catch (err) {
+      console.warn('[UsersPage] Failed to load organizational roles:', err?.message || err);
+    }
+  };
+
   const loadPositionSuggestions = async () => {
     try {
       const positions = await adminService.getPositionSuggestions();
@@ -374,6 +388,7 @@ export function UsersPage() {
   useEffect(() => {
     loadUsers();
     loadDepartments();
+    loadOrganizationRoles();
     loadPositionSuggestions();
   }, [canViewAttendance, canViewLeaves, canViewWorkModes]);
 
@@ -407,6 +422,7 @@ export function UsersPage() {
       name: createForm.name.trim() || createForm.username.trim(),
       role: createForm.role,
       department: createForm.department || '',
+      organization_role_id: createForm.organizationRoleId || null,
       position: createForm.position.trim(),
       workMode: createForm.workMode || 'in_office',
       hireDate: createForm.hireDate || undefined,
@@ -706,6 +722,10 @@ export function UsersPage() {
     setEditLoading(true);
     try {
       const profile = await adminService.getUserProfile(u.uid);
+      const assignments = await adminService.getUserDepartments(u.uid).catch(() => []);
+      const activeAssignments = (assignments || []).filter((row) => row.is_active !== false);
+      setAssignmentIds(activeAssignments.map((row) => String(row.department_id)));
+      setPrimaryAssignmentId(String(activeAssignments.find((row) => row.is_primary)?.department_id || u.department_id || ''));
       const lb = profile?.leave_balance || {};
       setEditForm({
         username: (profile?.username || u.username) ?? '',
@@ -719,6 +739,7 @@ export function UsersPage() {
         annual_leaves: lb.annual_leaves ?? 20,
         sick_leaves: lb.sick_leaves ?? 10,
         casual_leaves: lb.casual_leaves ?? 5,
+        organization_role_id: profile?.organization_role_id || u.organization_role_id || '',
       });
       if (profile) {
         setActiveUser((prev) => (prev?.uid === u.uid ? { ...prev, ...profile } : prev));
@@ -738,9 +759,29 @@ export function UsersPage() {
         annual_leaves: 20,
         sick_leaves: 10,
         casual_leaves: 5,
+        organization_role_id: u.organization_role_id || '',
       });
     } finally {
       setEditLoading(false);
+    }
+  };
+
+  const saveDepartmentAssignments = async () => {
+    if (!activeUser) return;
+    if (primaryAssignmentId && !assignmentIds.includes(primaryAssignmentId)) {
+      setEditError('The primary department must be selected in the assigned departments.');
+      return;
+    }
+    setAssignmentSaving(true);
+    setEditError('');
+    try {
+      await adminService.updateUserDepartments(activeUser.uid, assignmentIds, primaryAssignmentId || null);
+      setSaveSuccess('Department assignments saved.');
+      await loadUsers();
+    } catch (err) {
+      setEditError(err?.message || 'Failed to save department assignments');
+    } finally {
+      setAssignmentSaving(false);
     }
   };
 
@@ -758,6 +799,7 @@ export function UsersPage() {
         position: editForm.position?.trim() || '',
         work_mode: editForm.work_mode || 'in_office',
         hire_date: editForm.hire_date || null,
+        organization_role_id: editForm.organization_role_id || null,
       };
       if (canEditLeaveBalance) {
         payload.annual_leaves = Number(editForm.annual_leaves);
@@ -1344,6 +1386,16 @@ export function UsersPage() {
                   </option>
                 ))}
               </Select>
+              <Select
+                label="Organizational role"
+                value={createForm.organizationRoleId}
+                onChange={(e) => setCreateForm((f) => ({ ...f, organizationRoleId: e.target.value }))}
+              >
+                <option value="">— None —</option>
+                {organizationRoles.filter((role) => role.is_active !== false).map((role) => (
+                  <option key={role.id} value={role.id}>{role.name}</option>
+                ))}
+              </Select>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1493,6 +1545,35 @@ export function UsersPage() {
                               <option key={d.id} value={d.name}>{d.name}</option>
                             ))}
                           </Select>
+                          <Select
+                            label="Organizational role"
+                            value={editForm.organization_role_id || ''}
+                            onChange={(e) => setEditForm((f) => ({ ...f, organization_role_id: e.target.value }))}
+                          >
+                            <option value="">— None —</option>
+                            {organizationRoles.filter((role) => role.is_active !== false || role.id === editForm.organization_role_id).map((role) => (
+                              <option key={role.id} value={role.id}>{role.name}</option>
+                            ))}
+                          </Select>
+                          <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <div>
+                                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Department assignments</p>
+                                <p className="mt-1 text-xs text-slate-400">Primary department remains the legacy compatibility projection.</p>
+                              </div>
+                              <button type="button" className="ui-btn-secondary ui-btn-sm" onClick={saveDepartmentAssignments} disabled={assignmentSaving}>{assignmentSaving ? 'Saving…' : 'Save assignments'}</button>
+                            </div>
+                            <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                              {tenantDepartments.map((department) => {
+                                const id = String(department.id);
+                                return <label key={id} className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={assignmentIds.includes(id)} onChange={(e) => setAssignmentIds((current) => e.target.checked ? [...new Set([...current, id])] : current.filter((value) => value !== id))} />{department.name}</label>;
+                              })}
+                            </div>
+                            <Select label="Primary department" value={primaryAssignmentId} onChange={(e) => setPrimaryAssignmentId(e.target.value)}>
+                              <option value="">— None —</option>
+                              {tenantDepartments.filter((department) => assignmentIds.includes(String(department.id))).map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+                            </Select>
+                          </div>
                           <label className="block space-y-1">
                             <span className="ui-label">Position</span>
                             <input

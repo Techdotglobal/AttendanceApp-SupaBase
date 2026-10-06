@@ -5,6 +5,7 @@ import { WORK_MODES } from './workModes';
 import { resolveCompanyIdFromUser, requireValidCompanyId } from '../core/tenant/tenantScope';
 import { departmentNamesMatch } from './orgNormalize';
 import { isHRAdmin } from '../shared/constants/roles';
+import { hasAnyPermission } from '../shared/constants/permissions';
 import {
   TENANT_RUNTIME_DIAG,
   tenantDiagLog,
@@ -895,8 +896,20 @@ export const getWorkModeRequests = async (user = null) => {
     }
 
     const uid = String(session.user.id);
-    const isAdmin = user && (user.role === 'super_admin' || user.role === 'manager');
+    const isAdmin = user && (user.role === 'super_admin' || user.role === 'manager' || hasAnyPermission(user, [
+      'view_work_mode_requests',
+      'approve_work_mode',
+      'reject_work_mode',
+    ]));
     const companyId = user ? resolveCompanyIdFromUser(user) : null;
+
+    // Delegated approvers must use the gateway; direct Supabase reads are only
+    // retained for employee self-service and legacy role clients.
+    if (isAdmin && user?.role !== 'manager' && user?.role !== 'super_admin') {
+      const { fetchWorkModeRequestsAdmin } = await import('../core/api/workflowApi');
+      const result = await fetchWorkModeRequestsAdmin(user);
+      if (result.success) return (result.data || []).map(mapWorkModeRequestRow);
+    }
 
     let query = supabase
       .from('work_mode_requests')

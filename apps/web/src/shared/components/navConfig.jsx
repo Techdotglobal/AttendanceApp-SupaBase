@@ -36,6 +36,7 @@ export const NAV_SECTIONS = [
       { to: '/users', label: 'Users', feature: 'users', icon: UsersRound },
       { to: '/departments', label: 'Departments', feature: 'departments', icon: Building2 },
       { to: '/attendance', label: 'Attendance', feature: 'attendance', icon: CalendarCheck2 },
+      { to: '/attendance-rules', label: 'Attendance rules', feature: 'attendanceRules', icon: CalendarClock },
       { to: '/work-mode-requests', label: 'Work modes', feature: 'workModeRequests', icon: Laptop2 },
       { to: '/sites', label: 'Geofencing', feature: 'sites', icon: MapPin },
       { to: '/calendar', label: 'Calendar', feature: 'calendar', icon: CalendarDays },

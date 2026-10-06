@@ -5,6 +5,7 @@ import { createNotification, createBatchNotifications } from './notifications';
 import { getEmployeeById, getAdminUsers, getSuperAdminUsers, getManagersByDepartment } from './employees';
 import { fetchSessionUserCompanyId, fetchCompanyUserUids, requireValidCompanyId } from '../core/tenant/tenantScope';
 import { resolveCurrentRequester } from '../core/api/gatewayRequest';
+import { createLeaveRequestApi, fetchLeavesAdmin, processLeaveRequestApi } from '../core/api/workflowApi';
 import {
   fetchTicketDepartments,
   findDepartmentByCategoryValue,
@@ -16,6 +17,24 @@ export { getCategoryLabel, fetchTicketDepartments } from './ticketDepartments';
 const LEAVE_SETTINGS_KEY = 'leave_settings';
 const EMPLOYEE_LEAVES_KEY = 'employee_leaves';
 const LEAVE_REQUESTS_KEY = 'leave_requests';
+
+const mapGatewayLeave = (row) => ({
+  ...row,
+  employeeId: row.employeeId || row.employee_id,
+  employeeUid: row.employeeUid || row.employee_uid,
+  employeeName: row.employeeName || row.employee_name || row.name || row.username,
+  employeeUsername: row.employeeUsername || row.employee_username || row.username,
+  leaveType: row.leaveType || row.leave_type,
+  startDate: row.startDate || row.start_date,
+  endDate: row.endDate || row.end_date,
+  isHalfDay: row.isHalfDay ?? row.is_half_day,
+  halfDayPeriod: row.halfDayPeriod || row.half_day_period,
+  requestedAt: row.requestedAt || row.requested_at,
+  processedAt: row.processedAt || row.processed_at,
+  processedBy: row.processedBy || row.processed_by,
+  adminNotes: row.adminNotes || row.admin_notes,
+  assignedTo: row.assignedTo || row.assigned_to,
+});
 
 const LEAVE_SETTINGS_DEFAULTS = {
   defaultAnnualLeaves: 20,
@@ -196,6 +215,27 @@ export const getEmployeeLeaveBalance = async (employeeId) => {
     : employeeId;
   try {
     const defaultSettings = await getDefaultLeaveSettings();
+    try {
+      const { data: effective, error: effectiveError } = await supabase.rpc('get_effective_leave_balance', {
+        p_user_uid: uid,
+      });
+      if (!effectiveError && effective) {
+        return {
+          employeeId,
+          annualLeaves: Number(effective.annualLeaves ?? defaultSettings.defaultAnnualLeaves),
+          sickLeaves: Number(effective.sickLeaves ?? defaultSettings.defaultSickLeaves),
+          casualLeaves: Number(effective.casualLeaves ?? defaultSettings.defaultCasualLeaves),
+          usedAnnualLeaves: Number(effective.usedAnnualLeaves || 0),
+          usedSickLeaves: Number(effective.usedSickLeaves || 0),
+          usedCasualLeaves: Number(effective.usedCasualLeaves || 0),
+          isCustom: Boolean(effective.isCustom),
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        };
+      }
+    } catch {
+      // Compatibility fallback below is intentionally silent.
+    }
 
     // Read allocation from leave_balances (may not exist → use company defaults)
     const { data: balanceRow, error: balanceError } = await supabase
@@ -665,6 +705,24 @@ export const createLeaveRequest = async (employeeId, leaveType, startDate, endDa
       admin_notes: null
     };
 
+    // All leave submissions go through the gateway so the backend can create
+    // the approval snapshot and enforce tenant/permission rules.
+    if (requester?.uid) {
+      const gatewayResult = await createLeaveRequestApi(requester, {
+        employee_uid: employeeUid,
+        leave_type: leaveType,
+        start_date: startDate,
+        end_date: endDate,
+        reason: reason || '',
+        is_half_day: isHalfDay || false,
+        half_day_period: isHalfDay ? (halfDayPeriod || 'morning') : null,
+        override_acknowledged: false,
+      });
+      if (!gatewayResult.success) return gatewayResult;
+      const requestId = gatewayResult.data?.id;
+      return { success: true, requestId, data: gatewayResult.data };
+    }
+
     const { data: insertedRequest, error: insertError } = await supabase
       .from('leave_requests')
       .insert(requestData)
@@ -847,6 +905,13 @@ export const getEmployeeLeaveRequests = async (employeeId) => {
  */
 export const getPendingLeaveRequests = async () => {
   try {
+    const requester = await resolveCurrentRequester();
+    if (requester?.uid) {
+      const gatewayResult = await fetchLeavesAdmin(requester);
+      if (gatewayResult.success) {
+        return (gatewayResult.data || []).filter((row) => String(row.status || '').toLowerCase() === 'pending').map(mapGatewayLeave);
+      }
+    }
     // Get current user info for debugging
     const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
     if (authUser) {
@@ -947,6 +1012,11 @@ export const getPendingLeaveRequests = async () => {
  */
 export const getAllLeaveRequests = async (companyId = null) => {
   try {
+    const requester = await resolveCurrentRequester();
+    if (requester?.uid) {
+      const gatewayResult = await fetchLeavesAdmin(requester);
+      if (gatewayResult.success) return (gatewayResult.data || []).map(mapGatewayLeave);
+    }
     // Get current user info for debugging
     const { data: { user: authUser } } = await supabase.auth.getUser();
     if (authUser) {
@@ -1051,9 +1121,22 @@ export const processLeaveRequest = async (requestId, status, processedBy, adminN
       };
     }
 
+    const requester = await resolveCurrentRequester();
+    if (!requester?.uid) {
+      return { success: false, error: 'Authentication expired. Please sign in again.' };
+    }
+    return processLeaveRequestApi(requester, requestId, {
+      status,
+      admin_notes: adminNotes || '',
+    });
+
+    /* Legacy direct mutation path intentionally disabled. Approval actions must
+       go through the gateway; the retained block below is kept only as context
+       for older behavior during this compatibility transition.
+
     // Get the request from Supabase first
     const { data: request, error: fetchError } = await supabase
-      .from('leave_requests')
+      .from('approval_mutation_path_disabled')
       .select('*')
       .eq('id', requestId)
       .single();
@@ -1082,7 +1165,7 @@ export const processLeaveRequest = async (requestId, status, processedBy, adminN
 
     // Update request in Supabase
     const { error: updateError } = await supabase
-      .from('leave_requests')
+      .from('approval_mutation_path_disabled')
       .update({
         status: status,
         processed_at: new Date().toISOString(),
@@ -1160,7 +1243,7 @@ export const processLeaveRequest = async (requestId, status, processedBy, adminN
     }
 
     console.log(`Leave request ${requestId} ${status} by ${processedBy}`);
-    return { success: true };
+    return { success: true }; */
   } catch (error) {
     console.error('Error processing leave request:', error);
     return {

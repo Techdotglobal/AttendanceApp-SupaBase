@@ -61,8 +61,8 @@ services:
       PORT: "3001"
       COMPANY_ONBOARDING_SECRET: ${COMPANY_ONBOARDING_SECRET:-}
       # Shared secret: only requests carrying this (stamped by the gateway) may
-      # supply an authoritative X-User-Context. Unset = legacy mode.
-      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+      # Required in production; auth-service fails closed if it is absent.
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?INTERNAL_API_SECRET is required}
     expose:
       - "3001"
     networks:
@@ -100,6 +100,14 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
+      # Attendance finalization calls the internal auth-service over Docker DNS.
+      # Keep the shared secret in Coolify/environment configuration; never
+      # hard-code it in this compose file. Finalization remains disabled until
+      # a controlled pilot explicitly changes these values.
+      AUTH_SERVICE_URL: http://auth-service:3001
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?INTERNAL_API_SECRET is required}
+      ATTENDANCE_FINALIZER_ENABLED: ${ATTENDANCE_FINALIZER_ENABLED:-false}
+      ATTENDANCE_FINALIZER_MODE: ${ATTENDANCE_FINALIZER_MODE:-observe}
     expose:
       - "3002"
     volumes:
@@ -151,7 +159,7 @@ services:
       # ANON key only — never the service-role key in the gateway.
       SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL is required}
       SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:?SUPABASE_ANON_KEY is required}
-      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?INTERNAL_API_SECRET is required}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
     # Traefik reaches this over the Docker network via expose.
     expose:

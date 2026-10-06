@@ -14,13 +14,15 @@
  * valid bearer token is REJECTED. role / company_id / department / permissions
  * are NEVER taken from an unauthenticated client.
  *
- * Legacy mode: if INTERNAL_API_SECRET is not configured the service logs a loud
- * warning and still accepts X-User-Context (previous behaviour) so a code-only
- * deploy cannot lock admins out. Set INTERNAL_API_SECRET to enforce.
+ * Non-production legacy mode: if INTERNAL_API_SECRET is not configured the
+ * service logs a loud warning and preserves the previous X-User-Context
+ * compatibility. Production startup fails closed until the secret is set.
  */
 const crypto = require('crypto');
+const { normalizeSecret, assertProductionSecret } = require('../../../shared/security/internalSecret.cjs');
 
-const INTERNAL_API_SECRET = String(process.env.INTERNAL_API_SECRET || '').trim();
+const INTERNAL_API_SECRET = normalizeSecret(process.env.INTERNAL_API_SECRET);
+assertProductionSecret(process.env, 'auth-service');
 const STRICT_IDENTITY = INTERNAL_API_SECRET.length > 0;
 
 let warnedLegacy = false;
@@ -79,7 +81,7 @@ async function identityFromToken(token) {
   const uid = String(userResult.user.id);
   const { data: row } = await supabase
     .from('users')
-    .select('uid, username, role, company_id, department, department_id, is_active')
+    .select('uid, username, role, company_id, department, department_id, organization_role_id, authorization_version, is_active')
     .eq('uid', uid)
     .maybeSingle();
 
@@ -91,6 +93,8 @@ async function identityFromToken(token) {
       companyId: row.company_id,
       department: row.department != null ? String(row.department) : '',
       department_id: row.department_id != null ? String(row.department_id) : null,
+      organization_role_id: row.organization_role_id || null,
+      authorization_version: row.authorization_version || 1,
       username: row.username,
       _source: 'jwt',
     };

@@ -3,12 +3,25 @@
  */
 const express = require('express');
 const { supabase } = require('../config/supabase');
-const { requirePermission } = require('../lib/permissions');
+const { requirePermission, hasPermission, hasAnyPermission, writeAuthorizationAudit } = require('../lib/permissions');
 const { normalizeDepartmentName, toLookupKey } = require('../lib/orgNormalize');
+const {
+  ALL_MANAGER_PERMISSIONS,
+  PERMISSION_DEFINITIONS,
+  APPROVER_ROLES,
+} = require('../../../shared/permissions/catalog.cjs');
 
 /** Resolve a department UUID from an id or a (possibly display) name in a company. */
 async function resolveDepartmentId({ department_id, department }, companyId) {
-  if (department_id) return String(department_id);
+  if (department_id) {
+    const { data } = await supabase
+      .from('departments')
+      .select('id')
+      .eq('id', String(department_id))
+      .eq('company_id', companyId)
+      .maybeSingle();
+    return data?.id ? String(data.id) : null;
+  }
   const raw = String(department || '').trim();
   if (!raw || !companyId) return null;
   const key = toLookupKey(normalizeDepartmentName(raw) || raw);
@@ -29,6 +42,8 @@ const {
   initializeApprovalSteps,
   getApprovalProgress,
   processApprovalStep,
+  resolveApproversForStep,
+  canUserActOnStep,
   REQUEST_TYPES,
   mapLeaveTypeToRequestType,
 } = require('../lib/approvalEngine');
@@ -36,6 +51,41 @@ const {
 const router = express.Router();
 
 const ROLES = { SUPER_ADMIN: 'super_admin', MANAGER: 'manager', EMPLOYEE: 'employee' };
+const AUTHORITY_TYPES = new Set(['LEGACY_ROLE', 'PERMISSION', 'ORGANIZATION_ROLE']);
+const APPROVAL_SCOPES = new Set(['DEPARTMENT', 'ASSIGNED_DEPARTMENTS', 'COMPANY']);
+
+function normalizeWorkflowStep(step, index) {
+  const authorityType = String(step.authority_type || (step.required_permission_key ? 'PERMISSION' : 'LEGACY_ROLE')).toUpperCase();
+  const permissionKey = step.required_permission_key ? String(step.required_permission_key).trim() : null;
+  const scopeType = step.required_scope_type ? String(step.required_scope_type).trim().toUpperCase() : null;
+  const approverRole = step.approver_role ? String(step.approver_role).trim() : null;
+  const organizationRoleId = step.organization_role_id ? String(step.organization_role_id) : null;
+  if (!AUTHORITY_TYPES.has(authorityType)) throw new Error(`Invalid authority_type on step ${index + 1}`);
+  if (!step.step_label || !String(step.step_label).trim()) throw new Error(`Each step needs a label (step ${index + 1})`);
+  if (authorityType === 'LEGACY_ROLE') {
+    if (!Object.values(APPROVER_ROLES).includes(approverRole)) throw new Error(`Invalid legacy approver_role on step ${index + 1}`);
+  } else {
+    if (!permissionKey || !ALL_MANAGER_PERMISSIONS.includes(permissionKey)) throw new Error(`A valid permission is required on step ${index + 1}`);
+    if (!scopeType || !APPROVAL_SCOPES.has(scopeType)) throw new Error(`A DEPARTMENT, ASSIGNED_DEPARTMENTS, or COMPANY scope is required on step ${index + 1}`);
+    const definition = PERMISSION_DEFINITIONS[permissionKey];
+    if (definition?.scopes && !definition.scopes.includes(scopeType)) throw new Error(`Permission ${permissionKey} does not support ${scopeType} scope`);
+    if (authorityType === 'ORGANIZATION_ROLE' && !organizationRoleId) throw new Error(`An organization role is required on step ${index + 1}`);
+  }
+  if (scopeType === 'DEPARTMENT' && !step.department_id && !step.approval_department_id) {
+    throw new Error(`Department scope requires a department on step ${index + 1}`);
+  }
+  return {
+    step_order: index + 1,
+    step_label: String(step.step_label).trim(),
+    authority_type: authorityType,
+    approver_role: authorityType === 'LEGACY_ROLE' ? approverRole : null,
+    organization_role_id: authorityType === 'ORGANIZATION_ROLE' ? organizationRoleId : null,
+    required_permission_key: authorityType === 'LEGACY_ROLE' ? null : permissionKey,
+    required_scope_type: authorityType === 'LEGACY_ROLE' ? null : scopeType,
+    department_id: step.department_id ? String(step.department_id) : null,
+    approval_department_id: step.approval_department_id ? String(step.approval_department_id) : null,
+  };
+}
 
 // Identity resolved via lib/resolveRequester inside withTenantContext.
 
@@ -48,7 +98,7 @@ async function withTenantContext(req, res) {
   }
   const { data: user } = await supabase
     .from('users')
-    .select('uid, username, email, role, department, company_id, name')
+    .select('uid, username, email, role, department, department_id, organization_role_id, company_id, name')
     .eq('uid', requesterIdentity.uid)
     .eq('is_active', true)
     .maybeSingle();
@@ -61,6 +111,62 @@ async function withTenantContext(req, res) {
 
 async function requireAdminPermission(requester, key, res) {
   return requirePermission(supabase, requester, key, res);
+}
+
+async function canViewOrApproveWorkflowRequest(requester, row, requestType, companyId) {
+  const { data: employee } = await supabase
+    .from('users')
+    .select('uid, department, department_id')
+    .eq('uid', row.employee_uid)
+    .eq('company_id', companyId)
+    .maybeSingle();
+  if (!employee) return false;
+  const target = {
+    companyId,
+    targetUid: employee.uid,
+    employeeUid: employee.uid,
+    userUid: employee.uid,
+    departmentId: employee.department_id,
+    department: employee.department,
+  };
+  if (requester.role === ROLES.SUPER_ADMIN || await hasPermission(supabase, requester, 'view_work_mode_requests', target)) return true;
+  const progress = await getApprovalProgress(supabase, requestType, row.id);
+  const pending = progress.find((step) => step.action === 'pending');
+  if (!pending) return false;
+  return canUserActOnStep(supabase, requester, {
+    ...pending,
+    authority_type: pending.authority_type || (pending.required_permission_key ? 'PERMISSION' : 'LEGACY_ROLE'),
+  }, employee.uid, companyId, requestType);
+}
+
+async function addWorkflowEligibility(companyId, workflow, steps) {
+  const workflowDepartmentId = workflow.department_id || null;
+  let subjectQuery = supabase
+    .from('users')
+    .select('uid, department, department_id')
+    .eq('company_id', companyId)
+    .eq('is_active', true)
+    .eq('role', 'employee');
+  if (workflowDepartmentId) subjectQuery = subjectQuery.eq('department_id', workflowDepartmentId);
+  const { data: subject } = await subjectQuery.limit(1).maybeSingle();
+  if (!subject) {
+    return (steps || []).map((step) => ({ ...step, eligible_approver_count: 0, eligibility_warning: 'No active employee exists for this workflow department.' }));
+  }
+  return Promise.all((steps || []).map(async (step) => {
+    const approvers = await resolveApproversForStep(
+      supabase,
+      step,
+      subject.uid,
+      companyId,
+      step.approval_department_id || workflowDepartmentId,
+      workflow.request_type
+    );
+    return {
+      ...step,
+      eligible_approver_count: approvers.length,
+      eligibility_warning: approvers.length ? null : 'No eligible approver currently matches this step.',
+    };
+  }));
 }
 
 function requireSuperAdmin(requester, res) {
@@ -80,9 +186,9 @@ router.get('/approval-workflows', async (req, res) => {
   if (!(await requireAdminPermission(requester, 'manage_approval_workflows', res))) return;
   try {
     await ensureDefaultWorkflows(supabase, companyId);
-    const { data: workflows, error } = await supabase
-      .from('approval_workflows')
-      .select('id, request_type, name, is_active, updated_at')
+      const { data: workflows, error } = await supabase
+        .from('approval_workflows')
+        .select('id, request_type, name, is_active, department_id, version, updated_at')
       .eq('company_id', companyId)
       .order('request_type');
     if (error) throw error;
@@ -91,10 +197,10 @@ router.get('/approval-workflows', async (req, res) => {
       (workflows || []).map(async (wf) => {
         const { data: steps } = await supabase
           .from('approval_workflow_steps')
-          .select('id, step_order, step_label, approver_role')
+        .select('id, step_order, step_label, approver_role, authority_type, organization_role_id, required_permission_key, required_scope_type, department_id, approval_department_id, workflow_version')
           .eq('workflow_id', wf.id)
           .order('step_order');
-        return { ...wf, steps: steps || [] };
+        return { ...wf, steps: await addWorkflowEligibility(companyId, wf, steps || []) };
       })
     );
 
@@ -112,54 +218,119 @@ router.put('/approval-workflows/:requestType', async (req, res) => {
   if (!(await requireAdminPermission(requester, 'manage_approval_workflows', res))) return;
 
   const { requestType } = req.params;
-  const { name, steps } = req.body;
+  const { name, steps, department_id, department, is_active } = req.body || {};
   if (!Array.isArray(steps) || steps.length === 0) {
     return res.status(400).json({ success: false, error: 'At least one approval step is required' });
   }
+  if (!Object.values(REQUEST_TYPES).includes(requestType)) {
+    return res.status(400).json({ success: false, error: 'Unsupported approval request type' });
+  }
 
   try {
-    const sorted = [...steps].sort((a, b) => a.step_order - b.step_order);
-    for (let i = 0; i < sorted.length; i++) {
-      sorted[i].step_order = i + 1;
-      if (!sorted[i].step_label || !sorted[i].approver_role) {
-        return res.status(400).json({ success: false, error: 'Each step needs a label and approver role' });
+    const workflowDepartmentId = await resolveDepartmentId({ department_id, department }, companyId);
+    if ((department_id || department) && !workflowDepartmentId) {
+      return res.status(400).json({ success: false, error: 'Workflow department was not found in this company' });
+    }
+    const normalizedSteps = steps
+      .slice()
+      .sort((a, b) => Number(a.step_order || 0) - Number(b.step_order || 0))
+      .map(normalizeWorkflowStep);
+    for (const step of normalizedSteps) {
+      if (step.department_id) {
+        const resolved = await resolveDepartmentId({ department_id: step.department_id }, companyId);
+        if (!resolved) return res.status(400).json({ success: false, error: 'Step department was not found in this company' });
+        step.department_id = resolved;
+      }
+      if (step.approval_department_id) {
+        const resolved = await resolveDepartmentId({ department_id: step.approval_department_id }, companyId);
+        if (!resolved) return res.status(400).json({ success: false, error: 'Step approval department was not found in this company' });
+        step.approval_department_id = resolved;
+      }
+      if (step.organization_role_id) {
+        const { data: orgRole } = await supabase
+          .from('organization_roles')
+          .select('id')
+          .eq('id', step.organization_role_id)
+          .eq('company_id', companyId)
+          .eq('is_active', true)
+          .maybeSingle();
+        if (!orgRole) return res.status(400).json({ success: false, error: 'Step organization role was not found in this company' });
       }
     }
 
-    let { data: wf } = await supabase
-      .from('approval_workflows')
-      .select('id')
-      .eq('company_id', companyId)
-      .eq('request_type', requestType)
-      .maybeSingle();
-
-    if (!wf) {
-      const { data: created, error: cErr } = await supabase
-        .from('approval_workflows')
-        .insert({
-          company_id: companyId,
-          request_type: requestType,
-          name: name || requestType.replace(/_/g, ' '),
-        })
-        .select('id')
-        .single();
-      if (cErr) throw cErr;
-      wf = created;
-    } else if (name) {
-      await supabase.from('approval_workflows').update({ name, updated_at: new Date().toISOString() }).eq('id', wf.id);
-    }
-
-    await supabase.from('approval_workflow_steps').delete().eq('workflow_id', wf.id);
-    const rows = sorted.map((s) => ({
-      workflow_id: wf.id,
+    const rows = normalizedSteps.map((s) => ({
       step_order: s.step_order,
       step_label: s.step_label,
       approver_role: s.approver_role,
+      authority_type: s.authority_type,
+      organization_role_id: s.organization_role_id,
+      required_permission_key: s.required_permission_key || null,
+      required_scope_type: s.required_scope_type || null,
+      department_id: s.department_id || null,
+      approval_department_id: s.approval_department_id || workflowDepartmentId || null,
     }));
-    const { error: sErr } = await supabase.from('approval_workflow_steps').insert(rows);
-    if (sErr) throw sErr;
 
-    const updated = await getWorkflowForRequestType(supabase, companyId, requestType);
+    let workflowQuery = supabase
+      .from('approval_workflows')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('request_type', requestType);
+    workflowQuery = workflowDepartmentId
+      ? workflowQuery.eq('department_id', workflowDepartmentId)
+      : workflowQuery.is('department_id', null);
+    let { data: wf } = await workflowQuery.maybeSingle();
+
+    let newVersion = 1;
+    let workflowIsActive = is_active !== undefined ? Boolean(is_active) : true;
+    let createdWithRpc = false;
+
+    if (!wf) {
+      const { data: created, error: cErr } = await supabase.rpc('create_approval_workflow_with_steps', {
+        p_company_id: companyId,
+        p_request_type: requestType,
+        p_name: name || requestType.replace(/_/g, ' '),
+        p_department_id: workflowDepartmentId,
+        p_is_active: is_active !== false,
+        p_version: 1,
+        p_steps: rows,
+      });
+      if (cErr) throw cErr;
+      wf = { id: created?.id };
+      if (!wf.id) throw new Error('Workflow creation did not return an id');
+      newVersion = Number(created.version || 1);
+      workflowIsActive = is_active !== false;
+      createdWithRpc = true;
+    } else {
+      const { data: current } = await supabase
+        .from('approval_workflows')
+        .select('version, is_active, name')
+        .eq('id', wf.id)
+        .maybeSingle();
+      newVersion = Number(current?.version || 1) + 1;
+      workflowIsActive = is_active !== undefined ? Boolean(is_active) : current?.is_active !== false;
+    }
+
+    if (!createdWithRpc) {
+      const { error: replacementError } = await supabase.rpc('replace_approval_workflow_steps', {
+        p_company_id: companyId,
+        p_workflow_id: wf.id,
+        p_request_type: requestType,
+        p_name: name || requestType.replace(/_/g, ' '),
+        p_is_active: workflowIsActive,
+        p_version: newVersion,
+        p_steps: rows,
+      });
+      if (replacementError) throw replacementError;
+    }
+
+    const updated = await getWorkflowForRequestType(supabase, companyId, requestType, workflowDepartmentId);
+    await writeAuthorizationAudit(supabase, {
+      companyId,
+      actorUid: requester.uid,
+      action: 'approval_workflow_changed',
+      beforeState: { request_type: requestType, department_id: workflowDepartmentId, version: newVersion - 1 },
+      afterState: { request_type: requestType, department_id: workflowDepartmentId, version: newVersion, steps: normalizedSteps },
+    });
     res.json({ success: true, data: updated });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -192,27 +363,23 @@ router.get('/work-mode-requests', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  if (!(await requireAdminPermission(requester, 'view_work_mode_requests', res))) return;
+  const canView = await hasPermission(supabase, requester, 'view_work_mode_requests');
+  const canApprove = await hasAnyPermission(supabase, requester, ['approve_work_mode', 'reject_work_mode']);
+  if (!canView && !canApprove && requester.role !== ROLES.SUPER_ADMIN) {
+    res.status(403).json({ success: false, error: 'Permission required: view_work_mode_requests or approval authority' });
+    return;
+  }
   try {
-    let query = supabase
+    const { data, error } = await supabase
       .from('work_mode_requests')
       .select('*')
       .eq('company_id', companyId)
       .order('requested_at', { ascending: false });
-    if (requester.role === ROLES.MANAGER) {
-      const { data: deptUsers } = await supabase
-        .from('users')
-        .select('uid')
-        .eq('company_id', companyId)
-        .eq('department', requester.department);
-      const uids = (deptUsers || []).map((u) => u.uid);
-      query = query.in('employee_uid', uids.length ? uids : ['00000000-0000-0000-0000-000000000000']);
-    }
-    const { data, error } = await query;
     if (error) throw error;
 
     const enriched = await Promise.all(
       (data || []).map(async (row) => {
+        if (!(await canViewOrApproveWorkflowRequest(requester, row, REQUEST_TYPES.REMOTE_WORK, companyId))) return null;
         const progress = await getApprovalProgress(supabase, REQUEST_TYPES.REMOTE_WORK, row.id);
         const { data: emp } = await supabase
           .from('users')
@@ -222,7 +389,7 @@ router.get('/work-mode-requests', async (req, res) => {
         return { ...row, employee: emp, approvalProgress: progress };
       })
     );
-    res.json({ success: true, data: enriched });
+    res.json({ success: true, data: enriched.filter(Boolean) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -256,7 +423,10 @@ router.patch('/work-mode-requests/:id', async (req, res) => {
         employeeUid: row.employee_uid,
       });
       if (init.workflowId) {
-        await supabase.from('work_mode_requests').update({ workflow_id: init.workflowId }).eq('id', row.id);
+        await supabase.from('work_mode_requests').update({
+          workflow_id: init.workflowId,
+          approval_department_id: init.steps?.[0]?.approval_department_id || null,
+        }).eq('id', row.id);
       }
     }
 

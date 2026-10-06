@@ -57,12 +57,6 @@ const AUDIT_FILTERS = [
 
 const ROLE_CATALOG = [
   {
-    id: 'employee',
-    name: 'Employee',
-    description:
-      'Records attendance and submits requests. Permission grants stored for this role do not open the admin console.',
-  },
-  {
     id: 'manager',
     name: 'Manager',
     description:
@@ -72,6 +66,11 @@ const ROLE_CATALOG = [
     id: 'super_admin',
     name: 'Super admin',
     description: 'Unrestricted access to every module. Super-admin rights cannot be reduced on this screen.',
+  },
+  {
+    id: 'employee',
+    name: 'Employees with delegated access',
+    description: 'Employees remain on the standard employee experience unless explicit administrative grants are assigned.',
   },
 ];
 
@@ -117,8 +116,8 @@ function AuditHistoryButton({ open, onClick }) {
 }
 
 function defaultSetForRole(roleId) {
-  if (roleId === 'super_admin') return new Set(allManagerPermissions);
   if (roleId === 'manager') return new Set(defaultManagerPermissions);
+  if (roleId === 'super_admin') return new Set(allManagerPermissions);
   return new Set();
 }
 
@@ -137,11 +136,17 @@ export function ManagerPermissionsPage() {
   const [selectedUid, setSelectedUid] = useState('');
   const [selectedRoleId, setSelectedRoleId] = useState('manager');
   const [permissionSet, setPermissionSet] = useState(new Set());
+  const [grantScope, setGrantScope] = useState('DEPARTMENT');
+  const [grantDepartmentId, setGrantDepartmentId] = useState('');
+  const [departments, setDepartments] = useState([]);
   const [search, setSearch] = useState('');
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditFilter, setAuditFilter] = useState('roles');
   const [auditRefreshing, setAuditRefreshing] = useState(false);
+  const [organizationRoles, setOrganizationRoles] = useState([]);
+  const [roleEditor, setRoleEditor] = useState(null);
+  const [roleSaving, setRoleSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -161,9 +166,9 @@ export function ManagerPermissionsPage() {
 
   const usersByRole = useMemo(
     () => ({
-      employee: managers.filter((row) => row.role === 'employee'),
       manager: managers.filter((row) => row.role === 'manager'),
       super_admin: directory.filter((row) => row.role === 'super_admin'),
+      employee: managers.filter((row) => row.role === 'employee' && (row.permissions || []).length > 0),
     }),
     [managers, directory]
   );
@@ -182,15 +187,33 @@ export function ManagerPermissionsPage() {
     setLoading(true);
     setError('');
     try {
-      const [managerRows, logs, userRows] = await Promise.all([
-        adminService.getManagers(),
+      const [userRows, logs, roleRows, departmentRows] = await Promise.all([
+        adminService.getUsers(),
         adminService.getAuditLogs().catch(() => []),
-        adminService.getUsers().catch(() => []),
+        adminService.getOrganizationRoles().catch(() => []),
+        adminService.getDepartments().catch(() => []),
       ]);
-      const rows = managerRows || [];
+      const directoryRows = userRows || [];
+      const delegatedRows = await Promise.all(directoryRows
+        .filter((row) => row.role !== 'super_admin')
+        .map(async (row) => {
+          try {
+            const grants = await adminService.getUserGrants(row.uid);
+            return { ...row, grants: grants || [], permissions: [...new Set((grants || []).map((grant) => grant.permission_key))] };
+          } catch (_) {
+            return row;
+          }
+        }));
+      const rowsByUid = new Map();
+      for (const row of delegatedRows) {
+        rowsByUid.set(row.uid, row);
+      }
+      const rows = [...rowsByUid.values()];
       setManagers(rows);
       setAuditLogs(logs || []);
-      setDirectory(userRows || []);
+      setDirectory(directoryRows);
+      setOrganizationRoles(roleRows || []);
+      setDepartments(departmentRows || []);
       setSelectedUid((current) => {
         if (current && rows.some((row) => row.uid === current)) return current;
         return rows[0]?.uid || '';
@@ -208,7 +231,11 @@ export function ManagerPermissionsPage() {
 
   useEffect(() => {
     const manager = managers.find((row) => row.uid === selectedUid);
-    if (manager) setPermissionSet(new Set(manager.permissions || []));
+    if (manager) {
+      setPermissionSet(new Set(manager.permissions || []));
+      setGrantScope(manager.grants?.find((grant) => grant.granted !== false)?.scope_type || 'DEPARTMENT');
+      setGrantDepartmentId(String(manager.grants?.find((grant) => grant.granted !== false)?.department_id || manager.department_id || ''));
+    }
   }, [selectedUid, managers]);
 
   useEffect(() => {
@@ -244,7 +271,16 @@ export function ManagerPermissionsPage() {
     setMessage('');
     try {
       const permissions = Array.from(permissionSet);
-      await adminService.updateManagerPermissions(selectedManager.uid, permissions);
+      if (selectedManager.role === 'manager') {
+        await adminService.updateManagerPermissions(selectedManager.uid, permissions);
+      } else {
+        await adminService.updateUserGrants(selectedManager.uid, permissions.map((permission_key) => ({
+          permission_key,
+          granted: true,
+          scope_type: grantScope,
+          department_id: grantScope === 'DEPARTMENT' ? grantDepartmentId || selectedManager.department_id : null,
+        })));
+      }
       setManagers((prev) =>
         prev.map((row) => (row.uid === selectedManager.uid ? { ...row, permissions } : row))
       );
@@ -279,6 +315,49 @@ export function ManagerPermissionsPage() {
     setAuditFilter(view);
     setAuditOpen(true);
     refreshAuditLogs();
+  };
+
+  const saveOrganizationRole = async (event) => {
+    event.preventDefault();
+    if (!roleEditor?.name?.trim()) return;
+    setRoleSaving(true);
+    setError('');
+    try {
+      const payload = {
+        name: roleEditor.name.trim(),
+        code: roleEditor.code?.trim() || roleEditor.name.trim(),
+        description: roleEditor.description?.trim() || null,
+        is_active: roleEditor.is_active !== false,
+      };
+      const saved = roleEditor.id
+        ? await adminService.updateOrganizationRole(roleEditor.id, payload)
+        : await adminService.createOrganizationRole(payload);
+      setOrganizationRoles((current) => {
+        const next = current.filter((row) => row.id !== saved.id);
+        return [...next, saved].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      });
+      setRoleEditor(null);
+      setMessage('Organizational role saved.');
+    } catch (err) {
+      setError(err?.message || 'Failed to save organizational role');
+    } finally {
+      setRoleSaving(false);
+    }
+  };
+
+  const deactivateOrganizationRole = async (role) => {
+    if (!window.confirm(`Deactivate ${role.name}? Existing users and workflow history will keep the role reference.`)) return;
+    setRoleSaving(true);
+    setError('');
+    try {
+      const saved = await adminService.deactivateOrganizationRole(role.id);
+      setOrganizationRoles((current) => current.map((row) => (row.id === saved.id ? saved : row)));
+      setMessage('Organizational role deactivated.');
+    } catch (err) {
+      setError(err?.message || 'Failed to deactivate organizational role');
+    } finally {
+      setRoleSaving(false);
+    }
   };
 
   return (
@@ -335,11 +414,38 @@ export function ManagerPermissionsPage() {
               <h2 className="text-[17px] font-semibold tracking-tight text-slate-900">{selectedRole.name}</h2>
               <p className="mt-1 max-w-2xl text-sm text-slate-500">{selectedRole.description}</p>
               <p className="mt-3 text-sm text-slate-600">
-                {selectedRoleId === 'employee' && `No admin-console access · 0 of ${allManagerPermissions.length} permissions`}
                 {selectedRoleId === 'manager' &&
                   `${roleAccess.size} of ${allManagerPermissions.length} permissions by default`}
                 {selectedRoleId === 'super_admin' && `All ${allManagerPermissions.length} permissions`}
               </p>
+
+              <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">Organizational roles</h3>
+                    <p className="mt-1 text-xs text-slate-500">Job titles are separate from security roles and never grant access by themselves.</p>
+                  </div>
+                  <button type="button" className="ui-btn-secondary ui-btn-sm" onClick={() => setRoleEditor({ name: '', code: '', description: '', is_active: true })}>New role</button>
+                </div>
+                {roleEditor && (
+                  <form className="mt-3 grid gap-2 md:grid-cols-4" onSubmit={saveOrganizationRole}>
+                    <input className="ui-input" placeholder="Role name" value={roleEditor.name} onChange={(e) => setRoleEditor((r) => ({ ...r, name: e.target.value }))} required />
+                    <input className="ui-input" placeholder="Code" value={roleEditor.code} onChange={(e) => setRoleEditor((r) => ({ ...r, code: e.target.value }))} />
+                    <input className="ui-input md:col-span-2" placeholder="Description" value={roleEditor.description || ''} onChange={(e) => setRoleEditor((r) => ({ ...r, description: e.target.value }))} />
+                    <label className="flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" checked={roleEditor.is_active !== false} onChange={(e) => setRoleEditor((r) => ({ ...r, is_active: e.target.checked }))} /> Active</label>
+                    <div className="flex gap-2 md:col-span-3 md:justify-end"><button type="button" className="ui-btn-secondary ui-btn-sm" onClick={() => setRoleEditor(null)}>Cancel</button><button type="submit" className="ui-btn-primary ui-btn-sm" disabled={roleSaving}>{roleSaving ? 'Saving…' : 'Save role'}</button></div>
+                  </form>
+                )}
+                <div className="mt-3 divide-y divide-slate-200">
+                  {organizationRoles.map((role) => (
+                    <div key={role.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
+                      <span><span className="font-medium text-slate-800">{role.name}</span><span className="ml-2 text-xs text-slate-400">{role.code}{role.is_active === false ? ' · inactive' : ''}</span></span>
+                      <span className="flex gap-2"><button type="button" className="ui-btn-ghost ui-btn-sm" onClick={() => setRoleEditor(role)}>Edit</button>{role.is_active !== false && <button type="button" className="ui-btn-danger ui-btn-sm" disabled={roleSaving} onClick={() => deactivateOrganizationRole(role)}>Deactivate</button>}</span>
+                    </div>
+                  ))}
+                  {!organizationRoles.length && <p className="py-2 text-xs text-slate-500">No organizational roles configured.</p>}
+                </div>
+              </div>
 
               <h3 className="permissions-section-label">Assigned users</h3>
               {roleUsers.length === 0 ? (
@@ -420,8 +526,7 @@ export function ManagerPermissionsPage() {
                 </p>
                 {selectedManager.role !== 'manager' && (
                   <p className="mt-3 text-sm text-slate-500">
-                    Admin-console checks apply only while this account has the Manager role. Saving still stores the grant
-                    list.
+                    These are explicit delegated grants. The employee baseline remains unchanged.
                   </p>
                 )}
                 <div className="mt-4">
@@ -491,9 +596,20 @@ export function ManagerPermissionsPage() {
               </div>
               {selectedManager.role !== 'manager' && (
                 <p className="border-b border-slate-100 px-5 py-3 text-sm text-slate-500">
-                  These grants are stored for the account. They take effect in the admin console only if the account is a
-                  manager.
+                  These grants are stored for this account and are evaluated with the selected scope.
                 </p>
+              )}
+              {selectedManager.role !== 'manager' && (
+                <div className="border-b border-slate-100 px-5 py-3">
+                  <label className="text-xs font-medium text-slate-600" htmlFor="grant-scope">Grant scope</label>
+                  <Select id="grant-scope" size="sm" value={grantScope} onChange={(event) => setGrantScope(event.target.value)} className="mt-1 w-full max-w-xs">
+                    <option value="OWN">Own</option>
+                    <option value="DEPARTMENT">Department</option>
+                    <option value="ASSIGNED_DEPARTMENTS">Assigned departments</option>
+                    <option value="COMPANY">Company</option>
+                  </Select>
+                  {grantScope === 'DEPARTMENT' && <Select id="grant-department" size="sm" value={grantDepartmentId} onChange={(event) => setGrantDepartmentId(event.target.value)} className="mt-2 w-full max-w-xs" aria-label="Grant department"><option value="">Select department</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</Select>}
+                </div>
               )}
               <div className="permissions-panel-body p-5" data-lenis-prevent>
                 <PermissionMatrix

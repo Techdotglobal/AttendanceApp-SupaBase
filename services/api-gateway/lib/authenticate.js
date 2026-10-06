@@ -20,12 +20,14 @@
  * panel. Configure the env vars to enforce.
  */
 const { createClient } = require('@supabase/supabase-js');
+const { normalizeSecret, assertProductionSecret } = require('../../../shared/security/internalSecret.cjs');
 
 const SUPABASE_URL = String(process.env.SUPABASE_URL || '').trim();
 const SUPABASE_ANON_KEY = String(
   process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || ''
 ).trim();
-const INTERNAL_API_SECRET = String(process.env.INTERNAL_API_SECRET || '').trim();
+const INTERNAL_API_SECRET = normalizeSecret(process.env.INTERNAL_API_SECRET);
+assertProductionSecret(process.env, 'gateway auth');
 
 const AUTH_ENFORCED = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
@@ -52,9 +54,29 @@ const baseClient = AUTH_ENFORCED
 
 // Small in-memory cache so a burst of requests from one session does not hammer
 // Supabase. Keyed by the raw token; short TTL; identity only (no secrets).
-const CACHE_TTL_MS = 60_000;
+// Authorization changes must converge quickly after a grant/department update.
+// The backend still re-checks canonical grants; this cache only avoids repeated
+// JWT/profile lookups during a short request burst.
+const CACHE_TTL_MS = 15_000;
 const CACHE_MAX = 500;
 const identityCache = new Map();
+
+/**
+ * Invalidate only the cached identities affected by an administrative change.
+ * Cache entries are token-keyed, so a user/company filter is used rather than
+ * clearing the entire gateway cache. This is best-effort; the auth-service
+ * remains authoritative on every protected write.
+ */
+function invalidateIdentityCache({ uid = null, companyId = null } = {}) {
+  const targetUid = uid == null ? null : String(uid);
+  const targetCompany = companyId == null ? null : String(companyId);
+  for (const [token, entry] of identityCache.entries()) {
+    const identity = entry?.identity || {};
+    if (targetUid && String(identity.uid || '') !== targetUid) continue;
+    if (targetCompany && String(identity.company_id || identity.companyId || '') !== targetCompany) continue;
+    identityCache.delete(token);
+  }
+}
 
 function bearerToken(req) {
   const header = req.headers.authorization || req.get('Authorization') || '';
@@ -88,22 +110,30 @@ async function deriveIdentity(token) {
 
   const { data: row } = await userClient
     .from('users')
-    .select('uid, username, role, company_id, department, department_id, is_active')
+    .select('uid, username, role, company_id, department, department_id, organization_role_id, authorization_version, is_active')
     .eq('uid', uid)
     .maybeSingle();
 
   let identity;
   if (row?.uid && row.is_active !== false) {
-    let permissions = [];
-    if (row.role === 'manager') {
+    let grants = [];
+    const { data: canonicalGrants, error: canonicalError } = await userClient
+      .from('permission_grants')
+      .select('permission_key, granted, scope_type, department_id')
+      .eq('principal_uid', uid)
+      .eq('granted', true);
+    if (!canonicalError && canonicalGrants?.length) {
+      grants = canonicalGrants;
+    } else if (row.role === 'manager') {
       const { data: perms } = await userClient
         .from('manager_permissions')
         .select('permission_key, granted')
         .eq('manager_uid', uid);
-      permissions = (perms || [])
+      grants = (perms || [])
         .filter((p) => p.granted === true)
-        .map((p) => p.permission_key);
+        .map((p) => ({ permission_key: p.permission_key, granted: true, scope_type: 'DEPARTMENT', department_id: row.department_id || null }));
     }
+    const permissions = [...new Set(grants.map((p) => p.permission_key))];
     identity = {
       uid: row.uid,
       username: row.username || undefined,
@@ -113,6 +143,9 @@ async function deriveIdentity(token) {
       department: row.department != null ? String(row.department) : '',
       department_id: row.department_id != null ? String(row.department_id) : null,
       permissions,
+      grants,
+      organization_role_id: row.organization_role_id || null,
+      authorization_version: row.authorization_version || 1,
     };
   } else {
     // No active users row yet (e.g. mid-onboarding) — fall back to token metadata.
@@ -177,4 +210,10 @@ function requireIdentity(req, res, next) {
   next();
 }
 
-module.exports = { attachIdentity, requireIdentity, AUTH_ENFORCED, INTERNAL_API_SECRET };
+module.exports = {
+  attachIdentity,
+  requireIdentity,
+  invalidateIdentityCache,
+  AUTH_ENFORCED,
+  INTERNAL_API_SECRET,
+};

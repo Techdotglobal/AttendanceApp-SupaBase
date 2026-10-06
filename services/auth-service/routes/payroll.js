@@ -11,6 +11,7 @@ const express = require('express');
 const { supabase } = require('../config/supabase');
 const { resolveRequester } = require('../lib/resolveRequester');
 const { getTenantCompanyId } = require('../lib/tenantScope');
+const { getEffectiveGrants } = require('../lib/permissions');
 const {
   findProfileForDate,
   calculatePayrollRecord,
@@ -35,8 +36,13 @@ async function withPayrollContext(req, res) {
     return null;
   }
   if (requester.role !== 'super_admin') {
-    res.status(403).json({ success: false, error: 'Payroll access is restricted to super admins.' });
-    return null;
+    const requiredKey = req.method === 'GET' ? 'view_payroll' : 'manage_payroll';
+    const grants = await getEffectiveGrants(supabase, { ...requester, company_id: companyId });
+    const allowed = grants.some((grant) => grant.permission_key === requiredKey && grant.scope_type === 'COMPANY');
+    if (!allowed) {
+      res.status(403).json({ success: false, error: `Permission required: ${requiredKey}` });
+      return null;
+    }
   }
   return { requester, companyId };
 }

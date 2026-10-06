@@ -2139,8 +2139,8 @@ export function DashboardPage() {
         PERMISSIONS.EDIT_USER,
         PERMISSIONS.DELETE_USER,
       ]);
-  const canViewAttendance = hasAnyPermission(user, [PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
-      const canViewLeaves = hasAnyPermission(user, [
+  const canViewAttendance = user?.role === 'employee' || hasAnyPermission(user, [PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
+      const canViewLeaves = user?.role === 'employee' || hasAnyPermission(user, [
         PERMISSIONS.VIEW_LEAVE_REQUESTS,
         PERMISSIONS.APPROVE_LEAVE,
         PERMISSIONS.REJECT_LEAVE,

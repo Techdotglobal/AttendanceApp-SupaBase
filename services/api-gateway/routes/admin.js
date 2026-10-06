@@ -1,8 +1,22 @@
 const express = require('express');
 const axios = require('axios');
+const { invalidateIdentityCache } = require('../lib/authenticate');
 
 const router = express.Router();
 const AUTH_SERVICE_URL = (process.env.AUTH_SERVICE_URL || 'http://localhost:3001').replace(/\/+$/, '');
+
+function requestContext(req) {
+  try { return JSON.parse(req.get('x-user-context') || req.get('X-User-Context') || '{}'); } catch (_) { return {}; }
+}
+
+function invalidateAfterAdminMutation(req, path) {
+  const context = requestContext(req);
+  const companyId = context.company_id || context.companyId || null;
+  const targetMatch = path.match(/\/users\/([^/]+)/) || path.match(/\/managers\/([^/]+)/) || path.match(/\/employee-sites\/([^/]+)/);
+  const targetUid = targetMatch?.[1] || null;
+  const companyWide = /^\/api\/admin\/(?:organization-roles|departments|sites|approval-workflows|attendance|settings|permissions|workflows)/.test(path);
+  invalidateIdentityCache({ uid: companyWide ? null : targetUid, companyId });
+}
 
 const forward = async (req, res, method, path) => {
   try {
@@ -18,6 +32,9 @@ const forward = async (req, res, method, path) => {
       timeout: 15000,
       params: req.query,
     });
+    if (method !== 'get' && response.status >= 200 && response.status < 300) {
+      invalidateAfterAdminMutation(req, path);
+    }
     res.status(response.status).json(response.data);
   } catch (error) {
     if (error.response) return res.status(error.response.status).json(error.response.data);
@@ -42,6 +59,14 @@ router.get('/audit-logs', (req, res) => forward(req, res, 'get', '/api/admin/aud
 router.get('/users', (req, res) => forward(req, res, 'get', '/api/admin/users'));
 router.get('/users/:uid', (req, res) => forward(req, res, 'get', `/api/admin/users/${req.params.uid}`));
 router.patch('/users/:uid', (req, res) => forward(req, res, 'patch', `/api/admin/users/${req.params.uid}`));
+router.get('/organization-roles', (req, res) => forward(req, res, 'get', '/api/admin/organization-roles'));
+router.post('/organization-roles', (req, res) => forward(req, res, 'post', '/api/admin/organization-roles'));
+router.patch('/organization-roles/:id', (req, res) => forward(req, res, 'patch', `/api/admin/organization-roles/${req.params.id}`));
+router.delete('/organization-roles/:id', (req, res) => forward(req, res, 'delete', `/api/admin/organization-roles/${req.params.id}`));
+router.get('/users/:uid/departments', (req, res) => forward(req, res, 'get', `/api/admin/users/${req.params.uid}/departments`));
+router.put('/users/:uid/departments', (req, res) => forward(req, res, 'put', `/api/admin/users/${req.params.uid}/departments`));
+router.get('/users/:uid/grants', (req, res) => forward(req, res, 'get', `/api/admin/users/${req.params.uid}/grants`));
+router.put('/users/:uid/grants', (req, res) => forward(req, res, 'put', `/api/admin/users/${req.params.uid}/grants`));
 
 router.get('/departments', (req, res) => forward(req, res, 'get', '/api/admin/departments'));
 router.get('/departments/overview', (req, res) => forward(req, res, 'get', '/api/admin/departments/overview'));
@@ -76,6 +101,18 @@ router.patch('/work-mode-requests/:id', (req, res) =>
 );
 
 router.get('/attendance', (req, res) => forward(req, res, 'get', '/api/admin/attendance'));
+router.get('/attendance/rules', (req, res) => forward(req, res, 'get', '/api/admin/attendance/rules'));
+router.post('/attendance/rules', (req, res) => forward(req, res, 'post', '/api/admin/attendance/rules'));
+router.patch('/attendance/rules/:id', (req, res) => forward(req, res, 'patch', `/api/admin/attendance/rules/${req.params.id}`));
+router.delete('/attendance/rules/:id', (req, res) => forward(req, res, 'delete', `/api/admin/attendance/rules/${req.params.id}`));
+router.get('/attendance/holidays', (req, res) => forward(req, res, 'get', '/api/admin/attendance/holidays'));
+router.post('/attendance/holidays', (req, res) => forward(req, res, 'post', '/api/admin/attendance/holidays'));
+router.patch('/attendance/holidays/:id', (req, res) => forward(req, res, 'patch', `/api/admin/attendance/holidays/${req.params.id}`));
+router.delete('/attendance/holidays/:id', (req, res) => forward(req, res, 'delete', `/api/admin/attendance/holidays/${req.params.id}`));
+router.get('/attendance/summaries', (req, res) => forward(req, res, 'get', '/api/admin/attendance/summaries'));
+router.get('/attendance/absence-outcomes', (req, res) => forward(req, res, 'get', '/api/admin/attendance/absence-outcomes'));
+router.get('/attendance/absence-outcomes/:id', (req, res) => forward(req, res, 'get', `/api/admin/attendance/absence-outcomes/${req.params.id}`));
+router.post('/attendance/absence-outcomes/:id/reconcile', (req, res) => forward(req, res, 'post', `/api/admin/attendance/absence-outcomes/${req.params.id}/reconcile`));
 router.post('/attendance', (req, res) => forward(req, res, 'post', '/api/admin/attendance'));
 router.patch('/attendance/:id', (req, res) => forward(req, res, 'patch', `/api/admin/attendance/${req.params.id}`));
 router.delete('/attendance/:id', (req, res) => forward(req, res, 'delete', `/api/admin/attendance/${req.params.id}`));

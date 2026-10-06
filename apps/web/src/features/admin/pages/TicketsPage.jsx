@@ -144,6 +144,7 @@ export function TicketsPage() {
   const historyRef = useRef(null);
 
   const canManage = hasPermission(user, PERMISSIONS.MANAGE_TICKETS);
+  const canCreate = user?.role === 'employee' || canManage;
   const canAssign = hasPermission(user, PERMISSIONS.ASSIGN_TICKETS);
   const canClose = hasPermission(user, PERMISSIONS.CLOSE_TICKETS);
   const assignableUsers = users.filter((row) => row.role !== 'employee');
@@ -154,7 +155,7 @@ export function TicketsPage() {
     try {
       const [ticketData, userData, deptData] = await Promise.all([
         adminService.getTickets(),
-        adminService.getUsers().catch(() => []),
+        user?.role === 'employee' ? Promise.resolve([user]) : adminService.getUsers().catch(() => []),
         adminService.getDepartments().catch(() => []),
       ]);
       setTickets(ticketData || []);
@@ -165,7 +166,7 @@ export function TicketsPage() {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, []);
+  }, [user?.role, user?.uid]);
 
   useEffect(() => {
     load();
@@ -315,7 +316,7 @@ export function TicketsPage() {
 
   return (
     <div className="tickets-directory admin-page admin-page-locked gap-4 animate-fade-up">
-      {canManage && (
+      {canCreate && (
         <PageActions>
           <button
             type="button"
@@ -477,7 +478,7 @@ export function TicketsPage() {
         </section>
 
         <aside className="tickets-pane flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white">
-          {showCreate && canManage ? (
+          {showCreate && canCreate ? (
             <form onSubmit={handleCreate} className="flex h-full flex-col">
               <div className="border-b border-slate-200 px-5 py-4">
                 <p className="text-[17px] font-semibold tracking-tight text-slate-900">New ticket</p>
@@ -485,12 +486,12 @@ export function TicketsPage() {
               </div>
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4" data-lenis-prevent>
                 <Select
-                  required
+                  required={user?.role !== 'employee'}
                   value={form.category}
                   onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
                   aria-label="Department"
                 >
-                  <option value="">Department</option>
+                  <option value="">{user?.role === 'employee' ? 'General / unassigned' : 'Department'}</option>
                   {departments.map((dept) => (
                     <option key={dept.id} value={dept.id}>
                       {dept.name}

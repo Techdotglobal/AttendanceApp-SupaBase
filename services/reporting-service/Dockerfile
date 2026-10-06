@@ -27,20 +27,24 @@ RUN mkdir -p /app/data/reports
 RUN chown -R app:app /app
 
 COPY --from=deps --chown=app:app /app/node_modules ./node_modules
-COPY --chown=app:app services/reporting-service/package.json ./
-COPY --chown=app:app services/reporting-service/package-lock.json ./
-COPY --chown=app:app services/reporting-service/index.js ./
-COPY --chown=app:app services/reporting-service/config ./config
-COPY --chown=app:app services/reporting-service/jobs ./jobs
-COPY --chown=app:app services/reporting-service/routes ./routes
-COPY --chown=app:app services/reporting-service/services ./services
-COPY --chown=app:app services/reporting-service/utils ./utils
-COPY --chown=app:app services/reporting-service/lib ./lib
+COPY --chown=app:app services/reporting-service/package.json ./services/reporting-service/
+COPY --chown=app:app services/reporting-service/package-lock.json ./services/reporting-service/
+COPY --chown=app:app services/reporting-service/index.js ./services/reporting-service/
+COPY --chown=app:app services/reporting-service/config ./services/reporting-service/config
+COPY --chown=app:app services/reporting-service/jobs ./services/reporting-service/jobs
+COPY --chown=app:app services/reporting-service/routes ./services/reporting-service/routes
+COPY --chown=app:app services/reporting-service/services ./services/reporting-service/services
+COPY --chown=app:app services/reporting-service/utils ./services/reporting-service/utils
+COPY --chown=app:app services/reporting-service/lib ./services/reporting-service/lib
+COPY --chown=app:app shared/security ./shared/security
+COPY --chown=app:app shared/attendance ./shared/attendance
+COPY --chown=app:app shared/permissions ./shared/permissions
 COPY --chown=root:root services/reporting-service/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 
 # Remain root for ENTRYPOINT (volume chown); entrypoint drops to app.
+WORKDIR /app/services/reporting-service
 EXPOSE 3002
 
 HEALTHCHECK --interval=30s --timeout=8s --start-period=30s --retries=3 \

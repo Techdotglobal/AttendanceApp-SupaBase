@@ -19,11 +19,16 @@ ENV NODE_ENV=production \
 RUN addgroup -S app && adduser -S app -G app
 
 COPY --from=deps --chown=app:app /app/node_modules ./node_modules
-COPY --chown=app:app services/api-gateway/package.json ./
-COPY --chown=app:app services/api-gateway/index.js ./
-COPY --chown=app:app services/api-gateway/routes ./routes
-COPY --chown=app:app services/api-gateway/lib ./lib
+COPY --chown=app:app services/api-gateway/package.json ./services/api-gateway/
+COPY --chown=app:app services/api-gateway/package-lock.json ./services/api-gateway/
+COPY --chown=app:app services/api-gateway/index.js ./services/api-gateway/
+COPY --chown=app:app services/api-gateway/routes ./services/api-gateway/routes
+COPY --chown=app:app services/api-gateway/lib ./services/api-gateway/lib
+COPY --chown=app:app shared/security ./shared/security
+COPY --chown=app:app shared/attendance ./shared/attendance
+COPY --chown=app:app shared/permissions ./shared/permissions
 
+WORKDIR /app/services/api-gateway
 USER app
 EXPOSE 80
 

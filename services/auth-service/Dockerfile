@@ -25,8 +25,10 @@ COPY --chown=app:app services/auth-service/index.js ./services/auth-service/
 COPY --chown=app:app services/auth-service/config ./services/auth-service/config
 COPY --chown=app:app services/auth-service/lib ./services/auth-service/lib
 COPY --chown=app:app services/auth-service/routes ./services/auth-service/routes
-# Only the permissions catalog is required at runtime
+# Shared runtime modules are resolved from /app/shared by the service code.
 COPY --chown=app:app shared/permissions ./shared/permissions
+COPY --chown=app:app shared/security ./shared/security
+COPY --chown=app:app shared/attendance ./shared/attendance
 
 WORKDIR /app/services/auth-service
 USER app

@@ -139,7 +139,7 @@ async function canViewOrApproveWorkflowRequest(requester, row, requestType, comp
   }, employee.uid, companyId, requestType);
 }
 
-async function addWorkflowEligibility(companyId, workflow, steps) {
+async function addWorkflowEligibility(companyId, workflow, steps, options = {}) {
   const workflowDepartmentId = workflow.department_id || null;
   let subjectQuery = supabase
     .from('users')
@@ -152,21 +152,24 @@ async function addWorkflowEligibility(companyId, workflow, steps) {
   if (!subject) {
     return (steps || []).map((step) => ({ ...step, eligible_approver_count: 0, eligibility_warning: 'No active employee exists for this workflow department.' }));
   }
-  return Promise.all((steps || []).map(async (step) => {
+  const enrichedSteps = [];
+  for (const step of steps || []) {
     const approvers = await resolveApproversForStep(
       supabase,
       step,
       subject.uid,
       companyId,
       step.approval_department_id || workflowDepartmentId,
-      workflow.request_type
+      workflow.request_type,
+      options
     );
-    return {
+    enrichedSteps.push({
       ...step,
       eligible_approver_count: approvers.length,
       eligibility_warning: approvers.length ? null : 'No eligible approver currently matches this step.',
-    };
-  }));
+    });
+  }
+  return enrichedSteps;
 }
 
 function requireSuperAdmin(requester, res) {
@@ -193,16 +196,28 @@ router.get('/approval-workflows', async (req, res) => {
       .order('request_type');
     if (error) throw error;
 
-    const withSteps = await Promise.all(
-      (workflows || []).map(async (wf) => {
-        const { data: steps } = await supabase
-          .from('approval_workflow_steps')
+    const eligibilityOptions = {
+      cache: {
+        candidates: new Map(),
+        departments: new Map(),
+        grants: new Map(),
+        subjects: new Map(),
+      },
+    };
+    // Resolve eligibility with one request-scoped cache. The previous parallel
+    // fan-out repeated grant/department reads for every workflow step and
+    // could keep this read-only endpoint open past the web client's timeout.
+    // Sequential workflow iteration preserves response order while allowing
+    // the resolver cache to be shared safely across all steps.
+    const withSteps = [];
+    for (const wf of workflows || []) {
+      const { data: steps } = await supabase
+        .from('approval_workflow_steps')
         .select('id, step_order, step_label, approver_role, authority_type, organization_role_id, required_permission_key, required_scope_type, department_id, approval_department_id, workflow_version')
-          .eq('workflow_id', wf.id)
-          .order('step_order');
-        return { ...wf, steps: await addWorkflowEligibility(companyId, wf, steps || []) };
-      })
-    );
+        .eq('workflow_id', wf.id)
+        .order('step_order');
+      withSteps.push({ ...wf, steps: await addWorkflowEligibility(companyId, wf, steps || [], eligibilityOptions) });
+    }
 
     res.json({ success: true, data: withSteps });
   } catch (err) {

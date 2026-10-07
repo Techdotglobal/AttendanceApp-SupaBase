@@ -49,6 +49,20 @@ test('approval HTTP routes retain the existing endpoint surface and guards', () 
   assert.match(adminRoutes, /processApprovalStep/);
 });
 
+test('approval workflow listing uses the shared gateway client and bounded eligibility reads', () => {
+  const page = read('apps/web/src/features/admin/pages/ApprovalWorkflowsPage.jsx');
+  const service = read('apps/web/src/features/admin/services/adminService.js');
+  const client = read('apps/web/src/core/api/client.js');
+  const gateway = read('services/api-gateway/routes/admin.js');
+  const workflowRoutes = read('services/auth-service/routes/workflowRoutes.js');
+  assert.match(page, /adminService\.getApprovalWorkflows\(\)/);
+  assert.match(service, /api\.get\(apiUrl\('\/api\/admin\/approval-workflows'\)\)/);
+  assert.match(client, /timeout: 10000/);
+  assert.match(gateway, /router\.get\('\/approval-workflows'/);
+  assert.match(workflowRoutes, /request-scoped cache/);
+  assert.match(workflowRoutes, /const withSteps = \[\]/);
+});
+
 test('migration protects approval actions with approver_uid and denies client writes', () => {
   const migration = read('supabase/migrations/20261005100000_flexible_approval_authority.sql');
   assert.match(migration, /approver_uid = auth\.uid\(\)::text/);

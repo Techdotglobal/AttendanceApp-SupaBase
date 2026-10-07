@@ -31,8 +31,13 @@ function legacyScope(permissionKey, user = {}) {
     : { scope_type: 'COMPANY', department_id: null };
 }
 
-async function getUserDepartmentIds(supabase, uid, fallback = null) {
+async function getUserDepartmentIds(supabase, uid, fallback = null, options = {}) {
   if (!uid) return [];
+  const cache = options.cache;
+  const fallbackDepartment = fallback?.department_id || fallback?.departmentId || '';
+  const cacheKey = `${String(uid)}:${String(fallbackDepartment)}`;
+  if (cache?.departments?.has(cacheKey)) return cache.departments.get(cacheKey);
+  let resolved = null;
   try {
     const { data, error } = await supabase
       .from('user_department_assignments')
@@ -40,20 +45,22 @@ async function getUserDepartmentIds(supabase, uid, fallback = null) {
       .eq('user_uid', uid)
       .eq('is_active', true)
       .order('is_primary', { ascending: false });
-    if (!error && Array.isArray(data) && data.length) return data.map((row) => String(row.department_id));
+    if (!error && Array.isArray(data) && data.length) resolved = data.map((row) => String(row.department_id));
   } catch (_) {
     // The additive migration may not have been deployed yet.
   }
-  if (fallback?.department_id || fallback?.departmentId) {
-    return [String(fallback.department_id || fallback.departmentId)];
-  }
-  return [];
+  if (!resolved) resolved = fallbackDepartment ? [String(fallbackDepartment)] : [];
+  if (cache?.departments) cache.departments.set(cacheKey, resolved);
+  return resolved;
 }
 
 async function getEffectiveGrants(supabase, userOrUid, options = {}) {
   const user = typeof userOrUid === 'string' ? { uid: userOrUid } : (userOrUid || {});
   if (!user.uid) return [];
   const companyId = options.companyId || user.company_id || user.companyId || null;
+  const cache = options.cache;
+  const cacheKey = `${String(companyId || '')}:${String(user.uid)}:${String(user.role || '')}`;
+  if (cache?.grants?.has(cacheKey)) return cache.grants.get(cacheKey);
   const grants = [];
 
   try {
@@ -101,6 +108,7 @@ async function getEffectiveGrants(supabase, userOrUid, options = {}) {
     }
   }
 
+  if (cache?.grants) cache.grants.set(cacheKey, grants);
   return grants;
 }
 
@@ -109,7 +117,7 @@ async function getManagerPermissions(supabase, managerUid) {
   return [...new Set(grants.map((row) => row.permission_key).filter((key) => ALL_MANAGER_PERMISSIONS.includes(key)))];
 }
 
-async function scopeMatches(supabase, requester, grant, target = {}) {
+async function scopeMatches(supabase, requester, grant, target = {}, options = {}) {
   const scope = normalizeScope(grant.scope_type);
   if (!scope) return false;
   if (!target || Object.keys(target).length === 0) return true;
@@ -139,21 +147,20 @@ async function scopeMatches(supabase, requester, grant, target = {}) {
   const targetDepartments = targetDepartmentIds.length ? targetDepartmentIds : [String(targetDepartmentId)];
   if (scope === 'DEPARTMENT') return targetDepartments.includes(String(grant.department_id));
   if (scope === 'ASSIGNED_DEPARTMENTS') {
-    const assigned = await getUserDepartmentIds(supabase, requester.uid, requester);
+    const assigned = await getUserDepartmentIds(supabase, requester.uid, requester, options);
     return targetDepartments.some((departmentId) => assigned.includes(String(departmentId)));
   }
   return false;
 }
 
-async function hasPermission(supabase, requester, permissionKey, target = null) {
+async function hasPermission(supabase, requester, permissionKey, target = null, options = {}) {
   if (!requester?.uid || !requester?.role) return false;
   if (String(requester.role).toLowerCase() === 'super_admin') return true;
   const key = normalizePermissionKey(permissionKey);
   if (!ALL_MANAGER_PERMISSIONS.includes(key)) return false;
-  const grants = await getEffectiveGrants(supabase, requester);
-  const requesterDepartmentIds = await getUserDepartmentIds(supabase, requester.uid, requester);
+  const grants = await getEffectiveGrants(supabase, requester, options);
   for (const grant of grants.filter((row) => row.permission_key === key && row.granted === true)) {
-    if (await scopeMatches(supabase, requester, grant, target)) return true;
+    if (await scopeMatches(supabase, requester, grant, target, options)) return true;
   }
   return false;
 }

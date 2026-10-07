@@ -8,10 +8,11 @@ const {
 const COMPANY_A = 'company-a';
 const COMPANY_B = 'company-b';
 
-function makeSupabase({ users, grants = [], assignments = [], legacyPermissions = [] }) {
+function makeSupabase({ users, grants = [], assignments = [], legacyPermissions = [], stats = null }) {
   const tables = { users, permission_grants: grants, user_department_assignments: assignments, manager_permissions: legacyPermissions, departments: [] };
   return {
     from(table) {
+      if (stats) stats[table] = (stats[table] || 0) + 1;
       const state = { rows: tables[table] || [], filters: [] };
       const query = {
         select() { return query; },
@@ -38,14 +39,14 @@ function filterRows(state) {
   }));
 }
 
-function fixture({ approver, targetDepartments = ['dept-eng'], grant, approverAssignments = targetDepartments }) {
+function fixture({ approver, targetDepartments = ['dept-eng'], grant, approverAssignments = targetDepartments, stats = null }) {
   const target = { uid: 'employee-1', company_id: COMPANY_A, role: 'employee', is_active: true, department_id: targetDepartments[0], department: 'Engineering' };
   const users = [target, { ...approver, company_id: approver.company_id || COMPANY_A, is_active: approver.is_active !== false }];
   const assignments = [
     ...targetDepartments.map((department_id) => ({ user_uid: target.uid, department_id, is_active: true })),
     ...approverAssignments.map((department_id) => ({ user_uid: approver.uid, department_id, is_active: true })),
   ];
-  return makeSupabase({ users, assignments, grants: grant ? [{ principal_uid: approver.uid, company_id: approver.company_id || COMPANY_A, granted: true, ...grant }] : [] });
+  return makeSupabase({ users, assignments, stats, grants: grant ? [{ principal_uid: approver.uid, company_id: approver.company_id || COMPANY_A, granted: true, ...grant }] : [] });
 }
 
 test('legacy manager approval remains department-compatible', async () => {
@@ -132,4 +133,18 @@ test('inactive, cross-company, and self approvers are rejected', async () => {
     grant: { permission_key: 'approve_leave', scope_type: 'COMPANY', department_id: null },
   });
   assert.equal(await canUserActOnStep(self, { uid: 'employee-1', role: 'employee' }, step, 'employee-1', COMPANY_A, 'annual_leave'), false);
+});
+
+test('workflow eligibility can reuse request-scoped authorization data', async () => {
+  const stats = {};
+  const supabase = fixture({
+    stats,
+    approver: { uid: 'approver-1', role: 'manager', department_id: 'dept-eng' },
+    grant: { permission_key: 'approve_leave', scope_type: 'DEPARTMENT', department_id: 'dept-eng' },
+  });
+  const cached = { departments: new Map(), grants: new Map(), subjects: new Map(), candidates: new Map() };
+  await resolveApproversForStep(supabase, { authority_type: 'PERMISSION', required_permission_key: 'approve_leave', required_scope_type: 'DEPARTMENT', department_id: 'dept-eng' }, 'employee-1', COMPANY_A, 'dept-eng', 'annual_leave', { cache: cached });
+  const firstUsersQueries = stats.users || 0;
+  await resolveApproversForStep(supabase, { authority_type: 'PERMISSION', required_permission_key: 'approve_leave', required_scope_type: 'DEPARTMENT', department_id: 'dept-eng' }, 'employee-1', COMPANY_A, 'dept-eng', 'annual_leave', { cache: cached });
+  assert.equal(stats.users || 0, firstUsersQueries);
 });

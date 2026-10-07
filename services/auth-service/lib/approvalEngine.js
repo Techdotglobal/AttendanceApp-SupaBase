@@ -27,7 +27,10 @@ function normalizeAuthorityType(step) {
   return step?.required_permission_key ? 'PERMISSION' : 'LEGACY_ROLE';
 }
 
-async function getApprovalSubject(supabase, employeeUid, companyId) {
+async function getApprovalSubject(supabase, employeeUid, companyId, options = {}) {
+  const cache = options.cache;
+  const cacheKey = `${String(companyId)}:${String(employeeUid)}`;
+  if (cache?.subjects?.has(cacheKey)) return cache.subjects.get(cacheKey);
   const { data } = await supabase
     .from('users')
     .select('uid, department, department_id, organization_role_id, company_id, is_active')
@@ -35,8 +38,10 @@ async function getApprovalSubject(supabase, employeeUid, companyId) {
     .eq('company_id', companyId)
     .maybeSingle();
   if (!data) return null;
-  const departments = await getUserDepartmentIds(supabase, employeeUid, data);
-  return { ...data, departmentIds: departments };
+  const departments = await getUserDepartmentIds(supabase, employeeUid, data, options);
+  const subject = { ...data, departmentIds: departments };
+  if (cache?.subjects) cache.subjects.set(cacheKey, subject);
+  return subject;
 }
 
 async function getApprovalDepartmentId(supabase, employeeUid, companyId, fallback = null) {
@@ -236,10 +241,10 @@ async function getApprovalProgress(supabase, requestType, requestId) {
   return data || [];
 }
 
-async function resolveApproversForStep(supabase, step, employeeUid, companyId, approvalDepartmentId = null, requestType = null) {
+async function resolveApproversForStep(supabase, step, employeeUid, companyId, approvalDepartmentId = null, requestType = null, options = {}) {
   const authorityType = normalizeAuthorityType(step);
   const role = step.approver_role;
-  const employee = await getApprovalSubject(supabase, employeeUid, companyId);
+  const employee = await getApprovalSubject(supabase, employeeUid, companyId, options);
   if (!employee) return [];
   const targetDepartmentId = step.department_id || approvalDepartmentId || employee.departmentIds?.[0] || employee.department_id;
   const target = {
@@ -250,17 +255,23 @@ async function resolveApproversForStep(supabase, step, employeeUid, companyId, a
     department: employee.department,
   };
 
-  const { data: candidates } = await supabase
-    .from('users')
-    .select('uid, username, email, role, department, department_id, organization_role_id, company_id')
-    .eq('company_id', companyId)
-    .eq('is_active', true);
+  const candidateCache = options.cache?.candidates;
+  let candidates = candidateCache?.get(String(companyId));
+  if (!candidates) {
+    const result = await supabase
+      .from('users')
+      .select('uid, username, email, role, department, department_id, organization_role_id, company_id')
+      .eq('company_id', companyId)
+      .eq('is_active', true);
+    candidates = result.data || [];
+    if (candidateCache) candidateCache.set(String(companyId), candidates);
+  }
 
   const approvers = [];
-  for (const candidate of candidates || []) {
+  const evaluateCandidate = async (candidate) => {
     // Prevent ordinary users from approving their own request. The existing
     // super-admin override remains available for tenant recovery workflows.
-    if (String(candidate.uid) === String(employeeUid) && candidate.role !== 'super_admin') continue;
+    if (String(candidate.uid) === String(employeeUid) && candidate.role !== 'super_admin') return null;
 
     let eligible = false;
     if (candidate.role === 'super_admin' && role === APPROVER_ROLES.SUPER_ADMIN) {
@@ -269,27 +280,29 @@ async function resolveApproversForStep(supabase, step, employeeUid, companyId, a
       eligible = Boolean(step.organization_role_id) &&
         String(candidate.organization_role_id) === String(step.organization_role_id) &&
         Boolean(step.required_permission_key) &&
-        await hasPermission(supabase, candidate, step.required_permission_key, target);
+        await hasPermission(supabase, candidate, step.required_permission_key, target, options);
     } else if (authorityType === 'PERMISSION' || step.required_permission_key) {
       eligible = Boolean(step.required_permission_key) &&
-        await hasPermission(supabase, candidate, step.required_permission_key, target);
+        await hasPermission(supabase, candidate, step.required_permission_key, target, options);
     } else if (role === APPROVER_ROLES.SUPER_ADMIN) {
       eligible = candidate.role === 'super_admin';
     } else if (role === APPROVER_ROLES.DEPARTMENT_MANAGER) {
-      const assignedDepartments = await getUserDepartmentIds(supabase, candidate.uid, candidate);
+      const assignedDepartments = await getUserDepartmentIds(supabase, candidate.uid, candidate, options);
       const legacyDepartmentMatch = candidate.role === 'manager' &&
         ((targetDepartmentId && assignedDepartments.includes(String(targetDepartmentId))) ||
           (employee.department && candidate.department === employee.department));
-      const scopedPermissionMatch = await hasPermission(supabase, candidate, requestType === REQUEST_TYPES.REMOTE_WORK ? 'approve_work_mode' : 'approve_leave', target);
+      const scopedPermissionMatch = await hasPermission(supabase, candidate, requestType === REQUEST_TYPES.REMOTE_WORK ? 'approve_work_mode' : 'approve_leave', target, options);
       eligible = legacyDepartmentMatch || scopedPermissionMatch;
     } else if (role === APPROVER_ROLES.HR) {
       // Preserve the existing HR behavior: HR is a workflow label, while the
       // actual authority still comes from the scoped approval permission.
-      eligible = await hasPermission(supabase, candidate, requestType === REQUEST_TYPES.REMOTE_WORK ? 'approve_work_mode' : 'approve_leave', target);
+      eligible = await hasPermission(supabase, candidate, requestType === REQUEST_TYPES.REMOTE_WORK ? 'approve_work_mode' : 'approve_leave', target, options);
     }
 
-    if (eligible) approvers.push(candidate);
-  }
+    return eligible ? candidate : null;
+  };
+  const resolved = await Promise.all((candidates || []).map(evaluateCandidate));
+  for (const candidate of resolved) if (candidate) approvers.push(candidate);
   return approvers;
 }
 

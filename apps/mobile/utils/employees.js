@@ -878,14 +878,14 @@ export const createWorkModeRequest = async (employeeId, requestedMode, reason, u
  * @param {object|null} user - Auth user; admins see company requests, employees see own
  * @returns {Promise<Array>}
  */
-export const getWorkModeRequests = async (user = null) => {
+export const getWorkModeRequests = async (user = null, { ownOnly = false } = {}) => {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user?.id) {
       // Fall back to gateway when session is unavailable but requester context exists
       if (user?.uid) {
         const { fetchWorkModeRequestsAdmin, fetchMyWorkModeRequests } = await import('../core/api/workflowApi');
-        const isAdmin = user.role === 'super_admin' || user.role === 'manager';
+        const isAdmin = !ownOnly && (user.role === 'super_admin' || user.role === 'manager');
         const result = isAdmin
           ? await fetchWorkModeRequestsAdmin(user)
           : await fetchMyWorkModeRequests(user);
@@ -896,7 +896,7 @@ export const getWorkModeRequests = async (user = null) => {
     }
 
     const uid = String(session.user.id);
-    const isAdmin = user && (user.role === 'super_admin' || user.role === 'manager' || hasAnyPermission(user, [
+    const isAdmin = !ownOnly && user && (user.role === 'super_admin' || user.role === 'manager' || hasAnyPermission(user, [
       'view_work_mode_requests',
       'approve_work_mode',
       'reject_work_mode',

@@ -4,7 +4,7 @@
 const express = require('express');
 const { supabase } = require('../config/supabase');
 const { getTenantCompanyId } = require('../lib/tenantScope');
-const { hasAnyPermission, hasPermission, requirePermission, writeAuthorizationAudit } = require('../lib/permissions');
+const { hasAnyPermission, hasPermission, requirePermission, writeAuthorizationAudit, isEmployeeLikeRole } = require('../lib/permissions');
 const { insertNotification, notifyUsernames } = require('../lib/notificationHelper');
 
 const router = express.Router();
@@ -109,7 +109,7 @@ router.get('/tickets', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  const isEmployee = requester.role === ROLES.EMPLOYEE;
+  const isEmployee = isEmployeeLikeRole(requester);
   const hasTicketGrant = await hasAnyPermission(supabase, requester, ['view_tickets', 'manage_tickets', 'assign_tickets', 'close_tickets']);
   if (!isEmployee && !hasTicketGrant && !(await requireAnyPerm(requester, ['view_tickets', 'manage_tickets', 'assign_tickets', 'close_tickets'], res))) return;
   try {
@@ -167,7 +167,7 @@ router.post('/tickets', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  if (requester.role !== ROLES.EMPLOYEE && !(await requirePerm(requester, 'manage_tickets', res))) return;
+  if (!isEmployeeLikeRole(requester) && !(await requirePerm(requester, 'manage_tickets', res))) return;
   const { category, priority, subject, description } = req.body;
   if (!subject?.trim() || !description?.trim()) {
     return res.status(400).json({ success: false, error: 'Subject and description are required' });
@@ -348,8 +348,9 @@ router.get('/calendar-events', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  const isEmployee = requester.role === ROLES.EMPLOYEE;
-  if (!isEmployee && !(await requireAnyPerm(requester, ['create_events', 'edit_events', 'delete_events'], res))) return;
+  const isEmployee = isEmployeeLikeRole(requester);
+  const hasCalendarGrant = await hasAnyPermission(supabase, requester, ['create_events', 'edit_events', 'delete_events']);
+  if (!isEmployee && !hasCalendarGrant && !(await requireAnyPerm(requester, ['create_events', 'edit_events', 'delete_events'], res))) return;
   try {
     const { data, error } = await supabase
       .from('calendar_events')
@@ -357,7 +358,7 @@ router.get('/calendar-events', async (req, res) => {
       .eq('company_id', companyId)
       .order('date', { ascending: true });
     if (error) throw error;
-    const events = isEmployee
+    const events = isEmployee && !hasCalendarGrant
       ? (data || []).filter((event) => {
           const visibility = String(event.visibility || 'all').toLowerCase();
           if (visibility === 'none') return event.created_by_uid === requester.uid;

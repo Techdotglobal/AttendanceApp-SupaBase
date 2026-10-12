@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { KeyboardAwareScreen } from '../shared/components/KeyboardAwareScreen';
 import { Ionicons } from '@expo/vector-icons';
-import { getUserAttendanceRecords, getOfflineQueuedRecordsForUser } from '../utils/storage';
+import { getUserAttendanceRecords, getOfflineQueuedRecordsForUser, getSelfServiceAttendanceState } from '../utils/storage';
 import { useAuth } from '../contexts/AuthContext';
 import { 
   getEmployeeByUsername, 
@@ -49,6 +49,7 @@ import Trademark from '../components/Trademark';
 import HamburgerButton from '../shared/components/HamburgerButton';
 import { useNavigation } from '@react-navigation/native';
 import { useStaleWhileRevalidate } from '../shared/hooks/useStaleWhileRevalidate';
+const { deriveSelfServiceAttendanceState } = require('../../../shared/attendance/selfServiceState.cjs');
 
 export default function EmployeeDashboard({ route }) {
   const navigation = useNavigation();
@@ -65,6 +66,7 @@ export default function EmployeeDashboard({ route }) {
     alignSelf: 'center',
   };
   const [lastRecord, setLastRecord] = useState(null);
+  const [attendanceState, setAttendanceState] = useState({ canCheckIn: true, canCheckOut: false, completed: false });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [employee, setEmployee] = useState(null);
   const [showWorkModeModal, setShowWorkModeModal] = useState(false);
@@ -107,6 +109,19 @@ export default function EmployeeDashboard({ route }) {
       if (all.length > 0) {
         const sortedRecords = all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
         setLastRecord(sortedRecords[0]);
+        setAttendanceState(deriveSelfServiceAttendanceState(all));
+      }
+      try {
+        const remoteState = await getSelfServiceAttendanceState(user.username, user);
+        if (remoteState?.schedule_available) {
+          setAttendanceState({
+            canCheckIn: remoteState.can_check_in === true,
+            canCheckOut: remoteState.can_check_out === true,
+            completed: remoteState.completed === true,
+          });
+        }
+      } catch (stateError) {
+        if (__DEV__) console.warn('[EmployeeDashboard] self-service state fallback:', stateError?.message || stateError);
       }
     } catch (error) {
       console.error('Error loading last record:', error);
@@ -126,7 +141,7 @@ export default function EmployeeDashboard({ route }) {
   const loadMyRequests = useCallback(async () => {
     try {
       if (!user?.uid) return;
-      const requests = await getWorkModeRequests(user);
+      const requests = await getWorkModeRequests(user, { ownOnly: true });
       setMyRequests(
         requests.filter(
           (req) =>
@@ -354,8 +369,8 @@ export default function EmployeeDashboard({ route }) {
     handleLogout();
   };
 
-  const canCheckIn = !lastRecord || lastRecord.type === 'checkout';
-  const canCheckOut = lastRecord && lastRecord.type === 'checkin';
+  const canCheckIn = attendanceState.canCheckIn;
+  const canCheckOut = attendanceState.canCheckOut;
 
   // Track location state when checked in
   const locationState = useLocationState(user, canCheckOut, 30000); // Poll every 30 seconds
@@ -520,7 +535,11 @@ export default function EmployeeDashboard({ route }) {
                     fontSize: responsiveFont(16),
                   }}
                 >
-                  {lastRecord.type === 'checkin' ? 'Checked In' : 'Checked Out'}
+                  {lastRecord.type === 'checkin'
+                    ? 'Checked In'
+                    : lastRecord.checkout_source === 'automatic_schedule'
+                      ? 'Automatically Checked Out'
+                      : 'Checked Out'}
                 </Text>
                 <Text 
                   style={{ 
@@ -808,7 +827,7 @@ export default function EmployeeDashboard({ route }) {
                     ? (biometricAvailable 
                         ? `Use ${biometricType.toLowerCase()}` 
                         : 'Use Face ID or fingerprint')
-                    : 'Already checked in'}
+                    : (attendanceState.completed ? 'Workday completed' : 'Already checked in')}
                 </Text>
               </View>
               <Ionicons 

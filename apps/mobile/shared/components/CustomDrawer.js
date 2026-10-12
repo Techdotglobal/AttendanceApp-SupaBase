@@ -13,7 +13,7 @@ import { useTheme } from '../../core/contexts/ThemeContext';
 import { getUnreadNotificationCount } from '../../utils/notifications';
 import { fontSize, spacing, iconSize, componentSize, responsivePadding, responsiveFont, wp, isTablet } from '../../utils/responsive';
 import { ROUTES } from '../constants/routes';
-import { MANAGER_PERMISSIONS, hasAnyPermission, hasPermission } from '../constants/permissions';
+import { MANAGER_PERMISSIONS, hasAnyPermission, hasPermission, isEmployeeLikeRole } from '../constants/permissions';
 import { getOfficeLocation } from '../../features/geofencing';
 import { getCurrentLocation } from '../../features/geofencing';
 import { isWithin1km } from '../../features/geofencing';
@@ -254,6 +254,38 @@ export default function CustomDrawer({ navigation, state }) {
       },
     ];
 
+    // Every employee-like security role keeps the self-service surface. These
+    // entries are intentionally separate from manager/admin permission gates.
+    const employeeSelfServiceItems = isEmployeeLikeRole(user) && user.role !== 'employee'
+      ? [
+          {
+            name: 'My Dashboard',
+            icon: 'person-circle-outline',
+            screen: ROUTES.EMPLOYEE_DASHBOARD,
+          },
+          {
+            name: 'My Attendance',
+            icon: 'time-outline',
+            screen: ROUTES.ATTENDANCE_HISTORY,
+          },
+          {
+            name: 'My Leave Requests',
+            icon: 'calendar-outline',
+            screen: ROUTES.LEAVE_REQUEST,
+          },
+          {
+            name: 'My Tickets',
+            icon: 'ticket-outline',
+            screen: ROUTES.TICKET_SCREEN,
+          },
+          {
+            name: 'My Calendar',
+            icon: 'calendar-outline',
+            screen: ROUTES.CALENDAR,
+          },
+        ]
+      : [];
+
     // Super Admin only items
     const superAdminItems = [
       {
@@ -306,8 +338,10 @@ export default function CustomDrawer({ navigation, state }) {
 
     const adminMenuItems = [
       ...baseItems,
+      ...employeeSelfServiceItems,
       ...adminItems.filter((item) => {
         if (user.role === 'super_admin') return true;
+        if (item.screen === ROUTES.NOTIFICATIONS && isEmployeeLikeRole(user)) return true;
         if (!item.permissions) return true;
         return hasAnyPermission(user, item.permissions);
       }),

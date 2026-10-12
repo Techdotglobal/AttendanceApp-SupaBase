@@ -50,6 +50,13 @@ export function AttendanceRulesPage() {
   async function saveRule(event) {
     event.preventDefault(); setBusy(true); setMessage(null);
     try {
+      const today = new Date().toISOString().slice(0, 10);
+      if (editingRuleId && rule.effective_from && rule.effective_from <= today) {
+        const confirmed = window.confirm(
+          'This rule is effective today or earlier. Existing finalized attendance summaries keep their immutable schedule snapshot; only new or open days use the edited rule. Continue?'
+        );
+        if (!confirmed) return;
+      }
       const payload = { ...rule, department_id: rule.scope_type === 'DEPARTMENT' ? rule.department_id : null, user_uid: rule.scope_type === 'USER' ? rule.user_uid : null };
       if (editingRuleId) await adminService.updateAttendanceRule(editingRuleId, payload);
       else await adminService.createAttendanceRule(payload);
@@ -90,7 +97,7 @@ export function AttendanceRulesPage() {
         {holidays.length > 0 && <section className="ui-card p-5"><h2 className="text-lg font-semibold text-slate-900">Edit a holiday</h2><select className="ui-input mt-3" value={editingHolidayId || ''} onChange={(e) => { const selected = holidays.find((item) => String(item.id) === e.target.value); if (selected) editHoliday(selected); }}><option value="">Select a holiday</option>{holidays.map((item) => <option key={item.id} value={item.id}>{item.holiday_date} · {item.name}</option>)}</select></section>}
         <section className="ui-card p-5">
           <h1 className="text-xl font-semibold text-slate-900">Attendance rules</h1>
-          <p className="mt-1 text-sm text-slate-500">Rules apply company-wide, by primary department, or to an individual user. Existing days keep their persisted schedule snapshot.</p>
+          <p className="mt-1 text-sm text-slate-500">Rules apply company-wide, by primary department, or to an individual user. Precedence is USER → PRIMARY DEPARTMENT → COMPANY. Existing days keep their persisted schedule snapshot; editing a rule effective today does not rewrite finalized history.</p>
           <form className="mt-5 grid gap-4 md:grid-cols-3" onSubmit={saveRule}>
             <label className="text-sm text-slate-600">Scope<select className="ui-input mt-1" value={rule.scope_type} onChange={(e) => updateRule('scope_type', e.target.value)}><option value="COMPANY">Company</option><option value="DEPARTMENT">Department</option><option value="USER">User</option></select></label>
             {rule.scope_type !== 'COMPANY' && <label className="text-sm text-slate-600">Target<select className="ui-input mt-1" value={rule.scope_type === 'DEPARTMENT' ? rule.department_id : rule.user_uid} onChange={(e) => updateRule(rule.scope_type === 'DEPARTMENT' ? 'department_id' : 'user_uid', e.target.value)}><option value="">Select target</option>{scopeOptions.map((item) => <option key={item.id || item.uid} value={item.id || item.uid}>{item.name || item.username}</option>)}</select></label>}

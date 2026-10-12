@@ -7,6 +7,7 @@ const {
   pairAttendanceRecords,
   calculateDailySummary,
 } = require('./attendanceRules.cjs');
+const { deriveSelfServiceAttendanceState, localDateKey } = require('./selfServiceState.cjs');
 
 const base = (overrides = {}) => ({
   id: 'company-rule', version: 1, company_id: 'company-a', scope_type: 'COMPANY', timezone: 'UTC',
@@ -106,6 +107,66 @@ test('automatic geofence checkout remains overtime-capable while scheduled check
   assert.equal(geofence.overtime_seconds, 60 * 60);
   assert.equal(geofence.checkout_source, 'automatic_geofence');
   assert.equal(scheduled.overtime_seconds, 0);
+});
+
+test('holiday and weekly-off work is present non-working and not late', () => {
+  const off = calculateDailySummary({ rule: base(), workDate: '2026-02-07', records: [record('in', 'checkin', '2026-02-07T12:00:00Z'), record('out', 'checkout', '2026-02-07T13:00:00Z')] });
+  const holiday = calculateDailySummary({ rule: base(), workDate: '2026-02-02', holiday: { id: 'h', is_working_day: false }, records: [record('in', 'checkin', '2026-02-02T12:00:00Z'), record('out', 'checkout', '2026-02-02T13:00:00Z')] });
+  assert.equal(off.status, 'PRESENT_NON_WORKING');
+  assert.equal(off.late_seconds, 0);
+  assert.equal(holiday.status, 'PRESENT_NON_WORKING');
+  assert.equal(holiday.late_seconds, 0);
+});
+
+test('off-day and holiday work retain hours and configured overtime', () => {
+  const off = calculateDailySummary({
+    rule: base(), workDate: '2026-02-07',
+    records: [record('in', 'checkin', '2026-02-07T09:00:00Z'), record('out', 'checkout', '2026-02-07T19:00:00Z')],
+  });
+  const holiday = calculateDailySummary({
+    rule: base(), workDate: '2026-02-02', holiday: { id: 'h', is_working_day: false },
+    records: [record('in', 'checkin', '2026-02-02T09:00:00Z'), record('out', 'checkout', '2026-02-02T19:00:00Z')],
+  });
+  assert.equal(off.status, 'PRESENT_NON_WORKING');
+  assert.equal(off.worked_seconds, 10 * 60 * 60);
+  assert.equal(off.overtime_seconds, 60 * 60);
+  assert.equal(holiday.status, 'PRESENT_NON_WORKING');
+  assert.equal(holiday.overtime_seconds, 60 * 60);
+});
+
+test('overnight work keeps the overnight window and overtime boundary', () => {
+  const result = calculateDailySummary({
+    rule: base({ scheduled_start: '22:00', scheduled_end: '06:00' }),
+    workDate: '2026-02-02',
+    records: [record('in', 'checkin', '2026-02-02T22:00:00Z'), record('out', 'checkout', '2026-02-03T07:00:00Z')],
+  });
+  assert.equal(result.worked_seconds, 9 * 60 * 60);
+  assert.equal(result.regular_seconds, 8 * 60 * 60);
+  assert.equal(result.overtime_seconds, 60 * 60);
+});
+
+test('self-service state keeps a completed same-day checkout closed', () => {
+  const state = deriveSelfServiceAttendanceState([
+    { id: 'in', type: 'checkin', timestamp: '2026-02-02T09:00:00Z' },
+    { id: 'out', type: 'checkout', timestamp: '2026-02-02T18:00:00Z', checkout_source: 'automatic_schedule' },
+  ], new Date('2026-02-02T18:30:00Z'));
+  assert.equal(state.completed, true);
+  assert.equal(state.canCheckIn, false);
+  assert.equal(state.canCheckOut, false);
+});
+
+test('no-schedule fallback uses the trusted timezone rather than UTC/device midnight', () => {
+  const checkout = { id: 'out', type: 'checkout', timestamp: '2026-02-01T18:30:00Z' };
+  const now = new Date('2026-02-01T19:30:00Z');
+  const state = deriveSelfServiceAttendanceState([checkout], now, 'Asia/Karachi');
+  assert.equal(localDateKey(checkout.timestamp, 'Asia/Karachi'), '2026-02-01');
+  assert.equal(localDateKey(now, 'Asia/Karachi'), '2026-02-02');
+  assert.equal(state.completed, false);
+  assert.equal(state.canCheckIn, true);
+});
+
+test('invalid self-service fallback timezone is safely ignored', () => {
+  assert.equal(localDateKey('2026-02-01T19:30:00Z', 'Not/AZone'), localDateKey('2026-02-01T19:30:00Z'));
 });
 
 test('manual and offline checkout already present wins over scheduled checkout', () => {

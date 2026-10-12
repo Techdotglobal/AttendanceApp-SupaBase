@@ -1,7 +1,7 @@
 const express = require('express');
 const { supabase } = require('../config/supabase');
 const { resolveRequester } = require('../lib/resolveRequester');
-const { hasPermission, requirePermission, resolveScopedUserUids, writeAuthorizationAudit, getUserDepartmentIds } = require('../lib/permissions');
+const { hasPermission, requirePermission, resolveScopedUserUids, writeAuthorizationAudit, getUserDepartmentIds, isEmployeeLikeRole } = require('../lib/permissions');
 const { reconcileAbsenceOutcome } = require('../lib/attendanceAbsenceService');
 
 const router = express.Router();
@@ -181,7 +181,7 @@ router.delete('/attendance/holidays/:id', async (req, res) => {
 router.get('/attendance/summaries', async (req, res) => {
   const ctx = await tenant(req, res); if (!ctx) return;
   try {
-    const own = ctx.requester.role === 'employee';
+    const own = isEmployeeLikeRole(ctx.requester);
     const canView = await hasPermission(supabase, ctx.requester, 'view_attendance');
     if (!own && !canView && ctx.requester.role !== 'super_admin') return res.status(403).json({ success: false, error: 'Permission required: view_attendance' });
     let query = supabase.from('attendance_daily_summaries').select('*').eq('company_id', ctx.companyId).order('work_date', { ascending: false });
@@ -202,7 +202,7 @@ router.get('/attendance/summaries', async (req, res) => {
 
 router.get('/attendance/absence-outcomes', async (req, res) => {
   const ctx = await tenant(req, res); if (!ctx) return;
-  const own = ctx.requester.role === 'employee';
+  const own = isEmployeeLikeRole(ctx.requester);
   const canView = await hasPermission(supabase, ctx.requester, 'view_attendance');
   if (!own && !canView && ctx.requester.role !== 'super_admin') {
     return res.status(403).json({ success: false, error: 'Permission required: view_attendance' });

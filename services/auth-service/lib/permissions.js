@@ -13,6 +13,7 @@ const {
   PERMISSION_SCOPES,
   PERMISSION_DEFINITIONS,
   normalizePermissionKey,
+  isEmployeeLikeRole,
 } = catalog;
 
 const SELF_PROTECTION_ERROR = 'You cannot modify your own administrative access.';
@@ -385,6 +386,7 @@ module.exports = {
   FEATURE_PERMISSIONS,
   PERMISSION_SCOPES,
   PERMISSION_DEFINITIONS,
+  isEmployeeLikeRole,
   SELF_PROTECTION_ERROR,
   normalizeScope,
   getUserDepartmentIds,

@@ -16,7 +16,7 @@ import { DatePickerField } from './calendarPickers';
 import { KpiMetricCard, KpiMetricGrid } from '../../../shared/components/ui/KpiMetricCard';
 import { useAnyPermission, usePermission } from '../../../shared/components/PermissionGate';
 import { PageActions } from '../../../shared/components/pageChrome';
-import { PERMISSIONS } from '../permissions';
+import { isEmployeeLikeRole, PERMISSIONS } from '../permissions';
 import { useSilentPoll } from '../../../shared/hooks/useSilentPoll';
 import { normalizeAttendanceType } from '../utils/analyticsCharts';
 import { useAuthStore } from '../../auth/store/authStore';
@@ -332,7 +332,7 @@ export function AttendancePage() {
   const [pageSize, setPageSize] = useState(25);
 
   const hasAttendancePermission = useAnyPermission([PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
-  const canViewAttendance = user?.role === 'employee' || hasAttendancePermission;
+  const canViewAttendance = isEmployeeLikeRole(user) || hasAttendancePermission;
   const canManual = usePermission(PERMISSIONS.MANUAL_ATTENDANCE);
   const canReconcile = canManual || usePermission(PERMISSIONS.EDIT_LEAVE_BALANCE);
   const canExport = usePermission(PERMISSIONS.EXPORT_ATTENDANCE);
@@ -341,7 +341,7 @@ export function AttendancePage() {
     PERMISSIONS.APPROVE_LEAVE,
     PERMISSIONS.REJECT_LEAVE,
   ]);
-  const canViewLeaves = user?.role === 'employee' || hasLeavePermission;
+  const canViewLeaves = isEmployeeLikeRole(user) || hasLeavePermission;
 
   const loadAttendance = useCallback(
     async (silent = false) => {
@@ -363,7 +363,9 @@ export function AttendancePage() {
   const loadDirectory = useCallback(async () => {
     try {
       const [userRows, leaveRows, outcomeRows, finalizedRows] = await Promise.all([
-        user?.role === 'employee' ? Promise.resolve([user]) : adminService.getUsers().catch(() => []),
+        isEmployeeLikeRole(user) && !hasAttendancePermission && !hasLeavePermission
+          ? Promise.resolve([user])
+          : adminService.getUsers().catch(() => []),
         canViewLeaves ? adminService.getLeaves().catch(() => []) : Promise.resolve([]),
         adminService.getAttendanceAbsenceOutcomes().catch(() => []),
         adminService.getAttendanceSummaries().catch(() => []),
@@ -377,7 +379,7 @@ export function AttendancePage() {
       setLeaves([]);
       setAbsenceOutcomes([]);
     }
-  }, [canViewLeaves, user?.role, user?.uid]);
+  }, [canViewLeaves, hasAttendancePermission, hasLeavePermission, user?.role, user?.uid]);
 
   useEffect(() => {
     loadAttendance();

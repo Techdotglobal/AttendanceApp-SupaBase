@@ -52,6 +52,37 @@ test('legacy mobile direct writes, offline queue, and geofence checkout remain p
   assert.match(geofence, /saveAttendanceRecord/);
 });
 
+test('self-service workday guard is server-side and leaves privileged/raw paths intact', () => {
+  const migration = read('supabase/migrations/20261009100000_self_service_attendance_workday_guard.sql');
+  assert.match(migration, /attendance_self_service_workday_guard/);
+  assert.match(migration, /auth\.role\(\)[\s\S]{0,120}authenticated/);
+  assert.match(migration, /pg_advisory_xact_lock/);
+  assert.match(migration, /user_department_assignments/);
+  assert.match(migration, /scope_type = 'USER'[\s\S]*scope_type = 'DEPARTMENT'[\s\S]*scope_type = 'COMPANY'/);
+  assert.match(migration, /v_scheduled_end <= v_scheduled_start/);
+  assert.match(migration, /USING ERRCODE = 'check_violation'/);
+  assert.match(migration, /COALESCE\(NEW\.is_manual, false\)/);
+  assert.match(migration, /BEFORE INSERT ON public\.attendance_records/);
+});
+
+test('self-service guard and runtime share trusted fallback, timezone, and department precedence', () => {
+  const migration = read('supabase/migrations/20261009100000_self_service_attendance_workday_guard.sql');
+  const finalizer = read('services/auth-service/lib/attendanceFinalizer.js');
+  const state = read('shared/attendance/selfServiceState.cjs');
+  assert.match(migration, /app_settings #>> '\{company,timezone\}'/);
+  assert.match(migration, /v_fallback_timezone/);
+  assert.match(migration, /pg_timezone_names/);
+  assert.match(migration, /attendance_schedule_timezone_guard/);
+  assert.match(migration, /BEFORE INSERT OR UPDATE ON public\.attendance_schedule_rules/);
+  assert.match(migration, /a\.is_primary DESC[\s\S]*a\.created_at ASC[\s\S]*a\.id ASC/);
+  assert.match(finalizer, /resolveTrustedFallbackTimezone/);
+  assert.match(finalizer, /filter\(\(rule\) => isValidTimezone\(rule\.timezone\)\)/);
+  assert.match(finalizer, /\.order\('is_primary', \{ ascending: false \}\)/);
+  assert.match(finalizer, /\.order\('created_at', \{ ascending: true, nullsFirst: false \}\)/);
+  assert.match(finalizer, /primary_department_id: primary\.get\(user\.uid\) \|\| user\.department_id \|\| null/);
+  assert.match(state, /function localDateKey\(value, timezone = null\)/);
+});
+
 test('payroll and reporting continue consuming raw attendance records', () => {
   assert.match(read('services/auth-service/routes/payroll.js'), /from\('attendance_records'\)/);
   assert.match(read('services/reporting-service/services/queryService.js'), /from\('attendance_records'\)/);

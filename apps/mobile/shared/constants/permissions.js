@@ -1,3 +1,5 @@
+import { isEmployeeLikeRole as catalogIsEmployeeLikeRole } from '../../../../shared/permissions/catalog.cjs';
+
 export const MANAGER_PERMISSIONS = {
   CREATE_USER: 'create_user',
   EDIT_USER: 'edit_user',
@@ -51,6 +53,13 @@ export const hasPermission = (user, permissionKey) => {
 
 export const hasAnyPermission = (user, permissionKeys) =>
   permissionKeys.some((permissionKey) => hasPermission(user, permissionKey));
+
+// System role upgrades do not remove employee self-service. Administrative
+// screens still use the explicit manager permission checks above.
+export const isEmployeeLikeRole = (user) =>
+  catalogIsEmployeeLikeRole(user);
+
+export const hasEmployeeSelfService = (user) => isEmployeeLikeRole(user);
 
 export const isSelfTarget = (user, target) => {
   const targetUid = target?.uid || (typeof target?.id === 'string' && target.id.startsWith('emp_')

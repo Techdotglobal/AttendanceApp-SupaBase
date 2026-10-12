@@ -6,6 +6,7 @@
   "build": {
     "development": {
       "node": "20.19.4",
+      "channel": "development",
       "developmentClient": true,
       "distribution": "internal",
       "env": {
@@ -14,6 +15,7 @@
     },
     "preview": {
       "node": "20.19.4",
+      "channel": "preview",
       "android": {
         "buildType": "apk"
       },
@@ -24,6 +26,7 @@
     },
     "production": {
       "node": "20.19.4",
+      "channel": "production",
       "android": {
         "buildType": "app-bundle"
       },

@@ -211,6 +211,9 @@ router.post('/work-mode-requests', (req, res) => forwardWithUserContext(req, res
 router.get('/work-mode-requests/mine', (req, res) =>
   forwardWithUserContext(req, res, 'get', '/api/auth/work-mode-requests/mine')
 );
+router.get('/attendance/self-state', (req, res) =>
+  forwardWithUserContext(req, res, 'get', '/api/auth/attendance/self-state')
+);
 
 /**
  * Forward username check request to auth-service

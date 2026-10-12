@@ -4,8 +4,35 @@ import { supabase, isSupabaseConfigured } from '../core/config/supabase';
 import { getEmployeeByUsername } from './employees';
 import { fetchSessionUserCompanyId, fetchCompanyUserUids, requireValidCompanyId } from '../core/tenant/tenantScope';
 import { TENANT_RUNTIME_DIAG, tenantDiagLog } from '../core/debug/tenantRuntimeDiag';
+import { API_GATEWAY_URL } from '../core/config/api';
+import { buildGatewayAuthHeaders } from '../core/api/gatewayRequest';
+const { deriveSelfServiceAttendanceState } = require('../../../shared/attendance/selfServiceState.cjs');
 
 const ATTENDANCE_RECORDS_KEY = '@attendance_records'; // For fallback only
+
+export const getSelfServiceAttendanceState = async (username, requester = null) => {
+  const base = typeof API_GATEWAY_URL === 'string'
+    ? API_GATEWAY_URL.replace(/\/+$/, '')
+    : String(API_GATEWAY_URL || '').replace(/\/+$/, '');
+  if (!base) throw new Error('API gateway is not configured');
+  const headers = await buildGatewayAuthHeaders(requester);
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), 3000) : null;
+  let response;
+  try {
+    response = await fetch(`${base}/api/auth/attendance/self-state`, {
+      headers,
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.success !== true) {
+    throw new Error(payload?.error || `Attendance state request failed (${response.status})`);
+  }
+  return payload.data || null;
+};
 
 /**
  * Convert database attendance record format to app format
@@ -22,6 +49,9 @@ const convertAttendanceFromDb = (dbRecord) => {
     location: dbRecord.location,
     photo: dbRecord.photo,
     authMethod: dbRecord.auth_method,
+    checkout_source: dbRecord.checkout_source,
+    checkout_reason: dbRecord.checkout_reason,
+    auto_checkout_checkin_id: dbRecord.auto_checkout_checkin_id,
     isManual: dbRecord.is_manual || false,
     createdBy: dbRecord.created_by,
     createdAt: dbRecord.created_at,
@@ -30,11 +60,28 @@ const convertAttendanceFromDb = (dbRecord) => {
   };
 };
 
+const attendanceWriteLocks = new Map();
+
+/**
+ * Serialize self-service writes per user on this device. This closes the
+ * double-tap/race window while preserving the existing direct Supabase write
+ * and offline queue contracts.
+ */
+export const saveAttendanceRecord = (attendanceRecord) => {
+  const key = String(attendanceRecord?.user_uid || attendanceRecord?.username || 'unknown');
+  const existing = attendanceWriteLocks.get(key);
+  if (existing) return existing;
+  const promise = saveAttendanceRecordInternal(attendanceRecord)
+    .finally(() => attendanceWriteLocks.delete(key));
+  attendanceWriteLocks.set(key, promise);
+  return promise;
+};
+
 /**
  * Save attendance record to Supabase
  * @param {Object} attendanceRecord - The attendance record to save
  */
-export const saveAttendanceRecord = async (attendanceRecord) => {
+const saveAttendanceRecordInternal = async (attendanceRecord) => {
   try {
     if (!isSupabaseConfigured()) {
       console.error('[attendance] Supabase not configured — cannot sync check-in/out');
@@ -52,12 +99,14 @@ export const saveAttendanceRecord = async (attendanceRecord) => {
     }
 
     const existing = await getUserAttendanceRecords(attendanceRecord.username);
-    const last = existing?.[0];
-    if (normalizedType === 'checkin' && last?.type === 'checkin' && !attendanceRecord.isManual) {
-      return { success: false, error: 'You are already checked in.' };
+    const queued = await getOfflineQueuedRecordsForUser(attendanceRecord.username);
+    const state = deriveSelfServiceAttendanceState([...existing, ...queued]);
+    const last = state.lastRecord;
+    if (normalizedType === 'checkin' && !attendanceRecord.isManual && !state.canCheckIn) {
+      return { success: false, error: state.completed ? 'This workday is already complete.' : 'You are already checked in.' };
     }
-    if (normalizedType === 'checkout' && last?.type !== 'checkin' && !attendanceRecord.isManual) {
-      return { success: false, error: 'You must check in before checking out.' };
+    if (normalizedType === 'checkout' && !attendanceRecord.isManual && !state.canCheckOut) {
+      return { success: false, error: last?.type === 'checkout' ? 'This workday is already checked out.' : 'You must check in before checking out.' };
     }
 
     // Prefer local session (no network round-trip). Fall back to getUser() only if needed.

@@ -23,6 +23,7 @@ const {
   PERMISSION_DEFINITIONS,
   hasAnyPermission,
   getUserDepartmentIds,
+  isEmployeeLikeRole,
   resolveScopedUserUids,
   requirePermission,
   rejectSelfAdministrativeChange,
@@ -1437,7 +1438,7 @@ router.get('/attendance', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  const isEmployee = requester.role === ROLES.EMPLOYEE;
+  const isEmployee = isEmployeeLikeRole(requester);
   const hasAttendanceGrant = await hasAnyPermission(supabase, requester, ATTENDANCE_READ_PERMISSIONS);
   if (!isEmployee && !hasAttendanceGrant && !(await requireAnyAdminPermission(requester, ATTENDANCE_READ_PERMISSIONS, res))) return;
   if (isEmployee && !hasAttendanceGrant) {
@@ -1658,7 +1659,7 @@ router.get('/leaves', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  const isEmployee = requester.role === ROLES.EMPLOYEE;
+  const isEmployee = isEmployeeLikeRole(requester);
   const hasLeaveViewGrant = await hasPermission(supabase, requester, 'view_leave_requests');
   const hasApprovalGrant = await hasAnyPermission(supabase, requester, ['approve_leave', 'reject_leave']);
   if (!isEmployee && !hasLeaveViewGrant && !hasApprovalGrant && requester.role !== ROLES.SUPER_ADMIN) {
@@ -1729,7 +1730,7 @@ router.post('/leaves', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
-  const isEmployee = requester.role === ROLES.EMPLOYEE;
+  const isEmployee = isEmployeeLikeRole(requester);
   try {
     const body = req.body || {};
     const requestedEmployeeUid = String(body.employee_uid || '').trim();
@@ -1767,12 +1768,10 @@ router.post('/leaves', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Employee not found' });
     }
     const isOwnRequest = String(employee.uid) === String(requester.uid);
-    if (!isOwnRequest || !isEmployee) {
+    if (!isOwnRequest) {
       if (!(await requireAdminPermission(requester, 'create_leave_request', res, {
         companyId, targetUid: employee.uid, employeeUid: employee.uid, departmentId: employee.department_id, department: employee.department,
       }))) return;
-    } else if (!isOwnRequest) {
-      return res.status(403).json({ success: false, error: 'You can only create your own leave request' });
     }
 
     const days = isHalfDay ? 0.5 : countBusinessDays(startDate, endDate);
@@ -1785,7 +1784,7 @@ router.post('/leaves', async (req, res) => {
 
     const { allocated, used, remaining } = await resolveRemainingLeaveForEmployee(employee.uid, companyId, leaveType);
     const insufficientBalance = days > remaining;
-    const overrideAcknowledged = !isEmployee && Boolean(body.override_acknowledged);
+    const overrideAcknowledged = !isOwnRequest && Boolean(body.override_acknowledged);
 
     // Dry run: let the UI show the balance/override warning before the
     // employee actually acts on it, without creating anything.

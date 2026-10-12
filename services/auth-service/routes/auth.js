@@ -1718,6 +1718,26 @@ router.get('/work-mode-requests/mine', async (req, res) => {
   }
 });
 
+router.get('/attendance/self-state', async (req, res) => {
+  const { resolveRequester } = require('../lib/resolveRequester');
+  const requester = await resolveRequester(req);
+  if (!requester?.uid || !requester?.company_id) {
+    return res.status(401).json({ success: false, error: 'Authentication expired. Please sign in again.' });
+  }
+  try {
+    const { resolveSelfServiceAttendanceState } = require('../lib/attendanceFinalizer');
+    const state = await resolveSelfServiceAttendanceState({
+      companyId: requester.company_id,
+      userUid: requester.uid,
+      now: new Date(),
+    });
+    if (!state) return res.status(404).json({ success: false, error: 'User not found' });
+    return res.status(200).json({ success: true, data: state });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message || 'Failed to resolve attendance state' });
+  }
+});
+
 const onboardingRoutes = require('./onboarding');
 router.use(onboardingRoutes);
 

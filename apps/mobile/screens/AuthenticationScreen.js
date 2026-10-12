@@ -9,7 +9,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { validateCheckInLocation } from '../features/geofencing';
 import { isLocationRequiredForCheckIn } from '../features/geofencing/utils/workModeRules';
-import { getUserAttendanceRecords, saveAttendanceRecord } from '../utils/storage';
+import { getUserAttendanceRecords, getOfflineQueuedRecordsForUser, getSelfServiceAttendanceState, saveAttendanceRecord } from '../utils/storage';
+const { deriveSelfServiceAttendanceState } = require('../../../shared/attendance/selfServiceState.cjs');
 import {
   verifyFace,
   checkFaceRecognitionAvailability,
@@ -381,16 +382,31 @@ export default function AuthenticationScreen({ navigation, route }) {
         }
       }
 
-      const records = await getUserAttendanceRecords(user.username);
-      const lastRecord = records?.[0];
-      const lastType = lastRecord?.type;
+      const [records, queuedRecords] = await Promise.all([
+        getUserAttendanceRecords(user.username),
+        getOfflineQueuedRecordsForUser(user.username),
+      ]);
+      let state = deriveSelfServiceAttendanceState([...(records || []), ...(queuedRecords || [])]);
+      try {
+        const remoteState = await getSelfServiceAttendanceState(user.username, user);
+        if (remoteState?.schedule_available) {
+          state = {
+            canCheckIn: remoteState.can_check_in === true,
+            canCheckOut: remoteState.can_check_out === true,
+            completed: remoteState.completed === true,
+            lastRecord: remoteState.latest_record || state.lastRecord,
+          };
+        }
+      } catch (stateError) {
+        if (__DEV__) console.warn('[AuthenticationScreen] self-service state fallback:', stateError?.message || stateError);
+      }
 
-      if (type === 'checkin' && lastType === 'checkin') {
-        Alert.alert('Already Checked In', 'You are already checked in. Check out before checking in again.');
+      if (type === 'checkin' && !state.canCheckIn) {
+        Alert.alert('Attendance Complete', state.completed ? 'This workday is already complete.' : 'You are already checked in. Check out before checking in again.');
         return;
       }
-      if (type === 'checkout' && lastType !== 'checkin') {
-        Alert.alert('Not Checked In', 'You must check in before you can check out.');
+      if (type === 'checkout' && !state.canCheckOut) {
+        Alert.alert('Cannot Check Out', state.lastRecord?.type === 'checkout' ? 'This workday is already checked out.' : 'You must check in before you can check out.');
         return;
       }
 

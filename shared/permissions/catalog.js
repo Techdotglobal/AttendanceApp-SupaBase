@@ -21,6 +21,8 @@ export const canAccessFeature = catalog.canAccessFeature;
 export const isSuperAdmin = catalog.isSuperAdmin;
 export const hasTenantWidePeopleAccess = catalog.hasTenantWidePeopleAccess;
 export const EMPLOYEE_FEATURES = catalog.EMPLOYEE_FEATURES;
+export const EMPLOYEE_BASELINE_ROLES = catalog.EMPLOYEE_BASELINE_ROLES;
+export const isEmployeeLikeRole = catalog.isEmployeeLikeRole;
 export const PERMISSION_SCOPES = catalog.PERMISSION_SCOPES;
 export const PERMISSION_DEFINITIONS = catalog.PERMISSION_DEFINITIONS;
 

@@ -5,7 +5,7 @@ import { TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ROLES } from '../../shared/constants/roles';
 import { ROUTES } from '../../shared/constants/routes';
-import { MANAGER_PERMISSIONS, hasAnyPermission, hasPermission } from '../../shared/constants/permissions';
+import { MANAGER_PERMISSIONS, hasAnyPermission, hasPermission, isEmployeeLikeRole } from '../../shared/constants/permissions';
 import { useTheme } from '../contexts/ThemeContext';
 
 // Import screens
@@ -175,9 +175,12 @@ export default function MainNavigator({ user }) {
           options={{ title: 'Notifications' }}
           initialParams={{ user }}
         />
-        {user.role === ROLES.EMPLOYEE && (
+        {isEmployeeLikeRole(user) && (
           <>
+            <Stack.Screen name={ROUTES.EMPLOYEE_DASHBOARD} component={EmployeeDashboard} options={{ headerShown: false }} initialParams={{ user }} />
             <Stack.Screen name={ROUTES.ATTENDANCE_HISTORY} component={AttendanceHistory} options={{ title: 'Attendance History' }} initialParams={{ user }} />
+            <Stack.Screen name={ROUTES.AUTHENTICATION_SCREEN} component={AuthenticationScreen} options={{ title: 'Authentication' }} initialParams={{ user }} />
+            <Stack.Screen name={ROUTES.AUTH_METHOD_SELECTION} component={AuthMethodSelection} options={{ title: 'Auth Settings' }} initialParams={{ user }} />
             <Stack.Screen name={ROUTES.LEAVE_REQUEST} component={LeaveRequestScreen} options={{ title: 'Leave Requests' }} initialParams={{ user }} />
             <Stack.Screen name={ROUTES.TICKET_SCREEN} component={TicketScreen} options={{ title: 'My Tickets' }} initialParams={{ user }} />
           </>

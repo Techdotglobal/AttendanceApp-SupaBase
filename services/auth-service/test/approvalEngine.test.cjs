@@ -135,6 +135,16 @@ test('inactive, cross-company, and self approvers are rejected', async () => {
   assert.equal(await canUserActOnStep(self, { uid: 'employee-1', role: 'employee' }, step, 'employee-1', COMPANY_A, 'annual_leave'), false);
 });
 
+test('manager can submit as an employee but cannot approve their own leave', async () => {
+  const supabase = makeSupabase({
+    users: [{ uid: 'manager-1', role: 'manager', company_id: COMPANY_A, department_id: 'dept-eng', department: 'Engineering', is_active: true }],
+    assignments: [{ user_uid: 'manager-1', department_id: 'dept-eng', is_active: true }],
+    grants: [{ principal_uid: 'manager-1', company_id: COMPANY_A, permission_key: 'approve_leave', granted: true, scope_type: 'DEPARTMENT', department_id: 'dept-eng' }],
+  });
+  const step = { authority_type: 'PERMISSION', required_permission_key: 'approve_leave', required_scope_type: 'DEPARTMENT', department_id: 'dept-eng' };
+  assert.equal(await canUserActOnStep(supabase, { uid: 'manager-1', role: 'manager' }, step, 'manager-1', COMPANY_A, 'annual_leave'), false);
+});
+
 test('workflow eligibility can reuse request-scoped authorization data', async () => {
   const stats = {};
   const supabase = fixture({

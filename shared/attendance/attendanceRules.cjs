@@ -117,7 +117,17 @@ function resolveEffectiveRule(rules, user, companyId, workDate) {
   const date = dateOnly(workDate);
   const candidates = (rules || []).filter((rule) => effectiveDate(rule, date) && ruleScopeMatches(rule, user, companyId));
   const rank = { USER: 3, DEPARTMENT: 2, COMPANY: 1 };
-  return candidates.sort((a, b) => (rank[String(b.scope_type || '').toUpperCase()] || 0) - (rank[String(a.scope_type || '').toUpperCase()] || 0))[0] || null;
+  return candidates.sort((a, b) => {
+    const scopeDelta = (rank[String(b.scope_type || '').toUpperCase()] || 0)
+      - (rank[String(a.scope_type || '').toUpperCase()] || 0);
+    if (scopeDelta) return scopeDelta;
+    const effectiveDelta = String(b.effective_from || b.effectiveFrom || '')
+      .localeCompare(String(a.effective_from || a.effectiveFrom || ''));
+    if (effectiveDelta) return effectiveDelta;
+    const versionDelta = Number(b.version || 0) - Number(a.version || 0);
+    if (versionDelta) return versionDelta;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  })[0] || null;
 }
 
 function resolveScheduleWindow(rule, workDate) {
@@ -199,7 +209,9 @@ function calculateDailySummary({ rule, workDate, records = [], holiday = null, l
   const checkin = sessions[0]?.checkin || null;
   const checkout = completed.length ? completed[completed.length - 1].checkout : null;
   const workedSeconds = completed.reduce((sum, s) => sum + secondsBetween(s.checkin.timestamp, s.checkout.timestamp), 0);
-  const lateSeconds = checkin ? Math.max(0, Math.round((new Date(checkin.timestamp) - new Date(window.start)) / 1000) - window.graceSeconds) : 0;
+  const lateSeconds = checkin && isWorkingDay && !isHoliday
+    ? Math.max(0, Math.round((new Date(checkin.timestamp) - new Date(window.start)) / 1000) - window.graceSeconds)
+    : 0;
   const regularSeconds = Math.min(workedSeconds, window.scheduledDurationSeconds);
   const overtimeEnabled = Boolean(rule.overtime_enabled ?? rule.overtimeEnabled);
   const overtimeWindowSeconds = Math.max(0, Number(rule.overtime_window_minutes ?? rule.overtimeWindowMinutes ?? 0) * 60);
@@ -220,7 +232,7 @@ function calculateDailySummary({ rule, workDate, records = [], holiday = null, l
   else if (isOpen && !deadlinePassed) status = 'OPEN';
   else if (checkout?.checkout_source === 'automatic_schedule') status = 'AUTO_CHECKED_OUT';
   else if (checkin && lateSeconds > 0) status = 'LATE';
-  else if (checkin) status = isWorkingDay ? 'PRESENT' : 'PRESENT_NON_WORKING';
+  else if (checkin) status = isWorkingDay && !isHoliday ? 'PRESENT' : 'PRESENT_NON_WORKING';
   else status = 'ABSENT';
   return {
     work_date: date,

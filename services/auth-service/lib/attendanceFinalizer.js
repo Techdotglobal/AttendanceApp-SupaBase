@@ -8,10 +8,26 @@ const {
   calculateDailySummary,
 } = require('../../../shared/attendance/attendanceRules.cjs');
 const { processAbsenceOutcome } = require('./attendanceAbsenceService');
+const { deriveSelfServiceAttendanceState } = require('../../../shared/attendance/selfServiceState.cjs');
 
 function featureEnabled(company) {
   return company?.app_settings?.attendance_rules_v1_enabled === true
     || company?.app_settings?.attendance?.rulesV1Enabled === true;
+}
+
+function isValidTimezone(timezone) {
+  if (!timezone || typeof timezone !== 'string') return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function resolveTrustedFallbackTimezone(company) {
+  const candidate = company?.app_settings?.company?.timezone;
+  return isValidTimezone(candidate) ? candidate : 'UTC';
 }
 
 function ruleSnapshot(rule, window) {
@@ -94,14 +110,16 @@ function selectEventsForWindow(rows, workDate, window) {
 
   const nextDay = valid.filter((row) => localDateAt(row.timestamp, window.timezone) === nextDate);
   const result = [...sameDay];
-  let open = true;
   for (const row of nextDay) {
     result.push(row);
     const type = String(row?.type || '').toLowerCase().replace(/_/g, '');
-    if (type === 'checkout' && open) {
-      open = false;
+    if (type === 'checkout') {
       break;
     }
+    // A check-in on the following local date starts a different session. Do
+    // not let it replace the overnight session's open check-in while looking
+    // for a delayed/manual checkout.
+    result.pop();
   }
   return result;
 }
@@ -119,7 +137,10 @@ async function loadRules(companyId) {
     .eq('company_id', companyId)
     .order('effective_from', { ascending: false });
   if (error) throw error;
-  return data || [];
+  // Existing invalid legacy rows remain stored, but never become an active
+  // calculation rule. This mirrors the SQL self-service guard's defensive
+  // pg_timezone_names check and lets a lower-scope valid rule/fallback win.
+  return (data || []).filter((rule) => isValidTimezone(rule.timezone));
 }
 
 async function loadUsers(companyId, userUid = null) {
@@ -142,7 +163,10 @@ async function loadPrimaryDepartments(companyId, users) {
     .select('user_uid, department_id, is_primary')
     .eq('company_id', companyId)
     .eq('is_active', true)
-    .in('user_uid', uids);
+    .in('user_uid', uids)
+    .order('is_primary', { ascending: false })
+    .order('created_at', { ascending: true, nullsFirst: false })
+    .order('id', { ascending: true });
   if (error) return new Map(); // Phase 1 compatibility fallback
   const map = new Map();
   for (const row of data || []) {
@@ -357,6 +381,84 @@ async function finalizeCompanyDay({ companyId, workDate, mode = 'active', now = 
   return { enabled: true, company_id: companyId, work_date: dateOnly(workDate), mode, results };
 }
 
+/**
+ * Resolve the caller's current attendance work window for mobile self-service.
+ * This is read-only and reuses the same schedule precedence, timezone window,
+ * overnight pairing, and pure calculator as finalization.
+ */
+async function resolveSelfServiceAttendanceState({ companyId, userUid, now = new Date() }) {
+  const users = await loadUsers(companyId, userUid);
+  const user = users[0];
+  if (!user) return null;
+  const primary = await loadPrimaryDepartments(companyId, users);
+  const subject = { ...user, primary_department_id: primary.get(user.uid) || user.department_id || null };
+  // Preserve the legacy mobile state machine until the tenant explicitly
+  // enables Phase 3 attendance rules.
+  const company = await loadCompany(companyId);
+  const rules = featureEnabled(company) ? await loadRules(companyId) : [];
+  const candidateDates = new Set();
+  for (const rule of rules) {
+    const localDate = localDateAt(now, rule.timezone || 'UTC');
+    candidateDates.add(localDate);
+    candidateDates.add(addDays(localDate, -1));
+    candidateDates.add(addDays(localDate, 1));
+  }
+  const candidates = [];
+  for (const date of candidateDates) {
+    const rule = resolveEffectiveRule(rules, subject, companyId, date);
+    if (!rule) continue;
+    const window = resolveScheduleWindow(rule, date);
+    candidates.push({ date, rule, window, localDate: localDateAt(now, window.timezone) });
+  }
+  const current = candidates
+    .filter((candidate) => now >= candidate.window.start && now <= candidate.window.overtimeDeadline)
+    .sort((a, b) => b.window.start - a.window.start)[0]
+    || candidates
+      .filter((candidate) => candidate.localDate === candidate.date)
+      .sort((a, b) => a.window.start - b.window.start)[0]
+    || null;
+
+  const fallbackRecords = await loadEvents(companyId, userUid, current?.date || dateOnly(now), current?.window || {
+    timezone: 'UTC',
+    end: now,
+  });
+  if (!current) {
+    const fallbackTimezone = resolveTrustedFallbackTimezone(company);
+    const fallbackState = deriveSelfServiceAttendanceState(fallbackRecords, now, fallbackTimezone);
+    return {
+      work_date: localDateAt(now, fallbackTimezone),
+      status: null,
+      completed: fallbackState.completed,
+      can_check_in: fallbackState.canCheckIn,
+      can_check_out: fallbackState.canCheckOut,
+      latest_record: fallbackState.lastRecord,
+      schedule_available: false,
+    };
+  }
+
+  const holiday = await loadHoliday(companyId, current.date);
+  const leave = await loadLeave(companyId, userUid, current.date);
+  const calculated = calculateDailySummary({
+    rule: current.rule,
+    workDate: current.date,
+    records: fallbackRecords,
+    holiday,
+    leave,
+    now,
+    scheduleWindow: current.window,
+  });
+  const completed = Boolean(calculated.checkout) && !calculated.open;
+  return {
+    work_date: current.date,
+    status: calculated.status,
+    completed,
+    can_check_in: !calculated.open && !completed,
+    can_check_out: Boolean(calculated.open),
+    latest_record: calculated.checkout || calculated.checkin || null,
+    schedule_available: true,
+  };
+}
+
 async function markAttendanceSummaryDirty(companyId, userUid, timestamp, relatedTimestamp = null) {
   if (!companyId || !userUid || !timestamp) return;
   const days = [dateOnly(timestamp)];
@@ -385,10 +487,16 @@ module.exports = {
   ruleSnapshot,
   ruleFromSnapshot,
   persistedScheduleWindow,
+  isValidTimezone,
+  resolveTrustedFallbackTimezone,
   selectEventsForWindow,
   localDateAt,
   ensureContext,
   finalizeUserDay,
   finalizeCompanyDay,
+  resolveSelfServiceAttendanceState,
   markAttendanceSummaryDirty,
+  loadRules,
+  loadEvents,
+  loadPrimaryDepartments,
 };

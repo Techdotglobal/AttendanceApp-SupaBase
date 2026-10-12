@@ -9,6 +9,9 @@ const {
   ensureContext,
   persistedScheduleWindow,
   selectEventsForWindow,
+  resolveTrustedFallbackTimezone,
+  isValidTimezone,
+  loadRules,
 } = require('../lib/attendanceFinalizer');
 
 const rule = {
@@ -85,9 +88,45 @@ test('persisted UTC window is used instead of re-resolving changed local times',
   assert.equal(window.scheduledDurationSeconds, 32400);
 });
 
+test('trusted company fallback timezone handles no-schedule UTC midnight safely', () => {
+  assert.equal(isValidTimezone('Asia/Karachi'), true);
+  assert.equal(isValidTimezone('Not/AZone'), false);
+  assert.equal(resolveTrustedFallbackTimezone({ app_settings: { company: { timezone: 'Asia/Karachi' } } }), 'Asia/Karachi');
+  assert.equal(resolveTrustedFallbackTimezone({ app_settings: { company: { timezone: 'Not/AZone' } } }), 'UTC');
+});
+
+test('invalid legacy schedule rules are ignored before runtime resolution', async () => {
+  const originalFrom = config.supabase.from;
+  config.supabase.from = (table) => {
+    assert.equal(table, 'attendance_schedule_rules');
+    const builder = {
+      select() { return this; },
+      eq() { return this; },
+      order() { return this; },
+      then(resolve, reject) {
+        return Promise.resolve({
+          data: [
+            { id: 'invalid', timezone: 'Not/AZone' },
+            { id: 'valid', timezone: 'UTC' },
+          ],
+          error: null,
+        }).then(resolve, reject);
+      },
+    };
+    return builder;
+  };
+  try {
+    const rules = await loadRules('company-a');
+    assert.deepEqual(rules.map((row) => row.id), ['valid']);
+  } finally {
+    config.supabase.from = originalFrom;
+  }
+});
+
 test('overnight selection excludes an unrelated next-day check-in', () => {
   const rows = [
     { id: 'in', type: 'checkin', timestamp: '2026-02-02T22:00:00Z' },
+    { id: 'unrelated-next-in', type: 'checkin', timestamp: '2026-02-03T05:00:00Z' },
     { id: 'out', type: 'checkout', timestamp: '2026-02-03T06:00:00Z' },
     { id: 'next-in', type: 'checkin', timestamp: '2026-02-03T22:00:00Z' },
   ];

@@ -10,6 +10,7 @@ import {
   hasPermission as catalogHasPermission,
   hasAnyPermission as catalogHasAnyPermission,
   canAccessFeature as catalogCanAccessFeature,
+  isEmployeeLikeRole as catalogIsEmployeeLikeRole,
   isSuperAdmin,
   hasTenantWidePeopleAccess,
 } from '@shared/permissions/catalog.cjs';
@@ -18,6 +19,7 @@ export const managerPermissionGroups = MANAGER_PERMISSION_GROUPS;
 export const allManagerPermissions = ALL_MANAGER_PERMISSIONS;
 export const defaultManagerPermissions = DEFAULT_MANAGER_PERMISSIONS;
 export { TENANT_WIDE_PEOPLE_PERMISSIONS, FEATURE_PERMISSIONS, isSuperAdmin, hasTenantWidePeopleAccess };
+export const isEmployeeLikeRole = catalogIsEmployeeLikeRole;
 
 export const PERMISSIONS = {
   CREATE_USER: 'create_user',

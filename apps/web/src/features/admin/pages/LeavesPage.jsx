@@ -18,7 +18,7 @@ import { Dialog } from '../../../shared/components/ui/Dialog';
 import { Select } from '../../../shared/components/ui/Select';
 import { KpiMetricCard, KpiMetricGrid } from '../../../shared/components/ui/KpiMetricCard';
 import { DatePickerField } from './calendarPickers';
-import { canAccessFeature, hasPermission, PERMISSIONS } from '../permissions';
+import { canAccessFeature, hasPermission, isEmployeeLikeRole, PERMISSIONS } from '../permissions';
 import {
   formatEmployeeDisplay,
   formatLeaveStatus,
@@ -187,7 +187,8 @@ export function LeavesPage() {
 
   const canApprove = hasPermission(user, PERMISSIONS.APPROVE_LEAVE);
   const canReject = hasPermission(user, PERMISSIONS.REJECT_LEAVE);
-  const canCreate = user?.role === 'employee' || hasPermission(user, PERMISSIONS.CREATE_LEAVE_REQUEST);
+  const canCreate = isEmployeeLikeRole(user) || hasPermission(user, PERMISSIONS.CREATE_LEAVE_REQUEST);
+  const canCreateForOthers = hasPermission(user, PERMISSIONS.CREATE_LEAVE_REQUEST);
   const canViewUsers = canAccessFeature(user, 'users');
   const today = useMemo(() => startOfDay(new Date()), []);
   const todayKey = toDateKey(today);
@@ -345,7 +346,7 @@ export function LeavesPage() {
     setBalancePreview(null);
     setOverrideAcknowledged(false);
     setCreateOpen(true);
-    if (user?.role === 'employee') {
+    if (!canCreateForOthers) {
       setEmployeeOptions([user]);
       setCreateForm((current) => ({ ...current, employee_uid: user.uid }));
       return;
@@ -424,7 +425,8 @@ export function LeavesPage() {
   }, [createOpen, createForm.employee_uid, createForm.leave_type, createForm.start_date, createEndDate, createForm.is_half_day, rangeHasNoWorkingDays]);
 
   const insufficientBalance = Boolean(balancePreview?.insufficientBalance);
-  const needsOverride = insufficientBalance && user?.role !== 'employee';
+  const isOwnCreateRequest = String(createForm.employee_uid || '') === String(user?.uid || '');
+  const needsOverride = insufficientBalance && !isOwnCreateRequest;
   const canSubmitCreate = !rangeHasNoWorkingDays && (!insufficientBalance || (needsOverride && overrideAcknowledged));
 
   const submitCreate = async (e) => {
@@ -867,7 +869,7 @@ export function LeavesPage() {
         open={createOpen}
         onClose={closeCreate}
         title="New leave request"
-        description={user?.role === 'employee'
+        description={!canCreateForOthers
           ? 'Submit your leave request for approval.'
           : 'File a leave request on behalf of an employee. It follows the same approval workflow as a self-filed request.'}
         footer={
@@ -894,7 +896,7 @@ export function LeavesPage() {
             <Select
               value={createForm.employee_uid}
               onChange={(e) => setCreateForm((f) => ({ ...f, employee_uid: e.target.value }))}
-              disabled={employeesLoading || user?.role === 'employee'}
+              disabled={employeesLoading || !canCreateForOthers}
             >
               <option value="">{employeesLoading ? 'Loading…' : 'Select employee'}</option>
               {employeeOptions.map((row) => (
@@ -972,7 +974,7 @@ export function LeavesPage() {
               <p className="mt-1 text-xs text-amber-700">
                 Available: {balancePreview.remaining} day{balancePreview.remaining === 1 ? '' : 's'} · Requested:{' '}
                 {balancePreview.days} day{balancePreview.days === 1 ? '' : 's'}.{' '}
-                {user?.role === 'employee'
+                {isOwnCreateRequest
                   ? 'Please contact HR if you need an exception.'
                   : 'This request will be created as an HR override.'}
               </p>

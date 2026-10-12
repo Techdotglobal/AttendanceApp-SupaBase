@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import { useAuthStore } from '../../auth/store/authStore';
-import { canAccessFeature, hasAnyPermission, hasPermission, PERMISSIONS } from '../permissions';
+import { canAccessFeature, hasAnyPermission, hasPermission, isEmployeeLikeRole, PERMISSIONS } from '../permissions';
 import { normalizeAttendanceType } from '../utils/analyticsCharts';
 import { formatEmployeeDisplay, formatLeaveTypeLabel } from '../utils/leaveDisplay';
 import { useSilentPoll } from '../../../shared/hooks/useSilentPoll';
@@ -2139,8 +2139,8 @@ export function DashboardPage() {
         PERMISSIONS.EDIT_USER,
         PERMISSIONS.DELETE_USER,
       ]);
-  const canViewAttendance = user?.role === 'employee' || hasAnyPermission(user, [PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
-      const canViewLeaves = user?.role === 'employee' || hasAnyPermission(user, [
+  const canViewAttendance = isEmployeeLikeRole(user) || hasAnyPermission(user, [PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
+      const canViewLeaves = isEmployeeLikeRole(user) || hasAnyPermission(user, [
         PERMISSIONS.VIEW_LEAVE_REQUESTS,
         PERMISSIONS.APPROVE_LEAVE,
         PERMISSIONS.REJECT_LEAVE,

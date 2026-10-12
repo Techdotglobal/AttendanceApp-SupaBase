@@ -185,6 +185,11 @@ const EMPLOYEE_FEATURES = [
   'notifications',
 ];
 
+// A security role also represents an employee account.  Keep this baseline
+// separate from manager grants so role upgrades never remove self-service,
+// while administrative capabilities still require explicit permissions.
+const EMPLOYEE_BASELINE_ROLES = Object.freeze(['employee', 'manager', 'super_admin']);
+
 const REQUEST_TYPES = {
   ANNUAL_LEAVE: 'annual_leave',
   SICK_LEAVE: 'sick_leave',
@@ -231,6 +236,11 @@ function normalizeRole(role) {
   return String(role || '').trim().toLowerCase();
 }
 
+function isEmployeeLikeRole(userOrRole) {
+  const role = typeof userOrRole === 'object' ? userOrRole?.role : userOrRole;
+  return EMPLOYEE_BASELINE_ROLES.includes(normalizeRole(role));
+}
+
 function hasPermission(user, permissionKey) {
   if (!user || !permissionKey) return false;
   const role = normalizeRole(user.role);
@@ -267,6 +277,7 @@ function canAccessFeature(user, feature) {
   if (!user) return false;
   const role = normalizeRole(user.role);
   if (role === 'super_admin') return true;
+  if (isEmployeeLikeRole(role) && EMPLOYEE_FEATURES.includes(feature)) return true;
   if (role === 'employee' && !required.some((key) => hasPermission(user, key))) {
     return EMPLOYEE_FEATURES.includes(feature);
   }
@@ -293,12 +304,14 @@ module.exports = {
   TENANT_WIDE_PEOPLE_PERMISSIONS,
   FEATURE_PERMISSIONS,
   EMPLOYEE_FEATURES,
+  EMPLOYEE_BASELINE_ROLES,
   REQUEST_TYPES,
   LEAVE_TYPE_TO_REQUEST_TYPE,
   APPROVER_ROLES,
   DEFAULT_WORKFLOW_TEMPLATES,
   normalizePermissionKey,
   normalizeRole,
+  isEmployeeLikeRole,
   getGrantScopes,
   hasPermission,
   hasAnyPermission,

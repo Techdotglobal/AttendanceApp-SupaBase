@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy, Ticket, UserCheck } from 'lucide-react';
 import { adminService } from '../services/adminService';
-import { hasPermission, PERMISSIONS } from '../permissions';
+import { hasPermission, isEmployeeLikeRole, PERMISSIONS } from '../permissions';
 import { useAuthStore } from '../../auth/store/authStore';
 import { useSilentPoll, useSessionState } from '../../../shared/hooks/useSilentPoll';
 import { useNotificationStore } from '../../notifications/store/notificationStore';
@@ -144,9 +144,14 @@ export function TicketsPage() {
   const historyRef = useRef(null);
 
   const canManage = hasPermission(user, PERMISSIONS.MANAGE_TICKETS);
-  const canCreate = user?.role === 'employee' || canManage;
+  const canCreate = isEmployeeLikeRole(user) || canManage;
   const canAssign = hasPermission(user, PERMISSIONS.ASSIGN_TICKETS);
   const canClose = hasPermission(user, PERMISSIONS.CLOSE_TICKETS);
+  const canViewTicketDirectory = !isEmployeeLikeRole(user)
+    || hasPermission(user, PERMISSIONS.VIEW_TICKETS)
+    || canManage
+    || canAssign
+    || canClose;
   const assignableUsers = users.filter((row) => row.role !== 'employee');
 
   const load = useCallback(async (silent = false) => {
@@ -155,7 +160,7 @@ export function TicketsPage() {
     try {
       const [ticketData, userData, deptData] = await Promise.all([
         adminService.getTickets(),
-        user?.role === 'employee' ? Promise.resolve([user]) : adminService.getUsers().catch(() => []),
+        canViewTicketDirectory ? adminService.getUsers().catch(() => []) : Promise.resolve([user]),
         adminService.getDepartments().catch(() => []),
       ]);
       setTickets(ticketData || []);
@@ -166,7 +171,7 @@ export function TicketsPage() {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [user?.role, user?.uid]);
+  }, [canViewTicketDirectory, user?.uid]);
 
   useEffect(() => {
     load();
@@ -486,12 +491,12 @@ export function TicketsPage() {
               </div>
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4" data-lenis-prevent>
                 <Select
-                  required={user?.role !== 'employee'}
+                  required={!isEmployeeLikeRole(user)}
                   value={form.category}
                   onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
                   aria-label="Department"
                 >
-                  <option value="">{user?.role === 'employee' ? 'General / unassigned' : 'Department'}</option>
+                  <option value="">{isEmployeeLikeRole(user) ? 'General / unassigned' : 'Department'}</option>
                   {departments.map((dept) => (
                     <option key={dept.id} value={dept.id}>
                       {dept.name}

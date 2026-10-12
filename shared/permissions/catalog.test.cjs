@@ -9,6 +9,7 @@ const {
   hasPermission,
   hasAnyPermission,
   canAccessFeature,
+  isEmployeeLikeRole,
   isSuperAdmin,
 } = require('./catalog.cjs');
 
@@ -16,6 +17,8 @@ const employee = { role: 'employee', permissions: [] };
 const managerNoPerm = { role: 'manager', permissions: [] };
 const managerGeo = { role: 'manager', permissions: ['manage_geofencing'] };
 const superAdmin = { role: 'super_admin' };
+
+const employeeSelfServiceFeatures = ['attendance', 'leaves', 'tickets', 'calendar', 'notifications'];
 
 test('employee has no admin permissions but receives only employee web features', () => {
   assert.equal(hasPermission(employee, 'manage_geofencing'), false);
@@ -48,6 +51,16 @@ test('unknown permission keys are rejected', () => {
 test('null / undefined user is denied', () => {
   assert.equal(hasPermission(null, 'manage_geofencing'), false);
   assert.equal(canAccessFeature(undefined, 'sites'), false);
+});
+
+test('manager and super admin retain the employee self-service baseline', () => {
+  for (const user of [managerNoPerm, superAdmin]) {
+    assert.equal(isEmployeeLikeRole(user), true);
+    for (const feature of employeeSelfServiceFeatures) {
+      assert.equal(canAccessFeature(user, feature), true, `${user.role} should access ${feature}`);
+    }
+  }
+  assert.equal(canAccessFeature(managerNoPerm, 'users'), false);
 });
 
 test('employee can receive an explicit delegated capability without changing system role', () => {

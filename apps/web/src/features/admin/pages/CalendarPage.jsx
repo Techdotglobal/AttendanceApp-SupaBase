@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarOff, CalendarPlus, ChevronLeft, ChevronRight, Clock3, Plus, Search, X } from 'lucide-react';
 import { PermissionGate, useAnyPermission } from '../../../shared/components/PermissionGate';
 import { adminService } from '../services/adminService';
-import { PERMISSIONS } from '../permissions';
+import { isEmployeeLikeRole, PERMISSIONS } from '../permissions';
 import { SlideOverPanel } from '../../../shared/components/SlideOverPanel';
 import { useSilentPoll, useSessionState } from '../../../shared/hooks/useSilentPoll';
 import { EmptyStateBody } from '../../../shared/components/ui/EmptyState';
@@ -512,8 +512,8 @@ export function CalendarPage() {
   const hasAttendancePermission = useAnyPermission([PERMISSIONS.VIEW_ATTENDANCE, PERMISSIONS.MANUAL_ATTENDANCE]);
   const hasLeavePermission = useAnyPermission([PERMISSIONS.VIEW_LEAVE_REQUESTS, PERMISSIONS.APPROVE_LEAVE, PERMISSIONS.REJECT_LEAVE]);
   const canViewWorkModes = useAnyPermission([PERMISSIONS.VIEW_WORK_MODE_REQUESTS, PERMISSIONS.APPROVE_WORK_MODE, PERMISSIONS.REJECT_WORK_MODE]);
-  const canViewAttendance = user?.role === 'employee' || hasAttendancePermission;
-  const canViewLeaves = user?.role === 'employee' || hasLeavePermission;
+  const canViewAttendance = isEmployeeLikeRole(user) || hasAttendancePermission;
+  const canViewLeaves = isEmployeeLikeRole(user) || hasLeavePermission;
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -523,7 +523,9 @@ export function CalendarPage() {
         canViewAttendance ? adminService.getAttendance().catch(() => []) : Promise.resolve([]),
         canViewLeaves ? adminService.getLeaves().catch(() => []) : Promise.resolve([]),
         canViewWorkModes ? adminService.getWorkModeRequests().catch(() => []) : Promise.resolve([]),
-        user?.role === 'employee' ? Promise.resolve([]) : adminService.getUsers().catch(() => []),
+        isEmployeeLikeRole(user) && !hasAttendancePermission && !hasLeavePermission && !canViewWorkModes
+          ? Promise.resolve([])
+          : adminService.getUsers().catch(() => []),
       ]);
       setEvents(eventData || []);
       setAttendanceRows(attendanceData || []);
@@ -536,7 +538,7 @@ export function CalendarPage() {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [canViewAttendance, canViewLeaves, canViewWorkModes, user?.role]);
+  }, [canViewAttendance, canViewLeaves, canViewWorkModes, hasAttendancePermission, hasLeavePermission, user?.role]);
 
   useEffect(() => { load(); }, [load]);
   useSilentPoll(load, 30000, []);

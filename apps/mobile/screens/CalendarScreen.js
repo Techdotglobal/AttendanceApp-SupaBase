@@ -28,9 +28,17 @@ import { useTheme } from '../contexts/ThemeContext';
 import { getApprovedLeaveDates, getAllLeaveDatesWithEmployees } from '../utils/leaveManagement';
 import DatePickerCalendar from '../components/DatePickerCalendar';
 import { isTablet } from '../utils/responsive';
+import { MANAGER_PERMISSIONS, hasAnyPermission, hasPermission, isEmployeeLikeRole } from '../shared/constants/permissions';
 
 export default function CalendarScreen({ navigation, route }) {
   const { user } = route.params;
+  const hasLeaveGrant = hasAnyPermission(user, [
+    MANAGER_PERMISSIONS.VIEW_LEAVE_REQUESTS,
+    MANAGER_PERMISSIONS.APPROVE_LEAVE,
+    MANAGER_PERMISSIONS.REJECT_LEAVE,
+  ]);
+  const selfServiceLeaveOnly = isEmployeeLikeRole(user) && !hasLeaveGrant;
+  const canCreateEvent = user?.role === 'employee' || hasPermission(user, MANAGER_PERMISSIONS.CREATE_EVENTS);
   const { colors } = useTheme();
   const tablet = isTablet();
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -88,7 +96,7 @@ export default function CalendarScreen({ navigation, route }) {
 
   const loadLeaveData = async () => {
     try {
-      if (user.role === 'employee') {
+      if (selfServiceLeaveOnly) {
         // For employees: get their approved leave dates
         const employee = await getEmployeeByUsername(user.username, user.companyId);
         if (employee) {
@@ -132,6 +140,11 @@ export default function CalendarScreen({ navigation, route }) {
     try {
       // Fetch employees directly from Supabase (single source of truth)
       // This ensures we get fresh data and only active employees
+      if (!canCreateEvent) {
+        setEmployees([]);
+        setSelectedEmployees([]);
+        return;
+      }
       const empList = await getEmployeesForCalendar(user);
       setEmployees(empList);
       
@@ -247,7 +260,7 @@ export default function CalendarScreen({ navigation, route }) {
     setSelectedDate(date);
     
     // For admin: if date has leaves, show employee list
-    if (user.role === 'admin' && allLeaveDatesMap[date] && allLeaveDatesMap[date].length > 0) {
+    if (!selfServiceLeaveOnly && allLeaveDatesMap[date] && allLeaveDatesMap[date].length > 0) {
       setSelectedLeaveDate(date);
       setSelectedLeaveEmployees(allLeaveDatesMap[date]);
       setShowLeaveDetailsModal(true);
@@ -610,7 +623,7 @@ export default function CalendarScreen({ navigation, route }) {
           >
             Calendar
           </Text>
-          <TouchableOpacity
+          {canCreateEvent && <TouchableOpacity
             style={{
               backgroundColor: colors.primary,
               borderRadius: 12,
@@ -634,7 +647,7 @@ export default function CalendarScreen({ navigation, route }) {
                 New Event
               </Text>
             </View>
-          </TouchableOpacity>
+          </TouchableOpacity>}
         </View>
       </View>
 

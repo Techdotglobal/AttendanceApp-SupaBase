@@ -43,8 +43,8 @@ function fixture({ approver, targetDepartments = ['dept-eng'], grant, approverAs
   const target = { uid: 'employee-1', company_id: COMPANY_A, role: 'employee', is_active: true, department_id: targetDepartments[0], department: 'Engineering' };
   const users = [target, { ...approver, company_id: approver.company_id || COMPANY_A, is_active: approver.is_active !== false }];
   const assignments = [
-    ...targetDepartments.map((department_id) => ({ user_uid: target.uid, department_id, is_active: true })),
-    ...approverAssignments.map((department_id) => ({ user_uid: approver.uid, department_id, is_active: true })),
+    ...targetDepartments.map((department_id) => ({ user_uid: target.uid, company_id: COMPANY_A, department_id, is_active: true })),
+    ...approverAssignments.map((department_id) => ({ user_uid: approver.uid, company_id: approver.company_id || COMPANY_A, department_id, is_active: true })),
   ];
   return makeSupabase({ users, assignments, stats, grants: grant ? [{ principal_uid: approver.uid, company_id: approver.company_id || COMPANY_A, granted: true, ...grant }] : [] });
 }

@@ -75,13 +75,19 @@ const resolveEmployeeForLeaveRow = (row, maps) => {
  * @param {Array} requests
  * @returns {Promise<Array>}
  */
-const enrichLeaveRequestsWithEmployees = async (supabase, companyId, requests) => {
+const enrichLeaveRequestsWithEmployees = async (supabase, companyId, requests, options = {}) => {
   if (!requests?.length) return [];
 
-  const { data: companyUsers, error: usersError } = await supabase
-    .from('users')
-    .select('id, uid, username, name, department')
-    .eq('company_id', companyId);
+  let companyUsers = options.users;
+  let usersError = null;
+  if (!Array.isArray(companyUsers)) {
+    const result = await supabase
+      .from('users')
+      .select('id, uid, username, name, department')
+      .eq('company_id', companyId);
+    companyUsers = result.data;
+    usersError = result.error;
+  }
 
   if (usersError) {
     console.warn('[leaves] enrichLeaveRequestsWithEmployees users query failed:', usersError.message);

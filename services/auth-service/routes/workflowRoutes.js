@@ -3,7 +3,7 @@
  */
 const express = require('express');
 const { supabase } = require('../config/supabase');
-const { requirePermission, hasPermission, hasAnyPermission, writeAuthorizationAudit } = require('../lib/permissions');
+const { requirePermission, hasPermission, hasAnyPermission, writeAuthorizationAudit, attachPermissionCache } = require('../lib/permissions');
 const { normalizeDepartmentName, toLookupKey } = require('../lib/orgNormalize');
 const {
   ALL_MANAGER_PERMISSIONS,
@@ -106,7 +106,7 @@ async function withTenantContext(req, res) {
     res.status(403).json({ success: false, error: 'Tenant scope required' });
     return null;
   }
-  return { requester: user, companyId: user.company_id };
+  return { requester: attachPermissionCache(user), companyId: user.company_id };
 }
 
 async function requireAdminPermission(requester, key, res) {

@@ -4,7 +4,7 @@
 const express = require('express');
 const { supabase } = require('../config/supabase');
 const { getTenantCompanyId } = require('../lib/tenantScope');
-const { hasAnyPermission, hasPermission, requirePermission, writeAuthorizationAudit, isEmployeeLikeRole } = require('../lib/permissions');
+const { hasAnyPermission, hasPermission, requirePermission, writeAuthorizationAudit, isEmployeeLikeRole, attachPermissionCache } = require('../lib/permissions');
 const { insertNotification, notifyUsernames } = require('../lib/notificationHelper');
 
 const router = express.Router();
@@ -47,7 +47,7 @@ async function withTenantContext(req, res) {
     res.status(403).json({ success: false, error: 'Tenant scope required' });
     return null;
   }
-  return { requester: user, companyId: user.company_id };
+  return { requester: attachPermissionCache(user), companyId: user.company_id };
 }
 
 async function requirePerm(requester, key, res) {

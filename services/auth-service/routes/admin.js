@@ -28,6 +28,7 @@ const {
   requirePermission,
   rejectSelfAdministrativeChange,
   writeAuditLog,
+  attachPermissionCache,
 } = require('../lib/permissions');
 const { enrichLeaveRequestsWithEmployees } = require('../lib/leaveEmployeeResolve');
 const { countBusinessDays } = require('../lib/payrollEngine');
@@ -113,7 +114,7 @@ const ATTENDANCE_READ_PERMISSIONS = ['view_attendance', 'manual_attendance'];
 const { resolveRequester } = require('../lib/resolveRequester');
 
 const withTenantContext = async (req, res) => {
-  const requester = await resolveRequester(req);
+  const requester = attachPermissionCache(await resolveRequester(req));
   if (!requester || !requester.uid || !requester.role) {
     res.status(401).json({ success: false, error: 'Authentication required. Sign in again.' });
     return null;
@@ -1684,6 +1685,16 @@ router.get('/leaves', async (req, res) => {
     }
     const { data, error } = await query;
     if (error) throw error;
+    if (ownScope) {
+      // Own-scoped rows already contain the submitter metadata and do not need
+      // the tenant-wide enrichment query used by the admin queue.
+      return res.status(200).json({ success: true, data: data || [] });
+    }
+    const { data: companyUsers } = await supabase
+      .from('users')
+      .select('id, uid, username, name, department, department_id')
+      .eq('company_id', companyId);
+    const subjectByUid = new Map((companyUsers || []).map((user) => [String(user.uid), user]));
     const visible = [];
     for (const row of data || []) {
       if (ownScope && String(row.employee_uid) === String(requester.uid)) {
@@ -1694,12 +1705,7 @@ router.get('/leaves', async (req, res) => {
         visible.push(row);
         continue;
       }
-      const { data: subject } = await supabase
-        .from('users')
-        .select('uid, department, department_id')
-        .eq('uid', row.employee_uid)
-        .eq('company_id', companyId)
-        .maybeSingle();
+      const subject = subjectByUid.get(String(row.employee_uid));
       if (!subject) continue;
       const target = {
         companyId,
@@ -1723,7 +1729,7 @@ router.get('/leaves', async (req, res) => {
       }
       if (allowed) visible.push(row);
     }
-    const enriched = await enrichLeaveRequestsWithEmployees(supabase, companyId, visible);
+    const enriched = await enrichLeaveRequestsWithEmployees(supabase, companyId, visible, { users: companyUsers || [] });
     res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to fetch leaves' });

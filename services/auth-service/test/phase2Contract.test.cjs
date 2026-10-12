@@ -283,3 +283,51 @@ test('web self-service routes are own-scoped and dashboard queue reads are bound
   assert.match(dashboard, /getWorkModeRequestSummary/);
   assert.doesNotMatch(dashboard, /canViewWorkModes \? adminService\.getWorkModeRequests\(\)/);
 });
+
+test('admin authorization work is request-cached without crossing requester boundaries', async () => {
+  const { attachPermissionCache, hasPermission, hasAnyPermission } = require('../lib/permissions');
+  const calls = {};
+  const supabase = {
+    from(table) {
+      calls[table] = (calls[table] || 0) + 1;
+      const builder = {
+        select: () => builder,
+        eq: () => builder,
+        then: (resolve, reject) => Promise.resolve({
+          data: table === 'permission_grants'
+            ? [{ permission_key: 'view_attendance', granted: true, scope_type: 'COMPANY', department_id: null }]
+            : [],
+          error: null,
+        }).then(resolve, reject),
+      };
+      return builder;
+    },
+  };
+  const first = attachPermissionCache({ uid: 'manager-1', role: 'manager', company_id: 'company-1' });
+  assert.equal(await hasPermission(supabase, first, 'view_attendance'), true);
+  assert.equal(await hasAnyPermission(supabase, { ...first }, ['view_attendance', 'view_leave_requests']), true);
+  assert.equal(calls.permission_grants, 1);
+  assert.equal(calls.manager_permissions, 1);
+
+  const second = attachPermissionCache({ uid: 'manager-2', role: 'manager', company_id: 'company-1' });
+  await hasPermission(supabase, second, 'view_attendance');
+  assert.equal(calls.permission_grants, 2);
+  assert.equal(calls.manager_permissions, 2);
+
+  const otherTenant = attachPermissionCache({ uid: 'manager-1', role: 'manager', company_id: 'company-2' });
+  await hasPermission(supabase, otherTenant, 'view_attendance');
+  assert.equal(calls.permission_grants, 3);
+  assert.equal(calls.manager_permissions, 3);
+});
+
+test('dashboard admin routes reuse request auth context and batch leave subjects', () => {
+  const permissions = read('services/auth-service/lib/permissions.js');
+  const adminRoutes = read('services/auth-service/routes/admin.js');
+  const opsRoutes = read('services/auth-service/routes/opsRoutes.js');
+  assert.match(permissions, /REQUEST_AUTHZ_CACHE/);
+  assert.match(permissions, /scopedUsers/);
+  assert.match(adminRoutes, /attachPermissionCache\(await resolveRequester\(req\)\)/);
+  assert.match(adminRoutes, /subjectByUid = new Map/);
+  assert.match(adminRoutes, /enrichLeaveRequestsWithEmployees\(supabase, companyId, visible, \{ users: companyUsers \|\| \[\] \}\)/);
+  assert.match(opsRoutes, /attachPermissionCache\(user\)/);
+});

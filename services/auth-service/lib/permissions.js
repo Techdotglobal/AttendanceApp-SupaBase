@@ -18,6 +18,33 @@ const {
 
 const SELF_PROTECTION_ERROR = 'You cannot modify your own administrative access.';
 const SCOPE_LEVEL = { OWN: 1, DEPARTMENT: 2, ASSIGNED_DEPARTMENTS: 2, COMPANY: 3 };
+// One cache per resolved HTTP requester. The symbol is copied by object
+// spread, but is omitted from JSON responses, so authorization data remains
+// request-scoped and cannot leak between users or tenants.
+const REQUEST_AUTHZ_CACHE = Symbol('requestAuthzCache');
+
+function createPermissionCache() {
+  return {
+    departments: new Map(),
+    departmentLookups: new Map(),
+    grants: new Map(),
+    scopedUsers: new Map(),
+  };
+}
+
+function attachPermissionCache(requester, cache = createPermissionCache()) {
+  if (!requester || typeof requester !== 'object') return requester;
+  Object.defineProperty(requester, REQUEST_AUTHZ_CACHE, {
+    value: cache,
+    enumerable: true,
+    configurable: true,
+  });
+  return requester;
+}
+
+function requestCacheFor(requester, options = {}) {
+  return options.cache || requester?.[REQUEST_AUTHZ_CACHE] || null;
+}
 
 function normalizeScope(scope) {
   const value = String(scope || '').trim().toUpperCase();
@@ -34,83 +61,90 @@ function legacyScope(permissionKey, user = {}) {
 
 async function getUserDepartmentIds(supabase, uid, fallback = null, options = {}) {
   if (!uid) return [];
-  const cache = options.cache;
+  const cache = requestCacheFor(fallback, options);
+  const companyId = options.companyId || fallback?.company_id || fallback?.companyId || '';
   const fallbackDepartment = fallback?.department_id || fallback?.departmentId || '';
-  const cacheKey = `${String(uid)}:${String(fallbackDepartment)}`;
-  if (cache?.departments?.has(cacheKey)) return cache.departments.get(cacheKey);
-  let resolved = null;
-  try {
-    const { data, error } = await supabase
-      .from('user_department_assignments')
-      .select('department_id, is_primary')
-      .eq('user_uid', uid)
-      .eq('is_active', true)
-      .order('is_primary', { ascending: false });
-    if (!error && Array.isArray(data) && data.length) resolved = data.map((row) => String(row.department_id));
-  } catch (_) {
-    // The additive migration may not have been deployed yet.
-  }
-  if (!resolved) resolved = fallbackDepartment ? [String(fallbackDepartment)] : [];
-  if (cache?.departments) cache.departments.set(cacheKey, resolved);
-  return resolved;
+  const cacheKey = `${String(companyId)}:${String(uid)}:${String(fallbackDepartment)}`;
+  if (cache?.departments?.has(cacheKey)) return await cache.departments.get(cacheKey);
+  const load = (async () => {
+    let resolved = null;
+    try {
+      let query = supabase
+        .from('user_department_assignments')
+        .select('department_id, is_primary')
+        .eq('user_uid', uid)
+        .eq('is_active', true)
+        .order('is_primary', { ascending: false });
+      if (companyId) query = query.eq('company_id', companyId);
+      const { data, error } = await query;
+      if (!error && Array.isArray(data) && data.length) resolved = data.map((row) => String(row.department_id));
+    } catch (_) {
+      // The additive migration may not have been deployed yet.
+    }
+    return resolved || (fallbackDepartment ? [String(fallbackDepartment)] : []);
+  })();
+  if (cache?.departments) cache.departments.set(cacheKey, load);
+  return await load;
 }
 
 async function getEffectiveGrants(supabase, userOrUid, options = {}) {
   const user = typeof userOrUid === 'string' ? { uid: userOrUid } : (userOrUid || {});
   if (!user.uid) return [];
   const companyId = options.companyId || user.company_id || user.companyId || null;
-  const cache = options.cache;
+  const cache = requestCacheFor(user, options);
   const cacheKey = `${String(companyId || '')}:${String(user.uid)}:${String(user.role || '')}`;
-  if (cache?.grants?.has(cacheKey)) return cache.grants.get(cacheKey);
-  const grants = [];
+  if (cache?.grants?.has(cacheKey)) return await cache.grants.get(cacheKey);
+  const load = (async () => {
+    const grants = [];
 
-  try {
-    let query = supabase
-      .from('permission_grants')
-      .select('id, company_id, principal_uid, permission_key, granted, scope_type, department_id, source, delegated_by_uid')
-      .eq('principal_uid', user.uid)
-      .eq('granted', true);
-    if (companyId) query = query.eq('company_id', companyId);
-    const { data, error } = await query;
-    if (!error) grants.push(...(data || []));
-  } catch (_) {
-    // Continue with the legacy projection below.
-  }
-
-  // Always merge legacy rows for managers. This preserves access when a
-  // tenant has not been backfilled or when an older admin client writes only
-  // manager_permissions.
-  if (String(user.role || '').toLowerCase() === 'manager') {
     try {
-      const { data, error } = await supabase
-        .from('manager_permissions')
-        .select('permission_key, granted')
-        .eq('manager_uid', user.uid)
+      let query = supabase
+        .from('permission_grants')
+        .select('id, company_id, principal_uid, permission_key, granted, scope_type, department_id, source, delegated_by_uid')
+        .eq('principal_uid', user.uid)
         .eq('granted', true);
-      if (!error) {
-        for (const row of data || []) {
-          if (!ALL_MANAGER_PERMISSIONS.includes(row.permission_key)) continue;
-          const legacy = legacyScope(row.permission_key, user);
-          if (!grants.some((g) => g.permission_key === row.permission_key && g.scope_type === legacy.scope_type && String(g.department_id || '') === String(legacy.department_id || ''))) {
-            grants.push({
-              principal_uid: user.uid,
-              company_id: companyId,
-              permission_key: row.permission_key,
-              granted: true,
-              ...legacy,
-              source: 'legacy_manager',
-            });
+      if (companyId) query = query.eq('company_id', companyId);
+      const { data, error } = await query;
+      if (!error) grants.push(...(data || []));
+    } catch (_) {
+      // Continue with the legacy projection below.
+    }
+
+    // Always merge legacy rows for managers. This preserves access when a
+    // tenant has not been backfilled or when an older admin client writes only
+    // manager_permissions.
+    if (String(user.role || '').toLowerCase() === 'manager') {
+      try {
+        const { data, error } = await supabase
+          .from('manager_permissions')
+          .select('permission_key, granted')
+          .eq('manager_uid', user.uid)
+          .eq('granted', true);
+        if (!error) {
+          for (const row of data || []) {
+            if (!ALL_MANAGER_PERMISSIONS.includes(row.permission_key)) continue;
+            const legacy = legacyScope(row.permission_key, user);
+            if (!grants.some((g) => g.permission_key === row.permission_key && g.scope_type === legacy.scope_type && String(g.department_id || '') === String(legacy.department_id || ''))) {
+              grants.push({
+                principal_uid: user.uid,
+                company_id: companyId,
+                permission_key: row.permission_key,
+                granted: true,
+                ...legacy,
+                source: 'legacy_manager',
+              });
+            }
           }
         }
+      } catch (_) {
+        // Legacy table is expected to exist, but a failed read must not expose
+        // permissions; the canonical rows above remain authoritative.
       }
-    } catch (_) {
-      // Legacy table is expected to exist, but a failed read must not expose
-      // permissions; the canonical rows above remain authoritative.
     }
-  }
-
-  if (cache?.grants) cache.grants.set(cacheKey, grants);
-  return grants;
+    return grants;
+  })();
+  if (cache?.grants) cache.grants.set(cacheKey, load);
+  return await load;
 }
 
 async function getManagerPermissions(supabase, managerUid) {
@@ -136,13 +170,20 @@ async function scopeMatches(supabase, requester, grant, target = {}, options = {
     : [];
   let targetDepartmentId = target.departmentId || target.department_id || null;
   if (!targetDepartmentId && target.department && requesterCompany) {
-    const { data: department } = await supabase
-      .from('departments')
-      .select('id')
-      .eq('company_id', requesterCompany)
-      .ilike('name', String(target.department).trim())
-      .maybeSingle();
-    targetDepartmentId = department?.id || null;
+    const cache = requestCacheFor(requester, options);
+    const cacheKey = `${requesterCompany}:${String(target.department).trim().toLowerCase()}`;
+    let departmentPromise = cache?.departmentLookups?.get(cacheKey);
+    if (!departmentPromise) {
+      departmentPromise = supabase
+        .from('departments')
+        .select('id')
+        .eq('company_id', requesterCompany)
+        .ilike('name', String(target.department).trim())
+        .maybeSingle()
+        .then(({ data: department }) => department?.id || null);
+      if (cache?.departmentLookups) cache.departmentLookups.set(cacheKey, departmentPromise);
+    }
+    targetDepartmentId = await departmentPromise;
   }
   if (!targetDepartmentId && !targetDepartmentIds.length) return false;
   const targetDepartments = targetDepartmentIds.length ? targetDepartmentIds : [String(targetDepartmentId)];
@@ -166,53 +207,60 @@ async function hasPermission(supabase, requester, permissionKey, target = null, 
   return false;
 }
 
-async function hasAnyPermission(supabase, requester, permissionKeys = [], target = null) {
+async function hasAnyPermission(supabase, requester, permissionKeys = [], target = null, options = {}) {
   for (const key of permissionKeys) {
-    if (await hasPermission(supabase, requester, key, target)) return true;
+    if (await hasPermission(supabase, requester, key, target, options)) return true;
   }
   return false;
 }
 
-async function resolveScopedUserUids(supabase, requester, companyId, permissionKey) {
+async function resolveScopedUserUids(supabase, requester, companyId, permissionKey, options = {}) {
   if (requester?.role === 'super_admin') return null;
-  const { data: users, error } = await supabase
-    .from('users')
-    .select('uid, department, department_id')
-    .eq('company_id', companyId)
-    .eq('is_active', true);
-  if (error) throw error;
-  let assignments = [];
-  try {
-    const { data } = await supabase
-      .from('user_department_assignments')
-      .select('user_uid, department_id')
+  const cache = requestCacheFor(requester, options);
+  const cacheKey = `${String(companyId)}:${String(requester?.uid || '')}:${String(permissionKey)}`;
+  if (cache?.scopedUsers?.has(cacheKey)) return await cache.scopedUsers.get(cacheKey);
+  const load = (async () => {
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('uid, department, department_id')
       .eq('company_id', companyId)
-      .eq('is_active', true)
-      .in('user_uid', (users || []).map((user) => user.uid));
-    assignments = data || [];
-  } catch (_) {
-    assignments = [];
-  }
-  const departmentMap = new Map();
-  for (const assignment of assignments) {
-    const key = String(assignment.user_uid);
-    const list = departmentMap.get(key) || [];
-    list.push(String(assignment.department_id));
-    departmentMap.set(key, list);
-  }
-  const visible = [];
-  for (const user of users || []) {
-    if (await hasPermission(supabase, { ...requester, company_id: companyId }, permissionKey, {
-      companyId,
-      targetUid: user.uid,
-      userUid: user.uid,
-      employeeUid: user.uid,
-      departmentId: user.department_id,
-      departmentIds: departmentMap.get(String(user.uid)) || undefined,
-      department: user.department,
-    })) visible.push(user.uid);
-  }
-  return visible;
+      .eq('is_active', true);
+    if (error) throw error;
+    let assignments = [];
+    try {
+      const { data } = await supabase
+        .from('user_department_assignments')
+        .select('user_uid, department_id')
+        .eq('company_id', companyId)
+        .eq('is_active', true)
+        .in('user_uid', (users || []).map((user) => user.uid));
+      assignments = data || [];
+    } catch (_) {
+      assignments = [];
+    }
+    const departmentMap = new Map();
+    for (const assignment of assignments) {
+      const key = String(assignment.user_uid);
+      const list = departmentMap.get(key) || [];
+      list.push(String(assignment.department_id));
+      departmentMap.set(key, list);
+    }
+    const visible = [];
+    for (const user of users || []) {
+      if (await hasPermission(supabase, { ...requester, company_id: companyId }, permissionKey, {
+        companyId,
+        targetUid: user.uid,
+        userUid: user.uid,
+        employeeUid: user.uid,
+        departmentId: user.department_id,
+        departmentIds: departmentMap.get(String(user.uid)) || undefined,
+        department: user.department,
+      }, options)) visible.push(user.uid);
+    }
+    return visible;
+  })();
+  if (cache?.scopedUsers) cache.scopedUsers.set(cacheKey, load);
+  return await load;
 }
 
 async function requirePermission(supabase, requester, permissionKey, res, target = null) {
@@ -402,4 +450,6 @@ module.exports = {
   upsertPermissionGrant,
   writeAuthorizationAudit,
   writeAuditLog,
+  createPermissionCache,
+  attachPermissionCache,
 };

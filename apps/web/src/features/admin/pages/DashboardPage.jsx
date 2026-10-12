@@ -2126,6 +2126,7 @@ export function DashboardPage() {
   const [attendance, setAttendance] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [workModes, setWorkModes] = useState([]);
+  const [workModePendingCount, setWorkModePendingCount] = useState(0);
   const [activityItems, setActivityItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -2159,19 +2160,22 @@ export function DashboardPage() {
     try {
       const canViewStats = hasPermission(user, PERMISSIONS.VIEW_HR_DASHBOARD);
 
-      const [statsData, users, attendanceRows, leaveRows, ticketRows, workModeRows] = await Promise.all([
+      const [statsData, users, attendanceRows, leaveRows, ticketRows, workModeSummary] = await Promise.all([
         canViewStats ? adminService.getStats() : Promise.resolve(null),
         canViewUsers ? adminService.getUsers() : Promise.resolve([]),
         canViewAttendance ? adminService.getAttendance() : Promise.resolve([]),
         canViewLeaves ? adminService.getLeaves() : Promise.resolve([]),
         canViewTickets ? adminService.getTickets() : Promise.resolve([]),
-        canViewWorkModes ? adminService.getWorkModeRequests() : Promise.resolve([]),
+        canViewWorkModes ? adminService.getWorkModeRequestSummary() : Promise.resolve({ pendingCount: 0 }),
       ]);
 
       let nextUsers = users || [];
       let nextAttendance = attendanceRows || [];
       let nextLeaves = leaveRows || [];
-      let nextWorkModes = workModeRows || [];
+      // The dashboard only needs a queue count. Loading the full work-mode queue
+      // here caused one approval/eligibility read per request and could exceed the
+      // web request budget. The dedicated Work modes page still loads full rows.
+      let nextWorkModes = [];
       let nextStats = statsData || {
         totalEmployees: nextUsers.length,
         activeUsers: nextUsers.filter((u) => u.is_active).length,
@@ -2185,6 +2189,7 @@ export function DashboardPage() {
       setLeaves(nextLeaves);
       setTickets(ticketRows || []);
       setWorkModes(nextWorkModes);
+      setWorkModePendingCount(Number(workModeSummary?.pendingCount || 0));
       const nameByKey = new Map();
       for (const row of nextUsers) {
         for (const key of userKeys(row)) nameByKey.set(key, row.name || row.username);
@@ -2768,14 +2773,14 @@ export function DashboardPage() {
   const pendingCounts = useMemo(
     () => ({
       leaves: leaves.filter((row) => String(row.status || '').toLowerCase() === 'pending').length,
-      workModes: workModes.filter((row) => String(row.status || '').toLowerCase() === 'pending').length,
+      workModes: workModePendingCount,
       tickets: tickets.filter((ticket) => {
         const status = String(ticket.status || '').toLowerCase();
         const priority = String(ticket.priority || '').toLowerCase();
         return status !== 'closed' && status !== 'resolved' && (priority === 'high' || priority === 'urgent');
       }).length,
     }),
-    [leaves, workModes, tickets]
+    [leaves, workModePendingCount, tickets]
   );
 
   const presentToday = attendanceToday.uniqueCheckins;

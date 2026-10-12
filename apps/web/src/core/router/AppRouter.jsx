@@ -32,6 +32,7 @@ import { PayrollDashboardPage } from '../../features/admin/pages/PayrollDashboar
 import { PayrollPeriodPage } from '../../features/admin/pages/PayrollPeriodPage';
 import { PayrollEmployeesPage } from '../../features/admin/pages/PayrollEmployeesPage';
 import { PayrollReportsPage } from '../../features/admin/pages/PayrollReportsPage';
+import { SelfServicePage } from '../../features/admin/pages/SelfServicePage';
 
 function Protected({ children }) {
   const { user, loading } = useAuthStore();
@@ -111,6 +112,7 @@ export function AppRouter() {
       {/* Pathless layout: keeps /users, /attendance, etc. while freeing / for marketing */}
       <Route element={<Protected><PortalIcons><AppShell /></PortalIcons></Protected>}>
         <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="my-dashboard" element={<PermissionRoute feature="dashboard"><SelfServicePage section="dashboard" /></PermissionRoute>} />
         <Route path="users" element={<PermissionRoute feature="users"><UsersPage /></PermissionRoute>} />
         <Route path="departments" element={<PermissionRoute feature="departments"><DepartmentsPage /></PermissionRoute>} />
         <Route path="analytics" element={<PermissionRoute feature="analytics"><AnalyticsPage /></PermissionRoute>} />
@@ -119,12 +121,17 @@ export function AppRouter() {
         <Route path="manager-permissions" element={<PermissionRoute feature="permissions" superAdminOnly><ManagerPermissionsPage /></PermissionRoute>} />
         <Route path="sites" element={<PermissionRoute feature="sites"><SitesPage /></PermissionRoute>} />
         <Route path="attendance" element={<PermissionRoute feature="attendance"><AttendancePage /></PermissionRoute>} />
+        <Route path="my-attendance" element={<PermissionRoute feature="attendance"><SelfServicePage section="attendance" /></PermissionRoute>} />
         <Route path="attendance-rules" element={<PermissionRoute feature="attendanceRules"><AttendanceRulesPage /></PermissionRoute>} />
         <Route path="leaves" element={<PermissionRoute feature="leaves"><LeavesPage /></PermissionRoute>} />
+        <Route path="my-leaves" element={<PermissionRoute feature="leaves"><SelfServicePage section="leaves" /></PermissionRoute>} />
         <Route path="work-mode-requests" element={<PermissionRoute feature="workModeRequests"><WorkModeRequestsPage /></PermissionRoute>} />
+        <Route path="my-work-modes" element={<PermissionRoute feature="leaves"><SelfServicePage section="workModes" /></PermissionRoute>} />
         <Route path="approval-workflows" element={<PermissionRoute feature="approvalWorkflows" superAdminOnly><ApprovalWorkflowsPage /></PermissionRoute>} />
         <Route path="tickets" element={<PermissionRoute feature="tickets"><TicketsPage /></PermissionRoute>} />
+        <Route path="my-tickets" element={<PermissionRoute feature="tickets"><SelfServicePage section="tickets" /></PermissionRoute>} />
         <Route path="calendar" element={<PermissionRoute feature="calendar"><CalendarPage /></PermissionRoute>} />
+        <Route path="my-calendar" element={<PermissionRoute feature="calendar"><SelfServicePage section="calendar" /></PermissionRoute>} />
         <Route path="notifications" element={<PermissionRoute feature="notifications"><NotificationsPage /></PermissionRoute>} />
         <Route path="payroll" element={<PermissionRoute feature="payroll" superAdminOnly><PayrollDashboardPage /></PermissionRoute>} />
         <Route path="payroll/employees" element={<PermissionRoute feature="payroll" superAdminOnly><PayrollEmployeesPage /></PermissionRoute>} />

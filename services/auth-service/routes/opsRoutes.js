@@ -109,6 +109,7 @@ router.get('/tickets', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  const ownScope = String(req.query.scope || '').toLowerCase() === 'own';
   const isEmployee = isEmployeeLikeRole(requester);
   const hasTicketGrant = await hasAnyPermission(supabase, requester, ['view_tickets', 'manage_tickets', 'assign_tickets', 'close_tickets']);
   if (!isEmployee && !hasTicketGrant && !(await requireAnyPerm(requester, ['view_tickets', 'manage_tickets', 'assign_tickets', 'close_tickets'], res))) return;
@@ -118,13 +119,13 @@ router.get('/tickets', async (req, res) => {
       .select('*')
       .eq('company_id', companyId)
       .order('created_at', { ascending: false });
-    if (isEmployee && !hasTicketGrant) {
+    if (ownScope || (isEmployee && !hasTicketGrant)) {
       query = query.eq('created_by_uid', requester.uid);
     }
     const { data, error } = await query;
     if (error) throw error;
     let rows = data || [];
-    if (requester.role === ROLES.MANAGER && !hasTicketGrant) {
+    if (!ownScope && requester.role === ROLES.MANAGER && !hasTicketGrant) {
       const { data: depts } = await supabase
         .from('departments')
         .select('id, name')
@@ -138,7 +139,7 @@ router.get('/tickets', async (req, res) => {
           t.assigned_to === requester.username
       );
     }
-    if (hasTicketGrant && requester.role !== ROLES.SUPER_ADMIN) {
+    if (!ownScope && hasTicketGrant && requester.role !== ROLES.SUPER_ADMIN) {
       const creatorUids = [...new Set(rows.map((ticket) => ticket.created_by_uid).filter(Boolean))];
       const { data: creators } = creatorUids.length
         ? await supabase.from('users').select('uid, department, department_id').eq('company_id', companyId).in('uid', creatorUids)
@@ -348,6 +349,7 @@ router.get('/calendar-events', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  const ownScope = String(req.query.scope || '').toLowerCase() === 'own';
   const isEmployee = isEmployeeLikeRole(requester);
   const hasCalendarGrant = await hasAnyPermission(supabase, requester, ['create_events', 'edit_events', 'delete_events']);
   if (!isEmployee && !hasCalendarGrant && !(await requireAnyPerm(requester, ['create_events', 'edit_events', 'delete_events'], res))) return;
@@ -358,7 +360,7 @@ router.get('/calendar-events', async (req, res) => {
       .eq('company_id', companyId)
       .order('date', { ascending: true });
     if (error) throw error;
-    const events = isEmployee && !hasCalendarGrant
+    const events = ownScope || (isEmployee && !hasCalendarGrant)
       ? (data || []).filter((event) => {
           const visibility = String(event.visibility || 'all').toLowerCase();
           if (visibility === 'none') return event.created_by_uid === requester.uid;

@@ -335,8 +335,11 @@ export const adminService = {
     ),
   assignEmployeeSite: async (payload) =>
     executeApiCall(async () => (await api.post(apiUrl('/api/admin/employee-sites'), payload)).data, 'Failed to assign site'),
-  getAttendance: async () =>
-    executeApiCall(async () => (await api.get(apiUrl('/api/admin/attendance'))).data.data, 'Failed to load attendance'),
+  getAttendance: async (options = {}) =>
+    executeApiCall(async () => {
+      const query = options.scope ? `?scope=${encodeURIComponent(options.scope)}` : '';
+      return (await api.get(apiUrl(`/api/admin/attendance${query}`))).data.data;
+    }, 'Failed to load attendance'),
   getAttendanceRules: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/attendance/rules'))).data.data, 'Failed to load attendance rules'),
   createAttendanceRule: async (payload) =>
@@ -367,12 +370,16 @@ export const adminService = {
     executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/attendance/${id}`), payload)).data.data, 'Failed to update attendance record'),
   deleteAttendance: async (id) =>
     executeApiCall(async () => (await api.delete(apiUrl(`/api/admin/attendance/${id}`))).data, 'Failed to delete attendance record'),
-  getLeaves: async () => {
+  getLeaves: async (options = {}) => {
     const leaves = await executeApiCall(
-      async () => (await api.get(apiUrl('/api/admin/leaves'))).data.data,
+      async () => {
+        const query = options.scope ? `?scope=${encodeURIComponent(options.scope)}` : '';
+        return (await api.get(apiUrl(`/api/admin/leaves${query}`))).data.data;
+      },
       'Failed to load leaves'
     );
     if (!leaves?.length) return leaves || [];
+    if (options.scope === 'own') return leaves;
     const needsEnrichment = leaves.some((row) => !row.employee_name && !row.employeeName);
     if (!needsEnrichment) return leaves;
     try {
@@ -468,8 +475,15 @@ export const adminService = {
     executeApiCall(async () => (await api.get(apiUrl('/api/admin/approval-workflows'))).data.data, 'Failed to load workflows'),
   updateApprovalWorkflow: async (requestType, payload) =>
     executeApiCall(async () => (await api.put(apiUrl(`/api/admin/approval-workflows/${requestType}`), payload)).data.data, 'Failed to save workflow'),
-  getWorkModeRequests: async () =>
-    executeApiCall(async () => (await api.get(apiUrl('/api/admin/work-mode-requests'))).data.data, 'Failed to load work mode requests'),
+  getWorkModeRequests: async (options = {}) =>
+    executeApiCall(async () => {
+      const query = options.scope ? `?scope=${encodeURIComponent(options.scope)}` : '';
+      return (await api.get(apiUrl(`/api/admin/work-mode-requests${query}`))).data.data;
+    }, 'Failed to load work mode requests'),
+  getWorkModeRequestSummary: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/admin/work-mode-requests?summary=true'))).data.summary || { pendingCount: 0 }, 'Failed to load work mode summary'),
+  getMyWorkModeRequests: async () =>
+    executeApiCall(async () => (await api.get(apiUrl('/api/auth/work-mode-requests/mine'))).data.data, 'Failed to load your work mode requests'),
   processWorkModeRequest: async (id, payload) =>
     executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/work-mode-requests/${id}`), payload)).data, 'Failed to process request'),
   getEmployeeSites: async (employeeUid) =>
@@ -482,8 +496,11 @@ export const adminService = {
   refreshMyPermissions: async () =>
     executeApiCall(async () => (await api.get(apiUrl('/api/auth/me/permissions'))).data.data, 'Failed to refresh permissions'),
 
-  getTickets: async () =>
-    executeApiCall(async () => (await api.get(apiUrl('/api/admin/tickets'))).data.data, 'Failed to load tickets'),
+  getTickets: async (options = {}) =>
+    executeApiCall(async () => {
+      const query = options.scope ? `?scope=${encodeURIComponent(options.scope)}` : '';
+      return (await api.get(apiUrl(`/api/admin/tickets${query}`))).data.data;
+    }, 'Failed to load tickets'),
   createTicket: async (payload) =>
     executeApiCall(async () => (await api.post(apiUrl('/api/admin/tickets'), payload)).data.data, 'Failed to create ticket'),
   assignTicket: async (id, assigned_to) =>
@@ -493,8 +510,11 @@ export const adminService = {
   reopenTicket: async (id) =>
     executeApiCall(async () => (await api.patch(apiUrl(`/api/admin/tickets/${id}/reopen`), {})).data.data, 'Failed to reopen ticket'),
 
-  getCalendarEvents: async () =>
-    executeApiCall(async () => (await api.get(apiUrl('/api/admin/calendar-events'))).data.data, 'Failed to load events'),
+  getCalendarEvents: async (options = {}) =>
+    executeApiCall(async () => {
+      const query = options.scope ? `?scope=${encodeURIComponent(options.scope)}` : '';
+      return (await api.get(apiUrl(`/api/admin/calendar-events${query}`))).data.data;
+    }, 'Failed to load events'),
   createCalendarEvent: async (payload) =>
     executeApiCall(async () => (await api.post(apiUrl('/api/admin/calendar-events'), payload)).data.data, 'Failed to create event'),
   updateCalendarEvent: async (id, payload) =>

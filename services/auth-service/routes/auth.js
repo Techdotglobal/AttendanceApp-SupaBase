@@ -1708,6 +1708,7 @@ router.get('/work-mode-requests/mine', async (req, res) => {
     const { data, error } = await supabase
       .from('work_mode_requests')
       .select('*')
+      .eq('company_id', requester.company_id)
       .eq('employee_uid', requester.uid)
       .order('requested_at', { ascending: false })
       .limit(20);

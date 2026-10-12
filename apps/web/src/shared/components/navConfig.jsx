@@ -30,6 +30,18 @@ export const NAV_SECTIONS = [
     items: [{ to: '/dashboard', label: 'Dashboard', icon: LayoutGrid }],
   },
   {
+    id: 'self-service',
+    label: 'My workspace',
+    items: [
+      { to: '/my-dashboard', label: 'My dashboard', feature: 'dashboard', icon: LayoutGrid },
+      { to: '/my-attendance', label: 'My attendance', feature: 'attendance', icon: CalendarCheck2 },
+      { to: '/my-leaves', label: 'My leave', feature: 'leaves', icon: CalendarClock },
+      { to: '/my-work-modes', label: 'My work modes', feature: 'leaves', icon: Laptop2 },
+      { to: '/my-tickets', label: 'My tickets', feature: 'tickets', icon: Ticket },
+      { to: '/my-calendar', label: 'My calendar', feature: 'calendar', icon: CalendarDays },
+    ],
+  },
+  {
     id: 'workforce',
     label: 'Workforce',
     items: [

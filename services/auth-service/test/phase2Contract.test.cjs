@@ -253,3 +253,33 @@ test('manager and super-admin accounts retain employee self-service paths', () =
   assert.match(authRoutes, /attendance\/self-state/);
   assert.match(gatewayAuth, /attendance\/self-state/);
 });
+
+test('web self-service routes are own-scoped and dashboard queue reads are bounded', () => {
+  const router = read('apps/web/src/core/router/AppRouter.jsx');
+  const nav = read('apps/web/src/shared/components/navConfig.jsx');
+  const selfService = read('apps/web/src/features/admin/pages/SelfServicePage.jsx');
+  const adminService = read('apps/web/src/features/admin/services/adminService.js');
+  const adminRoutes = read('services/auth-service/routes/admin.js');
+  const opsRoutes = read('services/auth-service/routes/opsRoutes.js');
+  const workflowRoutes = read('services/auth-service/routes/workflowRoutes.js');
+  const authRoutes = read('services/auth-service/routes/auth.js');
+  const dashboard = read('apps/web/src/features/admin/pages/DashboardPage.jsx');
+  assert.match(router, /path="my-attendance"/);
+  assert.match(router, /path="my-leaves"/);
+  assert.match(router, /path="my-work-modes"/);
+  assert.match(router, /path="my-tickets"/);
+  assert.match(router, /path="my-calendar"/);
+  assert.match(nav, /label: 'My attendance'/);
+  assert.match(nav, /label: 'My work modes'/);
+  assert.match(selfService, /getAttendance\(\{ scope: 'own' \}\)/);
+  assert.match(selfService, /getLeaves\(\{ scope: 'own' \}\)/);
+  assert.match(selfService, /getMyWorkModeRequests/);
+  assert.match(adminService, /getWorkModeRequestSummary/);
+  assert.match(adminRoutes, /const ownScope = String\(req\.query\.scope/);
+  assert.match(opsRoutes, /if \(ownScope \|\| \(isEmployee && !hasTicketGrant\)\)/);
+  assert.match(workflowRoutes, /summaryOnly/);
+  assert.match(workflowRoutes, /requester\.role !== ROLES\.SUPER_ADMIN/);
+  assert.match(authRoutes, /work_mode_requests'[\s\S]*eq\('company_id', requester\.company_id\)/);
+  assert.match(dashboard, /getWorkModeRequestSummary/);
+  assert.doesNotMatch(dashboard, /canViewWorkModes \? adminService\.getWorkModeRequests\(\)/);
+});

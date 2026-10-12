@@ -378,6 +378,8 @@ router.get('/work-mode-requests', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  const ownScope = String(req.query.scope || '').toLowerCase() === 'own';
+  const summaryOnly = String(req.query.summary || '').toLowerCase() === 'true';
   const canView = await hasPermission(supabase, requester, 'view_work_mode_requests');
   const canApprove = await hasAnyPermission(supabase, requester, ['approve_work_mode', 'reject_work_mode']);
   if (!canView && !canApprove && requester.role !== ROLES.SUPER_ADMIN) {
@@ -385,6 +387,31 @@ router.get('/work-mode-requests', async (req, res) => {
     return;
   }
   try {
+    if (ownScope) {
+      const { data, error } = await supabase
+        .from('work_mode_requests')
+        .select('*')
+        .eq('company_id', companyId)
+        .eq('employee_uid', requester.uid)
+        .order('requested_at', { ascending: false });
+      if (error) throw error;
+      return res.json({ success: true, data: data || [] });
+    }
+    if (summaryOnly) {
+      // The dashboard only needs a lightweight queue signal. A tenant-wide
+      // count is safe for super admins; scoped managers must use the full
+      // workflow page, which evaluates each request's approval authority.
+      if (requester.role !== ROLES.SUPER_ADMIN) {
+        return res.json({ success: true, data: [], summary: { pendingCount: 0 } });
+      }
+      const { count, error } = await supabase
+        .from('work_mode_requests')
+        .select('id', { count: 'exact', head: true })
+        .eq('company_id', companyId)
+        .eq('status', 'pending');
+      if (error) throw error;
+      return res.json({ success: true, data: [], summary: { pendingCount: Number(count || 0) } });
+    }
     const { data, error } = await supabase
       .from('work_mode_requests')
       .select('*')

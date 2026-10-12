@@ -1438,6 +1438,7 @@ router.get('/attendance', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  const ownScope = String(req.query.scope || '').toLowerCase() === 'own';
   const isEmployee = isEmployeeLikeRole(requester);
   const hasAttendanceGrant = await hasAnyPermission(supabase, requester, ATTENDANCE_READ_PERMISSIONS);
   if (!isEmployee && !hasAttendanceGrant && !(await requireAnyAdminPermission(requester, ATTENDANCE_READ_PERMISSIONS, res))) return;
@@ -1450,7 +1451,7 @@ router.get('/attendance', async (req, res) => {
       .select('*')
       .eq('company_id', companyId)
       .order('timestamp', { ascending: false });
-    if (isEmployee && !hasAttendanceGrant) {
+    if (ownScope || (isEmployee && !hasAttendanceGrant)) {
       query = supabase
         .from('attendance_records')
         .select('*')
@@ -1659,6 +1660,7 @@ router.get('/leaves', async (req, res) => {
   const ctx = await withTenantContext(req, res);
   if (!ctx) return;
   const { requester, companyId } = ctx;
+  const ownScope = String(req.query.scope || '').toLowerCase() === 'own';
   const isEmployee = isEmployeeLikeRole(requester);
   const hasLeaveViewGrant = await hasPermission(supabase, requester, 'view_leave_requests');
   const hasApprovalGrant = await hasAnyPermission(supabase, requester, ['approve_leave', 'reject_leave']);
@@ -1672,7 +1674,7 @@ router.get('/leaves', async (req, res) => {
       .select('*')
       .eq('company_id', companyId)
       .order('requested_at', { ascending: false });
-    if (isEmployee && !hasLeaveViewGrant && !hasApprovalGrant) {
+    if (ownScope || (isEmployee && !hasLeaveViewGrant && !hasApprovalGrant)) {
       query = supabase
         .from('leave_requests')
         .select('*')
@@ -1684,6 +1686,10 @@ router.get('/leaves', async (req, res) => {
     if (error) throw error;
     const visible = [];
     for (const row of data || []) {
+      if (ownScope && String(row.employee_uid) === String(requester.uid)) {
+        visible.push(row);
+        continue;
+      }
       if (isEmployee && !hasLeaveViewGrant && !hasApprovalGrant && String(row.employee_uid) === String(requester.uid)) {
         visible.push(row);
         continue;

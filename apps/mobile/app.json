@@ -2,7 +2,7 @@
   "expo": {
     "name": "hadir.ai",
     "slug": "attendance-app",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "runtimeVersion": "exposdk:54.0.0",
     "updates": {
       "url": "https://u.expo.dev/3517a51b-4c71-476d-8c07-d44f1189df72",
@@ -24,7 +24,7 @@
     ],
     "ios": {
       "bundleIdentifier": "com.techdotglobal.hadirai",
-      "buildNumber": "24",
+      "buildNumber": "25",
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We use your location to verify your attendance when you check in or check out.",
@@ -36,7 +36,7 @@
     },
     "android": {
       "package": "com.attendanceapphadirai",
-      "versionCode": 11000001,
+      "versionCode": 11000002,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#00000000"

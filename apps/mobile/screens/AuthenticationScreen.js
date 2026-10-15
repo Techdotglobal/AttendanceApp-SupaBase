@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { validateCheckInLocation } from '../features/geofencing';
 import { isLocationRequiredForCheckIn } from '../features/geofencing/utils/workModeRules';
 import { getUserAttendanceRecords, getOfflineQueuedRecordsForUser, getSelfServiceAttendanceState, saveAttendanceRecord } from '../utils/storage';
+const { normalizeAuthoritativeSelfServiceState } = require('../../../shared/attendance/selfServiceState.cjs');
 const { deriveSelfServiceAttendanceState } = require('../../../shared/attendance/selfServiceState.cjs');
 import {
   verifyFace,
@@ -389,13 +390,9 @@ export default function AuthenticationScreen({ navigation, route }) {
       let state = deriveSelfServiceAttendanceState([...(records || []), ...(queuedRecords || [])]);
       try {
         const remoteState = await getSelfServiceAttendanceState(user.username, user);
-        if (remoteState?.schedule_available) {
-          state = {
-            canCheckIn: remoteState.can_check_in === true,
-            canCheckOut: remoteState.can_check_out === true,
-            completed: remoteState.completed === true,
-            lastRecord: remoteState.latest_record || state.lastRecord,
-          };
+        const authoritative = normalizeAuthoritativeSelfServiceState(remoteState, state);
+        if (authoritative) {
+          state = authoritative;
         }
       } catch (stateError) {
         if (__DEV__) console.warn('[AuthenticationScreen] self-service state fallback:', stateError?.message || stateError);
@@ -476,7 +473,7 @@ export default function AuthenticationScreen({ navigation, route }) {
         authMethod: authMethod,
       };
 
-      const saveResult = await saveAttendanceRecord(attendanceRecord);
+      const saveResult = await saveAttendanceRecord(attendanceRecord, user);
 
       if (!saveResult?.success) {
         Alert.alert(

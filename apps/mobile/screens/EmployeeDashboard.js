@@ -49,7 +49,10 @@ import Trademark from '../components/Trademark';
 import HamburgerButton from '../shared/components/HamburgerButton';
 import { useNavigation } from '@react-navigation/native';
 import { useStaleWhileRevalidate } from '../shared/hooks/useStaleWhileRevalidate';
-const { deriveSelfServiceAttendanceState } = require('../../../shared/attendance/selfServiceState.cjs');
+const {
+  deriveSelfServiceAttendanceState,
+  normalizeAuthoritativeSelfServiceState,
+} = require('../../../shared/attendance/selfServiceState.cjs');
 
 export default function EmployeeDashboard({ route }) {
   const navigation = useNavigation();
@@ -110,15 +113,21 @@ export default function EmployeeDashboard({ route }) {
         const sortedRecords = all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
         setLastRecord(sortedRecords[0]);
         setAttendanceState(deriveSelfServiceAttendanceState(all));
+      } else {
+        setLastRecord(null);
+        setAttendanceState({ canCheckIn: true, canCheckOut: false, completed: false });
       }
       try {
         const remoteState = await getSelfServiceAttendanceState(user.username, user);
-        if (remoteState?.schedule_available) {
-          setAttendanceState({
-            canCheckIn: remoteState.can_check_in === true,
-            canCheckOut: remoteState.can_check_out === true,
-            completed: remoteState.completed === true,
-          });
+        const authoritative = normalizeAuthoritativeSelfServiceState(
+          remoteState,
+          deriveSelfServiceAttendanceState(all),
+        );
+        if (authoritative) {
+          setAttendanceState(authoritative);
+          if (Object.prototype.hasOwnProperty.call(remoteState || {}, 'latest_record')) {
+            setLastRecord(authoritative.lastRecord);
+          }
         }
       } catch (stateError) {
         if (__DEV__) console.warn('[EmployeeDashboard] self-service state fallback:', stateError?.message || stateError);
@@ -126,7 +135,7 @@ export default function EmployeeDashboard({ route }) {
     } catch (error) {
       console.error('Error loading last record:', error);
     }
-  }, [user?.username]);
+  }, [user?.username, user?.uid, user?.companyId, user?.company_id, user?.role]);
 
   const loadEmployeeData = useCallback(async () => {
     try {

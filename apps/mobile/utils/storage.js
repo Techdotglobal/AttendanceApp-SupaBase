@@ -6,7 +6,10 @@ import { fetchSessionUserCompanyId, fetchCompanyUserUids, requireValidCompanyId 
 import { TENANT_RUNTIME_DIAG, tenantDiagLog } from '../core/debug/tenantRuntimeDiag';
 import { API_GATEWAY_URL } from '../core/config/api';
 import { buildGatewayAuthHeaders } from '../core/api/gatewayRequest';
-const { deriveSelfServiceAttendanceState } = require('../../../shared/attendance/selfServiceState.cjs');
+const {
+  deriveSelfServiceAttendanceState,
+  normalizeAuthoritativeSelfServiceState,
+} = require('../../../shared/attendance/selfServiceState.cjs');
 
 const ATTENDANCE_RECORDS_KEY = '@attendance_records'; // For fallback only
 
@@ -67,11 +70,11 @@ const attendanceWriteLocks = new Map();
  * double-tap/race window while preserving the existing direct Supabase write
  * and offline queue contracts.
  */
-export const saveAttendanceRecord = (attendanceRecord) => {
+export const saveAttendanceRecord = (attendanceRecord, requester = null) => {
   const key = String(attendanceRecord?.user_uid || attendanceRecord?.username || 'unknown');
   const existing = attendanceWriteLocks.get(key);
   if (existing) return existing;
-  const promise = saveAttendanceRecordInternal(attendanceRecord)
+  const promise = saveAttendanceRecordInternal(attendanceRecord, requester)
     .finally(() => attendanceWriteLocks.delete(key));
   attendanceWriteLocks.set(key, promise);
   return promise;
@@ -81,7 +84,7 @@ export const saveAttendanceRecord = (attendanceRecord) => {
  * Save attendance record to Supabase
  * @param {Object} attendanceRecord - The attendance record to save
  */
-const saveAttendanceRecordInternal = async (attendanceRecord) => {
+const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) => {
   try {
     if (!isSupabaseConfigured()) {
       console.error('[attendance] Supabase not configured — cannot sync check-in/out');
@@ -98,15 +101,44 @@ const saveAttendanceRecordInternal = async (attendanceRecord) => {
       return { success: false, error: 'Invalid attendance type.' };
     }
 
+    // Geofence checkout is an existing automatic path. Keep its local/raw
+    // behavior unchanged; authoritative self-service gating below applies only
+    // to the normal employee check-in/checkout flow.
+    const isGeofenceCheckout = normalizedType === 'checkout'
+      && (attendanceRecord.authMethod === 'automatic_geofence'
+        || attendanceRecord.auth_method === 'automatic_geofence'
+        || attendanceRecord.location?.checkout_reason === 'AUTO_CHECKOUT_OUTSIDE_RADIUS');
+    const isNormalSelfService = !attendanceRecord.isManual && !isGeofenceCheckout;
+
     const existing = await getUserAttendanceRecords(attendanceRecord.username);
     const queued = await getOfflineQueuedRecordsForUser(attendanceRecord.username);
-    const state = deriveSelfServiceAttendanceState([...existing, ...queued]);
-    const last = state.lastRecord;
-    if (normalizedType === 'checkin' && !attendanceRecord.isManual && !state.canCheckIn) {
-      return { success: false, error: state.completed ? 'This workday is already complete.' : 'You are already checked in.' };
+    const localState = deriveSelfServiceAttendanceState([...existing, ...queued]);
+    let state = localState;
+    let authoritativeState = null;
+    if (isNormalSelfService) {
+      try {
+        authoritativeState = await getSelfServiceAttendanceState(attendanceRecord.username, requester);
+        state = normalizeAuthoritativeSelfServiceState(authoritativeState, localState) || localState;
+      } catch (stateError) {
+        if (__DEV__) console.warn('[attendance] authoritative state unavailable; using local fallback:', stateError?.message || stateError);
+      }
     }
-    if (normalizedType === 'checkout' && !attendanceRecord.isManual && !state.canCheckOut) {
-      return { success: false, error: last?.type === 'checkout' ? 'This workday is already checked out.' : 'You must check in before checking out.' };
+    const last = state.lastRecord;
+    if (normalizedType === 'checkin' && isNormalSelfService && !state.canCheckIn) {
+      return {
+        success: false,
+        source: state.authoritative ? 'server' : 'local',
+        error: state.completed ? 'This workday is already complete.' : 'You are already checked in.',
+        authoritativeState: authoritativeState || null,
+      };
+    }
+    if (normalizedType === 'checkout' && isNormalSelfService && !state.canCheckOut) {
+      return {
+        success: false,
+        source: state.authoritative ? 'server' : 'local',
+        error: state.completed || last?.type === 'checkout' ? 'This workday is already checked out.' : 'You must check in before checking out.',
+        authoritativeState: authoritativeState || null,
+      };
     }
 
     // Prefer local session (no network round-trip). Fall back to getUser() only if needed.
@@ -160,6 +192,39 @@ const saveAttendanceRecordInternal = async (attendanceRecord) => {
 
     if (error) {
       console.error('Error saving attendance record to Supabase:', error);
+      // A committed insert can still lose its response. Re-read the server
+      // state before considering an offline retry, so a stale client never
+      // flips back to Check In or queues a duplicate checkout.
+      const message = String(error?.message || '').toLowerCase();
+      const retryableNetworkError = !error?.code && !error?.status
+        && /(network|fetch|timeout|offline|connection|abort)/i.test(message);
+      if (isNormalSelfService) {
+        try {
+          const refreshed = await getSelfServiceAttendanceState(attendanceRecord.username, requester);
+          const refreshedState = normalizeAuthoritativeSelfServiceState(refreshed, localState);
+          if (refreshedState) {
+            const actionBlocked = normalizedType === 'checkout'
+              ? !refreshedState.canCheckOut
+              : !refreshedState.canCheckIn;
+            if (actionBlocked) {
+              return {
+                success: false,
+                source: 'server',
+                error: normalizedType === 'checkout'
+                  ? (refreshedState.completed ? 'This workday is already checked out.' : 'You must check in before checking out.')
+                  : (refreshedState.completed ? 'This workday is already complete.' : 'You are already checked in.'),
+                authoritativeState: refreshed,
+                serverError: error.message,
+              };
+            }
+          }
+        } catch (refreshError) {
+          if (__DEV__) console.warn('[attendance] could not refresh state after insert failure:', refreshError?.message || refreshError);
+        }
+      }
+      if (!retryableNetworkError) {
+        return { success: false, source: 'server', error: error.message || 'Attendance was rejected by the server.' };
+      }
       const record = await saveAttendanceRecordFallback(attendanceRecord);
       return {
         success: true,
@@ -178,6 +243,45 @@ const saveAttendanceRecordInternal = async (attendanceRecord) => {
     };
   } catch (error) {
     console.error('Error saving attendance record:', error);
+    const catchType = String(attendanceRecord?.type || '').toLowerCase();
+    const catchIsGeofenceCheckout = catchType === 'checkout'
+      && (attendanceRecord?.authMethod === 'automatic_geofence'
+        || attendanceRecord?.auth_method === 'automatic_geofence'
+        || attendanceRecord?.location?.checkout_reason === 'AUTO_CHECKOUT_OUTSIDE_RADIUS');
+    const catchIsNormalSelfService = !attendanceRecord?.isManual && !catchIsGeofenceCheckout;
+    const catchMessage = String(error?.message || '').toLowerCase();
+    const catchRetryableNetworkError = !error?.code && !error?.status
+      && /(network|fetch|timeout|offline|connection|abort)/i.test(catchMessage);
+
+    // A thrown insert/fetch exception can represent a committed write whose
+    // response was lost. Refresh authoritative state before deciding whether
+    // an offline retry is safe, just as the normal Supabase error branch does.
+    if (catchIsNormalSelfService) {
+      try {
+        const refreshed = await getSelfServiceAttendanceState(attendanceRecord.username, requester);
+        const refreshedState = normalizeAuthoritativeSelfServiceState(refreshed);
+        const actionBlocked = catchType === 'checkout'
+          ? !refreshedState?.canCheckOut
+          : !refreshedState?.canCheckIn;
+        if (refreshedState && actionBlocked) {
+          return {
+            success: false,
+            source: 'server',
+            error: catchType === 'checkout'
+              ? (refreshedState.completed ? 'This workday is already checked out.' : 'You must check in before checking out.')
+              : (refreshedState.completed ? 'This workday is already complete.' : 'You are already checked in.'),
+            authoritativeState: refreshed,
+            serverError: error.message,
+          };
+        }
+      } catch (refreshError) {
+        if (__DEV__) console.warn('[attendance] could not refresh state after thrown insert failure:', refreshError?.message || refreshError);
+      }
+    }
+
+    if (!catchRetryableNetworkError) {
+      return { success: false, source: 'server', error: error.message || 'Attendance could not be saved.' };
+    }
     const record = await saveAttendanceRecordFallback(attendanceRecord);
     return {
       success: true,

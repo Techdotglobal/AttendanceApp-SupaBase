@@ -418,15 +418,17 @@ async function resolveSelfServiceAttendanceState({ companyId, userUid, now = new
       .sort((a, b) => a.window.start - b.window.start)[0]
     || null;
 
-  const fallbackRecords = await loadEvents(companyId, userUid, current?.date || dateOnly(now), current?.window || {
-    timezone: 'UTC',
-    end: now,
-  });
   if (!current) {
     const fallbackTimezone = resolveTrustedFallbackTimezone(company);
+    const fallbackWorkDate = localDateAt(now, fallbackTimezone);
+    const fallbackRecords = await loadEvents(companyId, userUid, fallbackWorkDate, {
+      timezone: fallbackTimezone,
+      start: now,
+      end: now,
+    });
     const fallbackState = deriveSelfServiceAttendanceState(fallbackRecords, now, fallbackTimezone);
     return {
-      work_date: localDateAt(now, fallbackTimezone),
+      work_date: fallbackWorkDate,
       status: null,
       completed: fallbackState.completed,
       can_check_in: fallbackState.canCheckIn,
@@ -436,6 +438,7 @@ async function resolveSelfServiceAttendanceState({ companyId, userUid, now = new
     };
   }
 
+  const fallbackRecords = await loadEvents(companyId, userUid, current.date, current.window);
   const holiday = await loadHoliday(companyId, current.date);
   const leave = await loadLeave(companyId, userUid, current.date);
   const calculated = calculateDailySummary({

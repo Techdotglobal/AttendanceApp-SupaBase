@@ -41,4 +41,34 @@ function deriveSelfServiceAttendanceState(records = [], now = new Date(), timezo
   };
 }
 
-module.exports = { localDateKey, deriveSelfServiceAttendanceState };
+/**
+ * Convert the backend self-service state response into the same shape used by
+ * the mobile UI. The backend state is authoritative whenever all state flags
+ * are present; local records are only a fallback while the endpoint is
+ * unavailable.
+ */
+function normalizeAuthoritativeSelfServiceState(remoteState, fallbackState = null) {
+  if (!remoteState || typeof remoteState !== 'object') return fallbackState;
+  if (typeof remoteState.can_check_in !== 'boolean'
+    || typeof remoteState.can_check_out !== 'boolean'
+    || typeof remoteState.completed !== 'boolean') return fallbackState;
+
+  return {
+    ...(fallbackState || {}),
+    canCheckIn: remoteState.can_check_in,
+    canCheckOut: remoteState.can_check_out,
+    completed: remoteState.completed,
+    lastRecord: Object.prototype.hasOwnProperty.call(remoteState, 'latest_record')
+      ? remoteState.latest_record
+      : (fallbackState?.lastRecord || null),
+    workDate: remoteState.work_date || fallbackState?.workDate || null,
+    status: remoteState.status ?? fallbackState?.status ?? null,
+    authoritative: true,
+  };
+}
+
+module.exports = {
+  localDateKey,
+  deriveSelfServiceAttendanceState,
+  normalizeAuthoritativeSelfServiceState,
+};

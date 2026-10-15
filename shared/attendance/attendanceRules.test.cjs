@@ -7,7 +7,11 @@ const {
   pairAttendanceRecords,
   calculateDailySummary,
 } = require('./attendanceRules.cjs');
-const { deriveSelfServiceAttendanceState, localDateKey } = require('./selfServiceState.cjs');
+const {
+  deriveSelfServiceAttendanceState,
+  normalizeAuthoritativeSelfServiceState,
+  localDateKey,
+} = require('./selfServiceState.cjs');
 
 const base = (overrides = {}) => ({
   id: 'company-rule', version: 1, company_id: 'company-a', scope_type: 'COMPANY', timezone: 'UTC',
@@ -153,6 +157,47 @@ test('self-service state keeps a completed same-day checkout closed', () => {
   assert.equal(state.completed, true);
   assert.equal(state.canCheckIn, false);
   assert.equal(state.canCheckOut, false);
+});
+
+test('authoritative open state overrides stale local state for checkout', () => {
+  const local = deriveSelfServiceAttendanceState([]);
+  const authoritative = normalizeAuthoritativeSelfServiceState({
+    work_date: '2026-02-02',
+    can_check_in: false,
+    can_check_out: true,
+    completed: false,
+    latest_record: { id: 'open-checkin', type: 'checkin', timestamp: '2026-02-02T09:00:00Z' },
+  }, local);
+  assert.equal(authoritative.canCheckOut, true);
+  assert.equal(authoritative.canCheckIn, false);
+  assert.equal(authoritative.lastRecord.id, 'open-checkin');
+  assert.equal(authoritative.authoritative, true);
+});
+
+test('authoritative completed state never re-enables check-in after checkout', () => {
+  const staleLocal = deriveSelfServiceAttendanceState([]);
+  const authoritative = normalizeAuthoritativeSelfServiceState({
+    work_date: '2026-02-02',
+    can_check_in: false,
+    can_check_out: false,
+    completed: true,
+    latest_record: { id: 'checkout', type: 'checkout', timestamp: '2026-02-02T18:00:00Z' },
+  }, staleLocal);
+  assert.equal(authoritative.canCheckIn, false);
+  assert.equal(authoritative.canCheckOut, false);
+  assert.equal(authoritative.completed, true);
+});
+
+test('authoritative overnight state remains open across midnight', () => {
+  const authoritative = normalizeAuthoritativeSelfServiceState({
+    work_date: '2026-02-02',
+    can_check_in: false,
+    can_check_out: true,
+    completed: false,
+    latest_record: { id: 'overnight-checkin', type: 'checkin', timestamp: '2026-02-02T22:00:00Z' },
+  }, deriveSelfServiceAttendanceState([]));
+  assert.equal(authoritative.workDate, '2026-02-02');
+  assert.equal(authoritative.canCheckOut, true);
 });
 
 test('no-schedule fallback uses the trusted timezone rather than UTC/device midnight', () => {

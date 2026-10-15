@@ -139,3 +139,24 @@ test('finalizer preserves the loaded primary department and avoids historical co
   assert.match(finalizer, /String\(row\.employee_uid\) === String\(userUid\)/);
   assert.match(finalizer, /Legacy attendance rows can have a NULL company_id/);
 });
+
+test('self-service state is authoritative for mobile checkout and stale-state recovery', () => {
+  const state = read('shared/attendance/selfServiceState.cjs');
+  const storage = read('apps/mobile/utils/storage.js');
+  const dashboard = read('apps/mobile/screens/EmployeeDashboard.js');
+  const authScreen = read('apps/mobile/screens/AuthenticationScreen.js');
+  const finalizer = read('services/auth-service/lib/attendanceFinalizer.js');
+  assert.match(state, /normalizeAuthoritativeSelfServiceState/);
+  assert.match(storage, /getSelfServiceAttendanceState\(attendanceRecord\.username, requester\)/);
+  assert.match(storage, /refresh(?:ed)?State/);
+  assert.match(storage, /serverError/);
+  assert.match(storage, /isGeofenceCheckout/);
+  assert.match(storage, /retryableNetworkError/);
+  assert.match(storage, /catchRetryableNetworkError/);
+  assert.match(dashboard, /normalizeAuthoritativeSelfServiceState/);
+  assert.match(authScreen, /normalizeAuthoritativeSelfServiceState/);
+  assert.match(authScreen, /saveAttendanceRecord\(attendanceRecord, user\)/);
+  assert.doesNotMatch(dashboard, /remoteState?.schedule_available/);
+  assert.doesNotMatch(authScreen, /remoteState?.schedule_available/);
+  assert.match(finalizer, /const fallbackWorkDate = localDateAt\(now, fallbackTimezone\)/);
+});

@@ -40,6 +40,7 @@ const {
   mapLeaveTypeToRequestType,
 } = require('../lib/approvalEngine');
 const { markAttendanceSummaryDirty } = require('../lib/attendanceFinalizer');
+const { reconcileApprovedLeaveAbsenceOutcomes } = require('../lib/attendanceAbsenceService');
 
 const router = express.Router();
 
@@ -1912,7 +1913,7 @@ router.patch('/leaves/:id', async (req, res) => {
     const tenantUids = await fetchCompanyUserUids(supabase, companyId);
     const { data: requestRow } = await supabase
       .from('leave_requests')
-      .select('id, employee_uid, status, leave_type, start_date, end_date, current_step')
+      .select('id, employee_uid, status, leave_type, start_date, end_date, days, is_half_day, current_step')
       .eq('id', id)
       .eq('company_id', companyId)
       .single();
@@ -1967,14 +1968,32 @@ router.patch('/leaves/:id', async (req, res) => {
       .eq('id', id)
       .eq('company_id', companyId);
     if (error) throw error;
+    let reconciliation = { skipped: 'not_final_approved', attempted: 0, reconciled: [] };
     if (result.final && finalStatus === 'approved') {
       const start = new Date(`${requestRow.start_date}T00:00:00Z`);
       const end = new Date(`${requestRow.end_date}T00:00:00Z`);
       for (let cursor = start; cursor <= end; cursor = new Date(cursor.getTime() + 86400000)) {
         await markAttendanceSummaryDirty(companyId, requestRow.employee_uid, cursor.toISOString());
       }
+      try {
+        reconciliation = await reconcileApprovedLeaveAbsenceOutcomes({
+          companyId,
+          employeeUid: requestRow.employee_uid,
+          startDate: requestRow.start_date,
+          endDate: requestRow.end_date,
+          days: requestRow.days,
+          isHalfDay: requestRow.is_half_day === true,
+          leaveRequestId: requestRow.id,
+        });
+      } catch (reconciliationError) {
+        // The leave is already approved and must remain so. Keep the failure
+        // visible and retryable; the dirty summary/finalizer path can retry
+        // the canonical, idempotent reconciliation RPC later.
+        console.error('[absence-reconciliation] leave approved but reconciliation is pending:', reconciliationError.message);
+        reconciliation = { skipped: 'reconciliation_pending', attempted: 0, reconciled: [], retryable: true };
+      }
     }
-    res.status(200).json({ success: true, data: { status: finalStatus, approval: result } });
+    res.status(200).json({ success: true, data: { status: finalStatus, approval: result, reconciliation } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to process leave request' });
   }

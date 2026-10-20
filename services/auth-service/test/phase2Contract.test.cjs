@@ -49,6 +49,15 @@ test('approval HTTP routes retain the existing endpoint surface and guards', () 
   assert.match(adminRoutes, /processApprovalStep/);
 });
 
+test('leave reconciliation is restricted to final approval and preserves retryability', () => {
+  const adminRoutes = read('services/auth-service/routes/admin.js');
+  assert.match(adminRoutes, /select\('id, employee_uid, status, leave_type, start_date, end_date, days, is_half_day, current_step'\)/);
+  assert.match(adminRoutes, /result\.final && finalStatus === 'approved'/);
+  assert.match(adminRoutes, /reconcileApprovedLeaveAbsenceOutcomes/);
+  assert.match(adminRoutes, /reconciliation_pending/);
+  assert.match(adminRoutes, /result\.final \? result\.status : 'pending'/);
+});
+
 test('approval workflow listing uses the shared gateway client and bounded eligibility reads', () => {
   const page = read('apps/web/src/features/admin/pages/ApprovalWorkflowsPage.jsx');
   const service = read('apps/web/src/features/admin/services/adminService.js');

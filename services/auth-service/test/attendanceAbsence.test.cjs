@@ -11,6 +11,7 @@ const {
   policyApplies,
   processAbsenceOutcome,
   reconcileAbsenceOutcome,
+  reconcileApprovedLeaveAbsenceOutcomes,
 } = require('../lib/attendanceAbsenceService');
 
 test('absence migration is additive, tenant guarded, and service-role writes only', () => {
@@ -120,4 +121,120 @@ test('absence service uses the finalized summary and is injectable for runtime r
   });
   assert.equal(reconciled.status, 'RECONCILED');
   assert.equal(calls.at(-1).name, 'reconcile_attendance_absence_outcome');
+});
+
+function reconciliationClient({ company, summaries = [], outcomes = [] } = {}) {
+  const calls = [];
+  const filtersByTable = new Map();
+  const builderFor = (table) => {
+    const filters = {};
+    filtersByTable.set(table, filters);
+    const builder = {
+      select: () => builder,
+      eq: (key, value) => { filters[key] = value; return builder; },
+      gte: (key, value) => { filters[`gte:${key}`] = value; return builder; },
+      lte: (key, value) => { filters[`lte:${key}`] = value; return builder; },
+      in: (key, value) => { filters[`in:${key}`] = value; return builder; },
+      single: async () => ({ data: company, error: null }),
+      then: (resolve, reject) => {
+        const data = table === 'attendance_daily_summaries' ? summaries
+          : table === 'attendance_absence_outcomes' ? outcomes : [];
+        return Promise.resolve({ data, error: null }).then(resolve, reject);
+      },
+    };
+    return builder;
+  };
+  return {
+    calls,
+    filtersByTable,
+    from(table) {
+      if (table === 'authorization_audit_logs') {
+        return { insert: async (payload) => { calls.push({ table, payload }); return { error: null }; } };
+      }
+      return builderFor(table);
+    },
+    rpc(name, args) {
+      calls.push({ name, args });
+      const outcome = outcomes.find((row) => row.summary_id === args.p_summary_id);
+      return Promise.resolve({
+        data: outcome ? { ...outcome, status: 'RECONCILED', decision_version: (outcome.decision_version || 1) + 1 } : null,
+        error: null,
+      });
+    },
+  };
+}
+
+test('final approved full-day leave reconciles each covered deducted absence exactly once', async () => {
+  const client = reconciliationClient({
+    company: { id: 'company-1', app_settings: { leave: { absenceDeductionsV1Enabled: true } } },
+    summaries: [
+      { id: 'summary-1', user_uid: 'user-1', work_date: '2026-10-20', status: 'ABSENT', absence_eligible: true },
+      { id: 'summary-2', user_uid: 'user-1', work_date: '2026-10-21', status: 'ABSENT', absence_eligible: true },
+    ],
+    outcomes: [
+      { id: 'outcome-1', summary_id: 'summary-1', user_uid: 'user-1', work_date: '2026-10-20', status: 'DEDUCTED', decision_version: 1 },
+      { id: 'outcome-2', summary_id: 'summary-2', user_uid: 'user-1', work_date: '2026-10-21', status: 'RECONCILED', decision_version: 2 },
+    ],
+  });
+
+  const result = await reconcileApprovedLeaveAbsenceOutcomes({
+    companyId: 'company-1', employeeUid: 'user-1', startDate: '2026-10-20', endDate: '2026-10-21',
+    days: 2, leaveRequestId: 'leave-1', supabaseClient: client,
+  });
+
+  assert.equal(result.attempted, 1);
+  assert.equal(result.reconciled.length, 1);
+  assert.equal(client.calls.filter((call) => call.name === 'reconcile_attendance_absence_outcome').length, 1);
+  assert.deepEqual(client.calls.find((call) => call.name === 'reconcile_attendance_absence_outcome').args, {
+    p_company_id: 'company-1', p_summary_id: 'summary-1', p_reason: 'APPROVED_LEAVE', p_actor_uid: null,
+  });
+  assert.equal(client.filtersByTable.get('attendance_daily_summaries').company_id, 'company-1');
+  assert.equal(client.filtersByTable.get('attendance_daily_summaries').user_uid, 'user-1');
+});
+
+test('partial leave never performs an unsafe full-day reversal', async () => {
+  const client = reconciliationClient({
+    company: { id: 'company-1', app_settings: { leave: { absenceDeductionsV1Enabled: true } } },
+    summaries: [{ id: 'summary-1', status: 'ABSENT', absence_eligible: true }],
+    outcomes: [{ id: 'outcome-1', summary_id: 'summary-1', status: 'DEDUCTED', decision_version: 1 }],
+  });
+  const result = await reconcileApprovedLeaveAbsenceOutcomes({
+    companyId: 'company-1', employeeUid: 'user-1', startDate: '2026-10-20', endDate: '2026-10-20',
+    days: 0.5, isHalfDay: true, supabaseClient: client,
+  });
+  assert.equal(result.skipped, 'partial_leave_unsupported');
+  assert.equal(client.calls.filter((call) => call.name === 'reconcile_attendance_absence_outcome').length, 0);
+});
+
+test('disabled Phase 4 and already reconciled outcomes remain untouched', async () => {
+  const disabled = reconciliationClient({ company: { id: 'company-1', app_settings: {} } });
+  assert.equal((await reconcileApprovedLeaveAbsenceOutcomes({
+    companyId: 'company-1', employeeUid: 'user-1', startDate: '2026-10-20', endDate: '2026-10-20', supabaseClient: disabled,
+  })).skipped, 'feature_disabled');
+
+  const reconciled = reconciliationClient({
+    company: { id: 'company-1', app_settings: { leave: { absenceDeductionsV1Enabled: true } } },
+    summaries: [{ id: 'summary-1', status: 'ABSENT', absence_eligible: true }],
+    outcomes: [{ id: 'outcome-1', summary_id: 'summary-1', status: 'RECONCILED', decision_version: 2 }],
+  });
+  const result = await reconcileApprovedLeaveAbsenceOutcomes({
+    companyId: 'company-1', employeeUid: 'user-1', startDate: '2026-10-20', endDate: '2026-10-20', supabaseClient: reconciled,
+  });
+  assert.equal(result.attempted, 0);
+  assert.equal(reconciled.calls.filter((call) => call.name === 'reconcile_attendance_absence_outcome').length, 0);
+});
+
+test('missing outcomes and tenant/user mismatches cannot trigger reconciliation', async () => {
+  const client = reconciliationClient({
+    company: { id: 'company-1', app_settings: { leave: { absenceDeductionsV1Enabled: true } } },
+    summaries: [{ id: 'summary-1', user_uid: 'user-1', status: 'ABSENT', absence_eligible: true }],
+    outcomes: [],
+  });
+  const result = await reconcileApprovedLeaveAbsenceOutcomes({
+    companyId: 'company-1', employeeUid: 'user-1', startDate: '2026-10-20', endDate: '2026-10-20', supabaseClient: client,
+  });
+  assert.equal(result.attempted, 0);
+  assert.equal(client.calls.filter((call) => call.name === 'reconcile_attendance_absence_outcome').length, 0);
+  assert.equal(client.filtersByTable.get('attendance_absence_outcomes').company_id, 'company-1');
+  assert.equal(client.filtersByTable.get('attendance_absence_outcomes').user_uid, 'user-1');
 });

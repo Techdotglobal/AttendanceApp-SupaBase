@@ -129,6 +129,100 @@ async function reconcileAbsenceOutcome({ companyId, summaryId, reason, actorUid 
   return data;
 }
 
+/**
+ * Reconcile absence outcomes covered by a finally-approved leave request.
+ *
+ * This deliberately consumes finalized summaries/outcomes and delegates the
+ * balance/ledger transition to the canonical database RPC.  It does not
+ * recalculate attendance or create a synthetic leave request.
+ *
+ * The RPC represents a complete reversal of the current deduction cycle. A
+ * half-day/fractional request therefore remains untouched until a supported
+ * partial-reconciliation model exists.
+ */
+async function reconcileApprovedLeaveAbsenceOutcomes({
+  companyId,
+  employeeUid,
+  startDate,
+  endDate,
+  isHalfDay = false,
+  days = null,
+  leaveRequestId = null,
+  supabaseClient = supabase,
+}) {
+  if (!companyId || !employeeUid || !startDate || !endDate) {
+    throw new Error('company, employee, and leave date range are required for reconciliation');
+  }
+
+  const { data: company, error: companyError } = await supabaseClient
+    .from('companies')
+    .select('id, app_settings')
+    .eq('id', companyId)
+    .single();
+  if (companyError) throw companyError;
+  if (!absenceFeatureEnabled(company)) return { skipped: 'feature_disabled', attempted: 0, reconciled: [] };
+
+  const numericDays = days === null || days === undefined ? null : Number(days);
+  const fractionalLeave = numericDays !== null && Number.isFinite(numericDays) && !Number.isInteger(numericDays);
+  if (isHalfDay === true || fractionalLeave) {
+    return { skipped: 'partial_leave_unsupported', attempted: 0, reconciled: [] };
+  }
+
+  const { data: summaries, error: summaryError } = await supabaseClient
+    .from('attendance_daily_summaries')
+    .select('id, user_uid, work_date, status, absence_eligible')
+    .eq('company_id', companyId)
+    .eq('user_uid', employeeUid)
+    .eq('status', 'ABSENT')
+    .eq('absence_eligible', true)
+    .gte('work_date', startDate)
+    .lte('work_date', endDate);
+  if (summaryError) throw summaryError;
+
+  const summaryIds = (summaries || []).map((summary) => summary.id).filter(Boolean);
+  if (!summaryIds.length) return { skipped: 'no_eligible_summaries', attempted: 0, reconciled: [] };
+
+  const { data: outcomes, error: outcomeError } = await supabaseClient
+    .from('attendance_absence_outcomes')
+    .select('id, summary_id, user_uid, work_date, status, decision_version')
+    .eq('company_id', companyId)
+    .eq('user_uid', employeeUid)
+    .in('summary_id', summaryIds);
+  if (outcomeError) throw outcomeError;
+
+  const candidates = (outcomes || []).filter((outcome) => !['RECONCILED', 'REVERSED'].includes(outcome.status));
+  const reconciled = [];
+  for (const outcome of candidates) {
+    const { data, error } = await supabaseClient.rpc('reconcile_attendance_absence_outcome', {
+      p_company_id: companyId,
+      p_summary_id: outcome.summary_id,
+      p_reason: 'APPROVED_LEAVE',
+      p_actor_uid: null,
+    });
+    if (error) throw error;
+    if (data) {
+      reconciled.push(data);
+      await writeAuthorizationAudit(supabaseClient, {
+        companyId,
+        actorUid: null,
+        targetUid: employeeUid,
+        action: 'attendance_absence_outcome_reconciled',
+        beforeState: outcome,
+        afterState: data,
+        metadata: {
+          reason: 'APPROVED_LEAVE',
+          leave_request_id: leaveRequestId,
+          summary_id: outcome.summary_id,
+          work_date: outcome.work_date,
+          source: 'system',
+        },
+      });
+    }
+  }
+
+  return { skipped: null, attempted: candidates.length, reconciled };
+}
+
 module.exports = {
   ABSENCE_ACTIONS,
   INSUFFICIENT_POLICIES,
@@ -138,4 +232,5 @@ module.exports = {
   policyApplies,
   processAbsenceOutcome,
   reconcileAbsenceOutcome,
+  reconcileApprovedLeaveAbsenceOutcomes,
 };

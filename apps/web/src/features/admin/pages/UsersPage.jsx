@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   UserCheck,
   UserMinus,
+  Trash2,
   UsersRound,
   X,
 } from 'lucide-react';
@@ -34,6 +35,7 @@ import { SlideOverPanel } from '../../../shared/components/SlideOverPanel';
 import { PasswordInput } from '../../../shared/components/PasswordInput';
 import { Alert } from '../../../shared/components/ui/Alert';
 import { Button } from '../../../shared/components/ui/Button';
+import { Dialog } from '../../../shared/components/ui/Dialog';
 import { EmptyStateBody } from '../../../shared/components/ui/EmptyState';
 import { DROPDOWN_MOTION } from '../../../shared/components/ui/Menu';
 import { Select } from '../../../shared/components/ui/Select';
@@ -320,10 +322,15 @@ export function UsersPage() {
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
   const [saveSuccess, setSaveSuccess] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const canCreate = hasPermission(user, PERMISSIONS.CREATE_USER);
   const canEditProfiles = hasPermission(user, PERMISSIONS.EDIT_USER);
-  const canDelete = hasPermission(user, PERMISSIONS.DELETE_USER);
+  // The canonical backend route also supports explicitly delegated delete_user
+  // grants for the mobile HR-admin flow. The web Users destructive action is
+  // intentionally limited to super admins for this surface.
+  const canDelete = user?.role === 'super_admin' && hasPermission(user, PERMISSIONS.DELETE_USER);
   const canActivate = hasPermission(user, PERMISSIONS.ACTIVATE_USER);
   const canDeactivate = hasPermission(user, PERMISSIONS.DEACTIVATE_USER);
   const canChangeRoles = hasPermission(user, PERMISSIONS.CHANGE_USER_ROLE);
@@ -470,6 +477,30 @@ export function UsersPage() {
     } catch (err) {
       console.error('[UsersPage] Failed to toggle user status:', err);
       setError(err?.message || 'Failed to update user status');
+    }
+  };
+
+  const openDeleteDialog = (target) => {
+    if (!canDelete || !target || target.uid === user?.uid || target.role === 'super_admin') return;
+    setError('');
+    setDeleteTarget(target);
+  };
+
+  const deleteUser = async () => {
+    if (!deleteTarget || deleteBusy) return;
+    setDeleteBusy(true);
+    setError('');
+    try {
+      await adminService.deleteUser(deleteTarget.uid);
+      if (activeUser?.uid === deleteTarget.uid) closePanel();
+      setDeleteTarget(null);
+      setSaveSuccess(`${deleteTarget.name || deleteTarget.username || 'User'} was deleted.`);
+      await loadUsers();
+    } catch (err) {
+      console.error('[UsersPage] Failed to delete user:', err);
+      setError(err?.message || 'Failed to delete user');
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -1268,6 +1299,12 @@ export function UsersPage() {
                         icon: ShieldCheck,
                         onClick: () => changeRole(u),
                       },
+                    canDelete && u.uid !== user?.uid && u.role !== 'super_admin' && {
+                      label: 'Delete user',
+                      icon: Trash2,
+                      tone: 'danger',
+                      onClick: () => openDeleteDialog(u),
+                    },
                   ]}
                 />
               </span>
@@ -1781,10 +1818,41 @@ export function UsersPage() {
                     {activeUser.is_active ? 'Deactivate' : 'Activate'}
                   </button>
                 )}
+                {canDelete && activeUser.uid !== user?.uid && activeUser.role !== 'super_admin' && (
+                  <button type="button" onClick={() => openDeleteDialog(activeUser)} className="ui-btn-danger ui-btn-sm">
+                    Delete user
+                  </button>
+                )}
               </div>
             </div>
           )}
       </SlideOverPanel>
+
+      <Dialog
+        open={Boolean(deleteTarget)}
+        onClose={() => !deleteBusy && setDeleteTarget(null)}
+        title="Delete user?"
+        description="This permanently removes the user account and may revoke access immediately. Historical business records are preserved by the existing backend deletion path."
+        footer={(
+          <>
+            <button type="button" className="ui-btn-secondary" disabled={deleteBusy} onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </button>
+            <button type="button" className="ui-btn-danger" disabled={deleteBusy} onClick={deleteUser}>
+              {deleteBusy ? 'Deleting…' : 'Delete user'}
+            </button>
+          </>
+        )}
+      >
+        <div className="space-y-2 text-sm text-slate-600">
+          <p className="font-semibold text-slate-900">{deleteTarget?.name || deleteTarget?.username || 'Unknown user'}</p>
+          <p>{deleteTarget?.email || deleteTarget?.username || 'No email available'}</p>
+          <p>Role: {formatRole(deleteTarget?.role)}</p>
+          {deleteTarget?.role === 'manager' && (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-amber-800">This manager’s access will be revoked immediately.</p>
+          )}
+        </div>
+      </Dialog>
     </div>
   );
 }

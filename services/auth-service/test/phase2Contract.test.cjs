@@ -248,6 +248,29 @@ test('Attendance Rules exposes the company-scoped Phase 4 policy without weakeni
   assert.match(page, /Approved retroactive leave can reconcile/);
 });
 
+test('web user deletion reuses the guarded mobile deletion path', () => {
+  const authRoutes = read('services/auth-service/routes/auth.js');
+  const gateway = read('services/api-gateway/routes/auth.js');
+  const service = read('apps/web/src/features/admin/services/adminService.js');
+  const page = read('apps/web/src/features/admin/pages/UsersPage.jsx');
+  assert.match(authRoutes, /router\.delete\('\/users\/:uid'/);
+  assert.match(authRoutes, /rejectSelfAdministrativeChange\(requester, uid, res\)/);
+  assert.match(authRoutes, /requirePermission\(supabase, requester, 'delete_user', res\)/);
+  assert.match(authRoutes, /\.eq\('company_id', companyId\)/);
+  assert.match(authRoutes, /targetUser\.role === 'super_admin'/);
+  assert.match(authRoutes, /action: 'user_deleted'/);
+  assert.match(gateway, /router\.delete\('\/users\/:uid'/);
+  assert.match(service, /api\.delete\(apiUrl\(`\/api\/auth\/users\//);
+  assert.match(page, /user\?\.role === 'super_admin'/);
+  assert.match(page, /target\.uid === user\?\.uid/);
+  assert.match(page, /u\.uid !== user\?\.uid/);
+  assert.match(page, /target\.role === 'super_admin'/);
+  assert.match(page, /activeUser\.role !== 'super_admin'/);
+  assert.match(page, /<Dialog/);
+  assert.match(page, /Delete user\?/);
+  assert.match(page, /setDeleteBusy\(true\)/);
+});
+
 test('manager and super-admin accounts retain employee self-service paths', () => {
   const catalog = read('shared/permissions/catalog.cjs');
   const adminRoutes = read('services/auth-service/routes/admin.js');

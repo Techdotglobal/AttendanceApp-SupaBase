@@ -165,6 +165,11 @@ export const adminService = {
       async () => (await api.patch(apiUrl(`/api/admin/users/${uid}`), payload)).data,
       'Failed to update user'
     ),
+  deleteUser: async (uid) =>
+    executeApiCall(
+      async () => (await api.delete(apiUrl(`/api/auth/users/${encodeURIComponent(uid)}`))).data,
+      'Failed to delete user'
+    ),
   updateUserRole: async (uid, role, username) => {
     try {
       const res = await api.patch(apiUrl(`/api/auth/users/uid/${uid}/role`), { role });

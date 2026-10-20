@@ -3,6 +3,7 @@ import { Alert } from '../../../shared/components/ui/Alert';
 import { PermissionGate } from '../../../shared/components/PermissionGate';
 import { adminService } from '../services/adminService';
 import { PERMISSIONS } from '../permissions';
+import { useAuthStore } from '../../auth/store/authStore';
 
 const DAYS = [
   [1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [7, 'Sun'],
@@ -15,6 +16,15 @@ const emptyRule = {
   overtime_window_minutes: 60, auto_checkout_enabled: true, effective_from: new Date().toISOString().slice(0, 10), effective_to: '',
 };
 
+const emptyAbsencePolicy = {
+  enabled: false,
+  action: 'NONE',
+  leave_type: null,
+  deduction_days: 0,
+  insufficient_balance_policy: 'CAP_AT_ZERO_UNPAID',
+  effective_from: '',
+};
+
 export function AttendanceRulesPage() {
   const [rules, setRules] = useState([]);
   const [holidays, setHolidays] = useState([]);
@@ -24,8 +34,12 @@ export function AttendanceRulesPage() {
   const [editingRuleId, setEditingRuleId] = useState(null);
   const [holiday, setHoliday] = useState({ holiday_date: '', name: '', holiday_type: 'public', is_working_day: false });
   const [editingHolidayId, setEditingHolidayId] = useState(null);
+  const [absencePolicy, setAbsencePolicy] = useState(emptyAbsencePolicy);
+  const [absencePolicyLoading, setAbsencePolicyLoading] = useState(true);
+  const [absencePolicyBusy, setAbsencePolicyBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
+  const isSuperAdmin = useAuthStore((state) => state.user?.role === 'super_admin');
 
   const load = async () => {
     try {
@@ -34,6 +48,15 @@ export function AttendanceRulesPage() {
       ]);
       setRules(nextRules || []); setHolidays(nextHolidays || []); setDepartments(nextDepartments || []); setUsers(nextUsers || []);
     } catch (error) { setMessage({ type: 'error', text: error.message }); }
+    try {
+      setAbsencePolicyLoading(true);
+      const nextPolicy = await adminService.getAttendanceAbsencePolicy();
+      setAbsencePolicy({ ...emptyAbsencePolicy, ...(nextPolicy || {}), effective_from: nextPolicy?.effective_from || '' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    } finally {
+      setAbsencePolicyLoading(false);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -89,6 +112,45 @@ export function AttendanceRulesPage() {
     setBusy(true); try { await adminService.deleteAttendanceHoliday(id); await load(); } catch (error) { setMessage({ type: 'error', text: error.message }); } finally { setBusy(false); }
   }
 
+  function updateAbsencePolicy(key, value) {
+    setAbsencePolicy((current) => ({ ...current, [key]: value }));
+  }
+
+  async function saveAbsencePolicy(event) {
+    event.preventDefault();
+    const action = String(absencePolicy.action || 'NONE').toUpperCase();
+    const deductionDays = Number(absencePolicy.deduction_days);
+    if (action === 'DEDUCT_LEAVE' && !absencePolicy.leave_type) {
+      setMessage({ type: 'error', text: 'Select a leave type when deducting leave.' });
+      return;
+    }
+    if (action === 'DEDUCT_LEAVE' && (!Number.isFinite(deductionDays) || deductionDays <= 0)) {
+      setMessage({ type: 'error', text: 'Deduction per absence must be greater than zero.' });
+      return;
+    }
+    if (action !== 'NONE' && (!Number.isFinite(deductionDays) || deductionDays < 0)) {
+      setMessage({ type: 'error', text: 'Enter a valid non-negative number of days.' });
+      return;
+    }
+    setAbsencePolicyBusy(true); setMessage(null);
+    try {
+      const saved = await adminService.saveAttendanceAbsencePolicy({
+        enabled: Boolean(absencePolicy.enabled),
+        action,
+        leave_type: action === 'DEDUCT_LEAVE' ? absencePolicy.leave_type : null,
+        deduction_days: action === 'NONE' ? 0 : deductionDays,
+        insufficient_balance_policy: absencePolicy.insufficient_balance_policy || 'CAP_AT_ZERO_UNPAID',
+        effective_from: absencePolicy.effective_from || null,
+      });
+      setAbsencePolicy({ ...emptyAbsencePolicy, ...(saved || {}), effective_from: saved?.effective_from || '' });
+      setMessage({ type: 'success', text: 'Absence deduction policy saved.' });
+    } catch (error) {
+      setMessage({ type: 'error', text: error.message });
+    } finally {
+      setAbsencePolicyBusy(false);
+    }
+  }
+
   return (
     <PermissionGate permission={PERMISSIONS.MANAGE_ATTENDANCE_RULES}>
       <div className="admin-page gap-4 animate-fade-up">
@@ -117,6 +179,20 @@ export function AttendanceRulesPage() {
         </section>
         <section className="ui-card p-5"><h2 className="text-lg font-semibold text-slate-900">Configured rules</h2><div className="mt-3 divide-y">{rules.map((item) => <div key={item.id} className="flex items-center justify-between py-3 text-sm"><span>{item.scope_type} · {item.scheduled_start}–{item.scheduled_end} · from {item.effective_from}</span><button type="button" className="ui-btn-danger ui-btn-sm" onClick={() => removeRule(item.id)}>Delete</button></div>)}{!rules.length && <p className="py-3 text-sm text-slate-500">No V1 rules configured.</p>}</div></section>
         <section className="ui-card p-5"><h2 className="text-lg font-semibold text-slate-900">Public holidays</h2><form className="mt-4 flex flex-wrap gap-3" onSubmit={saveHoliday}><input required type="date" className="ui-input" value={holiday.holiday_date} onChange={(e) => setHoliday({ ...holiday, holiday_date: e.target.value })} /><input required className="ui-input" placeholder="Holiday name" value={holiday.name} onChange={(e) => setHoliday({ ...holiday, name: e.target.value })} /><select className="ui-input" value={holiday.holiday_type} onChange={(e) => setHoliday({ ...holiday, holiday_type: e.target.value })}><option value="public">Public</option><option value="company">Company</option><option value="religious">Religious</option><option value="other">Other</option></select><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={holiday.is_working_day} onChange={(e) => setHoliday({ ...holiday, is_working_day: e.target.checked })} /> Working holiday</label><button type="submit" disabled={busy} className="ui-btn-primary ui-btn-sm">{editingHolidayId ? 'Save holiday' : 'Add holiday'}</button></form><div className="mt-3 divide-y">{holidays.map((item) => <div key={item.id} className="flex items-center justify-between py-3 text-sm"><span>{item.holiday_date} · {item.name} ({item.holiday_type || 'public'}){item.is_working_day ? ' (working)' : ''}</span><div className="flex gap-2"><button type="button" className="ui-btn-secondary ui-btn-sm" onClick={() => editHoliday(item)}>Edit</button><button type="button" className="ui-btn-danger ui-btn-sm" onClick={() => removeHoliday(item.id)}>Delete</button></div></div>)}{!holidays.length && <p className="py-3 text-sm text-slate-500">No holidays configured.</p>}</div></section>
+        <section className="ui-card p-5">
+          <h2 className="text-lg font-semibold text-slate-900">Absence deductions</h2>
+          <p className="mt-1 max-w-3xl text-sm text-slate-500">When a scheduled workday is finalized as absent, this policy determines whether leave is deducted or the day is treated as unpaid. Approved retroactive leave can reconcile a previous absence deduction.</p>
+          {absencePolicyLoading ? <p className="mt-4 text-sm text-slate-500">Loading absence policy...</p> : <form className="mt-5 grid gap-4 md:grid-cols-2" onSubmit={saveAbsencePolicy}>
+            {!isSuperAdmin && <p className="md:col-span-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">Only super admins can change automatic absence handling. You can still view the company policy.</p>}
+            <label className="flex items-center gap-2 text-sm text-slate-600 md:col-span-2"><input type="checkbox" checked={Boolean(absencePolicy.enabled)} disabled={!isSuperAdmin || absencePolicyBusy} onChange={(e) => updateAbsencePolicy('enabled', e.target.checked)} /> Enable absence deductions</label>
+            <label className="text-sm text-slate-600">Action<select className="ui-input mt-1" value={absencePolicy.action || 'NONE'} disabled={!isSuperAdmin || absencePolicyBusy} onChange={(e) => { const action = e.target.value; updateAbsencePolicy('action', action); if (action === 'NONE') updateAbsencePolicy('leave_type', null); }}><option value="NONE">No action</option><option value="DEDUCT_LEAVE">Deduct leave</option><option value="UNPAID_ABSENCE">Unpaid absence</option></select></label>
+            {absencePolicy.action === 'DEDUCT_LEAVE' && <label className="text-sm text-slate-600">Leave type<select className="ui-input mt-1" required value={absencePolicy.leave_type || ''} disabled={!isSuperAdmin || absencePolicyBusy} onChange={(e) => updateAbsencePolicy('leave_type', e.target.value || null)}><option value="">Select leave type</option><option value="casual">Casual leave</option><option value="sick">Sick leave</option><option value="annual">Annual leave</option></select></label>}
+            {absencePolicy.action !== 'NONE' && <label className="text-sm text-slate-600">Deduction per absence (days)<input type="number" min={absencePolicy.action === 'DEDUCT_LEAVE' ? '0.01' : '0'} step="0.01" className="ui-input mt-1" value={absencePolicy.deduction_days ?? 0} disabled={!isSuperAdmin || absencePolicyBusy} onChange={(e) => updateAbsencePolicy('deduction_days', e.target.value === '' ? '' : Number(e.target.value))} /></label>}
+            <label className="text-sm text-slate-600">Insufficient balance<select className="ui-input mt-1" value={absencePolicy.insufficient_balance_policy || 'CAP_AT_ZERO_UNPAID'} disabled={!isSuperAdmin || absencePolicyBusy} onChange={(e) => updateAbsencePolicy('insufficient_balance_policy', e.target.value)}><option value="CAP_AT_ZERO_UNPAID">Cap at zero + unpaid remainder</option><option value="ALLOW_NEGATIVE">Allow negative balance</option><option value="NO_DEDUCTION">Do not deduct leave</option></select></label>
+            <label className="text-sm text-slate-600">Effective from<input type="date" className="ui-input mt-1" value={absencePolicy.effective_from || ''} disabled={!isSuperAdmin || absencePolicyBusy} onChange={(e) => updateAbsencePolicy('effective_from', e.target.value)} /></label>
+            {isSuperAdmin && <button type="submit" disabled={absencePolicyBusy} className="ui-btn-primary ui-btn-sm md:col-span-2">{absencePolicyBusy ? 'Saving...' : 'Save absence policy'}</button>}
+          </form>}
+        </section>
       </div>
     </PermissionGate>
   );

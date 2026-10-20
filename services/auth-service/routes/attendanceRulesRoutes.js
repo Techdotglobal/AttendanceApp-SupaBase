@@ -6,6 +6,10 @@ const { reconcileAbsenceOutcome } = require('../lib/attendanceAbsenceService');
 
 const router = express.Router();
 
+const ABSENCE_ACTIONS = new Set(['NONE', 'DEDUCT_LEAVE', 'UNPAID_ABSENCE']);
+const ABSENCE_LEAVE_TYPES = new Set(['annual', 'sick', 'casual']);
+const ABSENCE_INSUFFICIENT_POLICIES = new Set(['CAP_AT_ZERO_UNPAID', 'ALLOW_NEGATIVE', 'NO_DEDUCTION']);
+
 async function tenant(req, res) {
   const requester = await resolveRequester(req);
   if (!requester?.uid) {
@@ -57,6 +61,41 @@ function normalizeRule(body, companyId, actorUid, existing = {}) {
     version: Number(body.version ?? existing.version ?? 1),
     updated_by_uid: actorUid,
     ...(existing.id ? {} : { created_by_uid: actorUid }),
+  };
+}
+
+function normalizeAbsencePolicy(body = {}, existing = {}) {
+  const action = String(body.action ?? body.absenceAction ?? existing.action ?? 'NONE').toUpperCase();
+  if (!ABSENCE_ACTIONS.has(action)) throw new Error('Invalid absence action');
+
+  const rawLeaveType = body.leave_type ?? body.leaveType ?? body.absenceLeaveType ?? existing.leave_type ?? null;
+  const leaveType = rawLeaveType == null || rawLeaveType === '' ? null : String(rawLeaveType).toLowerCase();
+  const rawDays = body.deduction_days ?? body.deductionDays ?? body.absenceDeductionDays ?? existing.deduction_days;
+  const parsedDays = rawDays === undefined || rawDays === null || rawDays === '' ? (action === 'NONE' ? 0 : 1) : Number(rawDays);
+  const insufficient = String(body.insufficient_balance_policy
+    ?? body.insufficientBalancePolicy
+    ?? body.absenceInsufficientBalancePolicy
+    ?? existing.insufficient_balance_policy
+    ?? 'CAP_AT_ZERO_UNPAID').toUpperCase();
+  const effectiveFrom = body.effective_from ?? body.effectiveFrom ?? body.absenceEffectiveFrom ?? existing.effective_from ?? null;
+  const enabled = body.enabled ?? body.absenceDeductionsV1Enabled ?? existing.enabled ?? false;
+
+  if (!Number.isFinite(parsedDays) || parsedDays < 0) throw new Error('deduction_days must be zero or a positive number');
+  if (!ABSENCE_INSUFFICIENT_POLICIES.has(insufficient)) throw new Error('Invalid insufficient balance policy');
+  if (effectiveFrom && !/^\d{4}-\d{2}-\d{2}$/.test(String(effectiveFrom))) throw new Error('effective_from must be YYYY-MM-DD');
+
+  if (action === 'DEDUCT_LEAVE') {
+    if (!leaveType || !ABSENCE_LEAVE_TYPES.has(leaveType)) throw new Error('DEDUCT_LEAVE requires a valid leave_type');
+    if (parsedDays <= 0) throw new Error('DEDUCT_LEAVE requires deduction_days greater than zero');
+  }
+
+  return {
+    enabled: enabled === true,
+    action,
+    leave_type: action === 'DEDUCT_LEAVE' ? leaveType : null,
+    deduction_days: action === 'NONE' ? 0 : parsedDays,
+    insufficient_balance_policy: insufficient,
+    effective_from: effectiveFrom || null,
   };
 }
 
@@ -119,6 +158,60 @@ router.delete('/attendance/rules/:id', async (req, res) => {
     beforeState: existing,
   });
   res.json({ success: true });
+});
+
+router.get('/attendance/absence-policy', async (req, res) => {
+  const ctx = await tenant(req, res); if (!ctx || !(await requireRulesAdmin(ctx, res))) return;
+  try {
+    const [{ data: company, error: companyError }, { data: policy, error: policyError }] = await Promise.all([
+      supabase.from('companies').select('id, app_settings').eq('id', ctx.companyId).single(),
+      supabase.from('attendance_absence_policies').select('*').eq('company_id', ctx.companyId).maybeSingle(),
+    ]);
+    if (companyError) throw companyError;
+    if (policyError) throw policyError;
+    const normalized = normalizeAbsencePolicy(policy || {});
+    normalized.enabled = company?.app_settings?.leave?.absenceDeductionsV1Enabled === true;
+    res.json({ success: true, data: { ...(policy || {}), ...normalized, company_id: ctx.companyId } });
+  } catch (error) { res.status(500).json({ success: false, error: error.message || 'Failed to load absence policy' }); }
+});
+
+router.put('/attendance/absence-policy', async (req, res) => {
+  const ctx = await tenant(req, res); if (!ctx || !(await requireRulesAdmin(ctx, res))) return;
+  if (ctx.requester.role !== 'super_admin') {
+    return res.status(403).json({ success: false, error: 'Only super admins can configure automatic absence handling' });
+  }
+  try {
+    const { data: existing, error: existingError } = await supabase
+      .from('attendance_absence_policies').select('*').eq('company_id', ctx.companyId).maybeSingle();
+    if (existingError) throw existingError;
+    const policy = normalizeAbsencePolicy(req.body || {}, existing || {});
+    const { data: savedPolicy, error: policyError } = await supabase
+      .from('attendance_absence_policies')
+      .upsert({ ...policy, company_id: ctx.companyId, updated_by_uid: ctx.requester.uid, updated_at: new Date().toISOString() }, { onConflict: 'company_id' })
+      .select('*').single();
+    if (policyError) throw policyError;
+
+    const { data: company, error: companyError } = await supabase
+      .from('companies').select('app_settings').eq('id', ctx.companyId).single();
+    if (companyError) throw companyError;
+    const currentSettings = company?.app_settings && typeof company.app_settings === 'object' ? company.app_settings : {};
+    const appSettings = {
+      ...currentSettings,
+      leave: { ...(currentSettings.leave || {}), absenceDeductionsV1Enabled: savedPolicy.enabled === true },
+    };
+    const { error: settingsError } = await supabase
+      .from('companies').update({ app_settings: appSettings, updated_at: new Date().toISOString() }).eq('id', ctx.companyId);
+    if (settingsError) throw settingsError;
+
+    await writeAuthorizationAudit(supabase, {
+      companyId: ctx.companyId,
+      actorUid: ctx.requester.uid,
+      action: 'attendance_absence_policy_changed',
+      beforeState: existing || {},
+      afterState: savedPolicy,
+    });
+    res.json({ success: true, data: savedPolicy });
+  } catch (error) { res.status(400).json({ success: false, error: error.message || 'Failed to save absence policy' }); }
 });
 
 router.get('/attendance/holidays', async (req, res) => {

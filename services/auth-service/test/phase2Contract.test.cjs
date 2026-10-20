@@ -226,6 +226,28 @@ test('Phase 5 UI exposes holiday type and finalized absence fields', () => {
   assert.match(attendance, /canReconcile/);
 });
 
+test('Attendance Rules exposes the company-scoped Phase 4 policy without weakening guards', () => {
+  const rules = read('services/auth-service/routes/attendanceRulesRoutes.js');
+  const gateway = read('services/api-gateway/routes/admin.js');
+  const service = read('apps/web/src/features/admin/services/adminService.js');
+  const page = read('apps/web/src/features/admin/pages/AttendanceRulesPage.jsx');
+  assert.match(rules, /router\.get\('\/attendance\/absence-policy'/);
+  assert.match(rules, /router\.put\('\/attendance\/absence-policy'/);
+  assert.match(rules, /requireRulesAdmin\(ctx, res\)/);
+  assert.match(rules, /Only super admins can configure automatic absence handling/);
+  assert.match(rules, /upsert\(\{ \...policy, company_id: ctx\.companyId/);
+  assert.match(rules, /absenceDeductionsV1Enabled: savedPolicy\.enabled === true/);
+  assert.match(rules, /DEDUCT_LEAVE requires a valid leave_type/);
+  assert.match(rules, /DEDUCT_LEAVE requires deduction_days greater than zero/);
+  assert.match(gateway, /attendance\/absence-policy/);
+  assert.match(service, /getAttendanceAbsencePolicy/);
+  assert.match(service, /saveAttendanceAbsencePolicy/);
+  assert.match(page, /Absence deductions/);
+  assert.match(page, /DEDUCT_LEAVE/);
+  assert.match(page, /CAP_AT_ZERO_UNPAID/);
+  assert.match(page, /Approved retroactive leave can reconcile/);
+});
+
 test('manager and super-admin accounts retain employee self-service paths', () => {
   const catalog = read('shared/permissions/catalog.cjs');
   const adminRoutes = read('services/auth-service/routes/admin.js');

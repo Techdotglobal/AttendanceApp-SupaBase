@@ -330,7 +330,7 @@ export const computeQuickStatsFromRecords = (records) => {
  * @param {string} username
  * @returns {Promise<{ success: boolean, daysWorked: number, hoursLogged: number, thisMonth: number, error?: string }>}
  */
-export const getEmployeeQuickStats = async (username) => {
+export const getEmployeeQuickStats = async (username, requester = null) => {
   if (!username) {
     return {
       success: false,
@@ -344,7 +344,7 @@ export const getEmployeeQuickStats = async (username) => {
   try {
     const [onlineRecords, offlineRecords] = await Promise.all([
       getUserAttendanceRecords(username),
-      getOfflineQueuedRecordsForUser(username),
+      getOfflineQueuedRecordsForUser(username, requester),
     ]);
 
     const seen = new Set();

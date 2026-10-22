@@ -106,7 +106,7 @@ export default function EmployeeDashboard({ route }) {
       if (!user?.username) return;
       const [onlineRecords, offlineRecords] = await Promise.all([
         getUserAttendanceRecords(user.username),
-        getOfflineQueuedRecordsForUser(user.username),
+        getOfflineQueuedRecordsForUser(user.username, user),
       ]);
       const all = [...onlineRecords, ...offlineRecords];
       if (all.length > 0) {
@@ -174,7 +174,7 @@ export default function EmployeeDashboard({ route }) {
     if (showLoading) setQuickStatsLoading(true);
     setQuickStatsError(null);
     try {
-      const result = await getEmployeeQuickStats(user.username);
+      const result = await getEmployeeQuickStats(user.username, user);
       if (result.success) {
         setQuickStats({
           daysWorked: result.daysWorked ?? 0,

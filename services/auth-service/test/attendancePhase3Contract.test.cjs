@@ -151,8 +151,8 @@ test('self-service state is authoritative for mobile checkout and stale-state re
   assert.match(storage, /refresh(?:ed)?State/);
   assert.match(storage, /serverError/);
   assert.match(storage, /isGeofenceCheckout/);
-  assert.match(storage, /retryableNetworkError/);
-  assert.match(storage, /catchRetryableNetworkError/);
+  assert.match(storage, /classifyAttendanceWriteError/);
+  assert.match(storage, /errorClass/);
   assert.match(dashboard, /normalizeAuthoritativeSelfServiceState/);
   assert.match(authScreen, /normalizeAuthoritativeSelfServiceState/);
   assert.match(authScreen, /saveAttendanceRecord\(attendanceRecord, user\)/);

@@ -156,6 +156,12 @@ export default function CustomDrawer({ navigation, state }) {
           roles: ['employee'],
         },
         {
+          name: 'My Work Modes',
+          icon: 'briefcase-outline',
+          screen: ROUTES.MY_WORK_MODES,
+          roles: ['employee'],
+        },
+        {
           name: 'My Tickets',
           icon: 'ticket-outline',
           screen: ROUTES.TICKET_SCREEN,
@@ -256,7 +262,7 @@ export default function CustomDrawer({ navigation, state }) {
 
     // Every employee-like security role keeps the self-service surface. These
     // entries are intentionally separate from manager/admin permission gates.
-    const employeeSelfServiceItems = isEmployeeLikeRole(user) && user.role !== 'employee'
+    const employeeSelfServiceItems = isEmployeeLikeRole(user)
       ? [
           {
             name: 'My Dashboard',
@@ -272,6 +278,11 @@ export default function CustomDrawer({ navigation, state }) {
             name: 'My Leave Requests',
             icon: 'calendar-outline',
             screen: ROUTES.LEAVE_REQUEST,
+          },
+          {
+            name: 'My Work Modes',
+            icon: 'briefcase-outline',
+            screen: ROUTES.MY_WORK_MODES,
           },
           {
             name: 'My Tickets',

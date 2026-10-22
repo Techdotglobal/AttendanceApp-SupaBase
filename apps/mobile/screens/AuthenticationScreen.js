@@ -385,7 +385,7 @@ export default function AuthenticationScreen({ navigation, route }) {
 
       const [records, queuedRecords] = await Promise.all([
         getUserAttendanceRecords(user.username),
-        getOfflineQueuedRecordsForUser(user.username),
+        getOfflineQueuedRecordsForUser(user.username, user),
       ]);
       let state = deriveSelfServiceAttendanceState([...(records || []), ...(queuedRecords || [])]);
       try {

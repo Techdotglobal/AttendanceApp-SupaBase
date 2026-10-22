@@ -10,6 +10,12 @@ const {
   deriveSelfServiceAttendanceState,
   normalizeAuthoritativeSelfServiceState,
 } = require('../../../shared/attendance/selfServiceState.cjs');
+const {
+  classifyAttendanceWriteError,
+  isDesiredStateSatisfied,
+  hasQueueIdentity,
+  queueIdentityMatches,
+} = require('../../../shared/attendance/mobileQueuePolicy.cjs');
 
 const ATTENDANCE_RECORDS_KEY = '@attendance_records'; // For fallback only
 
@@ -85,6 +91,8 @@ export const saveAttendanceRecord = (attendanceRecord, requester = null) => {
  * @param {Object} attendanceRecord - The attendance record to save
  */
 const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) => {
+  let authUser = null;
+  let tenantCid = null;
   try {
     if (!isSupabaseConfigured()) {
       console.error('[attendance] Supabase not configured — cannot sync check-in/out');
@@ -111,7 +119,7 @@ const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) 
     const isNormalSelfService = !attendanceRecord.isManual && !isGeofenceCheckout;
 
     const existing = await getUserAttendanceRecords(attendanceRecord.username);
-    const queued = await getOfflineQueuedRecordsForUser(attendanceRecord.username);
+    const queued = await getOfflineQueuedRecordsForUser(attendanceRecord.username, requester);
     const localState = deriveSelfServiceAttendanceState([...existing, ...queued]);
     let state = localState;
     let authoritativeState = null;
@@ -142,7 +150,6 @@ const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) 
     }
 
     // Prefer local session (no network round-trip). Fall back to getUser() only if needed.
-    let authUser = null;
     try {
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
       if (!sessionError && session?.user) {
@@ -155,18 +162,23 @@ const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) 
       const { data: { user }, error: authError } = await supabase.auth.getUser();
       if (authError || !user) {
         console.error('Error getting Supabase session:', authError);
-        const record = await saveAttendanceRecordFallback(attendanceRecord);
-        return { success: true, source: 'offline', reason: 'auth_unavailable', record };
+        return { success: false, source: 'auth', error: 'Authentication is required to save attendance.' };
       }
       authUser = user;
     }
 
     // Get employee data for employee_name
-    const tenantCid = await fetchSessionUserCompanyId(supabase);
+    tenantCid = await fetchSessionUserCompanyId(supabase);
+    // A profile lookup can fail during a genuine outage even when the
+    // authenticated session and trusted AuthContext still provide the same
+    // tenant. Use that identity-bound context only as a queue/write fallback;
+    // an absent requester company remains a hard failure.
+    if (!tenantCid && requester?.uid && authUser?.id && String(requester.uid) === String(authUser.id)) {
+      tenantCid = requireValidCompanyId(requester.companyId || requester.company_id, 'requester');
+    }
     if (!tenantCid) {
       console.error('[tenant] saveAttendanceRecord: missing company_id');
-      const record = await saveAttendanceRecordFallback(attendanceRecord);
-      return { success: true, source: 'offline', reason: 'missing_tenant', record };
+      return { success: false, source: 'tenant', error: 'Tenant context is required to save attendance.' };
     }
     const employee = await getEmployeeByUsername(attendanceRecord.username, tenantCid);
     
@@ -195,37 +207,42 @@ const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) 
       // A committed insert can still lose its response. Re-read the server
       // state before considering an offline retry, so a stale client never
       // flips back to Check In or queues a duplicate checkout.
-      const message = String(error?.message || '').toLowerCase();
-      const retryableNetworkError = !error?.code && !error?.status
-        && /(network|fetch|timeout|offline|connection|abort)/i.test(message);
+      const errorClass = classifyAttendanceWriteError(error);
       if (isNormalSelfService) {
         try {
           const refreshed = await getSelfServiceAttendanceState(attendanceRecord.username, requester);
           const refreshedState = normalizeAuthoritativeSelfServiceState(refreshed, localState);
-          if (refreshedState) {
-            const actionBlocked = normalizedType === 'checkout'
-              ? !refreshedState.canCheckOut
-              : !refreshedState.canCheckIn;
-            if (actionBlocked) {
-              return {
-                success: false,
-                source: 'server',
-                error: normalizedType === 'checkout'
-                  ? (refreshedState.completed ? 'This workday is already checked out.' : 'You must check in before checking out.')
-                  : (refreshedState.completed ? 'This workday is already complete.' : 'You are already checked in.'),
-                authoritativeState: refreshed,
-                serverError: error.message,
-              };
-            }
+          if (isDesiredStateSatisfied(normalizedType, refreshedState)) {
+            return {
+              success: true,
+              source: 'server-confirmed',
+              record: refreshedState.lastRecord,
+              authoritativeState: refreshed,
+              serverError: error.message,
+            };
+          }
+          if (refreshedState && errorClass === 'terminal') {
+            return {
+              success: false,
+              source: 'server',
+              error: normalizedType === 'checkout'
+                ? (refreshedState.completed ? 'This workday is already checked out.' : 'You must check in before checking out.')
+                : (refreshedState.completed ? 'This workday is already complete.' : 'You are already checked in.'),
+              authoritativeState: refreshed,
+              serverError: error.message,
+            };
           }
         } catch (refreshError) {
           if (__DEV__) console.warn('[attendance] could not refresh state after insert failure:', refreshError?.message || refreshError);
         }
       }
-      if (!retryableNetworkError) {
+      if (errorClass !== 'network' || !authUser || !tenantCid) {
         return { success: false, source: 'server', error: error.message || 'Attendance was rejected by the server.' };
       }
-      const record = await saveAttendanceRecordFallback(attendanceRecord);
+      const record = await saveAttendanceRecordFallback(attendanceRecord, {
+        user_uid: authUser.id,
+        company_id: tenantCid,
+      });
       return {
         success: true,
         source: 'offline',
@@ -249,9 +266,7 @@ const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) 
         || attendanceRecord?.auth_method === 'automatic_geofence'
         || attendanceRecord?.location?.checkout_reason === 'AUTO_CHECKOUT_OUTSIDE_RADIUS');
     const catchIsNormalSelfService = !attendanceRecord?.isManual && !catchIsGeofenceCheckout;
-    const catchMessage = String(error?.message || '').toLowerCase();
-    const catchRetryableNetworkError = !error?.code && !error?.status
-      && /(network|fetch|timeout|offline|connection|abort)/i.test(catchMessage);
+    const catchErrorClass = classifyAttendanceWriteError(error);
 
     // A thrown insert/fetch exception can represent a committed write whose
     // response was lost. Refresh authoritative state before deciding whether
@@ -260,10 +275,16 @@ const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) 
       try {
         const refreshed = await getSelfServiceAttendanceState(attendanceRecord.username, requester);
         const refreshedState = normalizeAuthoritativeSelfServiceState(refreshed);
-        const actionBlocked = catchType === 'checkout'
-          ? !refreshedState?.canCheckOut
-          : !refreshedState?.canCheckIn;
-        if (refreshedState && actionBlocked) {
+        if (isDesiredStateSatisfied(catchType, refreshedState)) {
+          return {
+            success: true,
+            source: 'server-confirmed',
+            record: refreshedState.lastRecord,
+            authoritativeState: refreshed,
+            serverError: error.message,
+          };
+        }
+        if (refreshedState && catchErrorClass === 'terminal') {
           return {
             success: false,
             source: 'server',
@@ -279,10 +300,13 @@ const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) 
       }
     }
 
-    if (!catchRetryableNetworkError) {
+    if (catchErrorClass !== 'network' || !authUser || !tenantCid) {
       return { success: false, source: 'server', error: error.message || 'Attendance could not be saved.' };
     }
-    const record = await saveAttendanceRecordFallback(attendanceRecord);
+    const record = await saveAttendanceRecordFallback(attendanceRecord, {
+      user_uid: authUser.id,
+      company_id: tenantCid,
+    });
     return {
       success: true,
       source: 'offline',
@@ -297,12 +321,17 @@ const saveAttendanceRecordInternal = async (attendanceRecord, requester = null) 
  * Fallback: Save attendance record to AsyncStorage with explicit offline status.
  * These records are offline-queued and must not be treated as live tenant records.
  */
-const saveAttendanceRecordFallback = async (attendanceRecord) => {
+const saveAttendanceRecordFallback = async (attendanceRecord, identity = {}) => {
   try {
+    if (!identity.user_uid || !identity.company_id) {
+      throw new Error('Attendance queue requires authenticated user and company context.');
+    }
     const records = await getAttendanceRecordsFallback();
     const newRecord = {
       id: `offline_${Date.now()}`,
       ...attendanceRecord,
+      user_uid: identity.user_uid,
+      company_id: identity.company_id,
       timestamp: attendanceRecord.timestamp || new Date().toISOString(),
       _recordStatus: 'queued_offline',
     };
@@ -640,12 +669,52 @@ export const syncOfflineAttendanceQueue = async (companyId = null) => {
     console.log(`[ATT_SYNC] Draining ${queued.length} queued_offline records`);
 
     const remaining = [...all];
+    const requester = { uid: authUser.id, companyId: tenantCid };
+    const quarantine = (record, reason) => {
+      const index = remaining.findIndex((item) => item.id === record.id);
+      if (index !== -1) {
+        remaining[index] = {
+          ...remaining[index],
+          _recordStatus: 'quarantined',
+          _queueError: reason,
+          _quarantinedAt: new Date().toISOString(),
+        };
+      }
+    };
     for (const record of queued) {
+      if (!hasQueueIdentity(record)) {
+        quarantine(record, 'missing_queue_identity');
+        failed++;
+        continue;
+      }
+      if (!queueIdentityMatches(record, authUser.id, tenantCid)) {
+        quarantine(record, 'identity_or_company_mismatch');
+        failed++;
+        continue;
+      }
       try {
+        const normalizedType = String(record.type || '').toLowerCase();
+        const isGeofenceCheckout = normalizedType === 'checkout'
+          && (record.authMethod === 'automatic_geofence'
+            || record.auth_method === 'automatic_geofence'
+            || record.location?.checkout_reason === 'AUTO_CHECKOUT_OUTSIDE_RADIUS');
+        if (!(record.isManual || record.is_manual) && !isGeofenceCheckout) {
+          try {
+            const state = await getSelfServiceAttendanceState(record.username, requester);
+            if (isDesiredStateSatisfied(normalizedType, state)) {
+              const idx = remaining.findIndex((item) => item.id === record.id);
+              if (idx !== -1) remaining.splice(idx, 1);
+              synced++;
+              continue;
+            }
+          } catch (stateError) {
+            if (__DEV__) console.warn('[ATT_SYNC] state preflight unavailable:', stateError?.message || stateError);
+          }
+        }
         const { error } = await supabase
           .from('attendance_records')
           .insert({
-            user_uid: authUser.id,
+            user_uid: record.user_uid,
             company_id: tenantCid,
             username: record.username,
             employee_name: record.employeeName || record.employee_name || record.username,
@@ -659,7 +728,23 @@ export const syncOfflineAttendanceQueue = async (companyId = null) => {
           });
         if (error) {
           console.warn('[ATT_SYNC] Insert failed for record', record.id, error.message);
+          if (normalizedType === 'checkin' || normalizedType === 'checkout') {
+            try {
+              const refreshed = await getSelfServiceAttendanceState(record.username, requester);
+              if (isDesiredStateSatisfied(normalizedType, refreshed)) {
+                const idx = remaining.findIndex((item) => item.id === record.id);
+                if (idx !== -1) remaining.splice(idx, 1);
+                synced++;
+                continue;
+              }
+            } catch (refreshError) {
+              if (__DEV__) console.warn('[ATT_SYNC] state refresh unavailable:', refreshError?.message || refreshError);
+            }
+          }
           failed++;
+          if (classifyAttendanceWriteError(error) === 'terminal') {
+            quarantine(record, error.message || 'terminal_attendance_error');
+          }
         } else {
           // Remove synced record from remaining list
           const idx = remaining.findIndex((r) => r.id === record.id);
@@ -669,6 +754,9 @@ export const syncOfflineAttendanceQueue = async (companyId = null) => {
       } catch (insertErr) {
         console.warn('[ATT_SYNC] Insert exception for record', record.id, insertErr?.message);
         failed++;
+        if (classifyAttendanceWriteError(insertErr) === 'terminal') {
+          quarantine(record, insertErr?.message || 'terminal_attendance_exception');
+        }
       }
     }
 
@@ -684,11 +772,18 @@ export const syncOfflineAttendanceQueue = async (companyId = null) => {
  * Get offline-queued attendance records for a specific user.
  * Used by the dashboard to determine check-in/check-out state when Supabase was unreachable.
  */
-export const getOfflineQueuedRecordsForUser = async (username) => {
+export const getOfflineQueuedRecordsForUser = async (username, requester = null) => {
   try {
     const raw = await AsyncStorage.getItem(ATTENDANCE_RECORDS_KEY);
     const all = raw ? JSON.parse(raw) : [];
-    return all.filter((r) => r._recordStatus === 'queued_offline' && r.username === username);
+    const userUid = requester?.uid || requester?.user_uid;
+    const companyId = requester?.companyId || requester?.company_id;
+    if (!userUid || !companyId) return [];
+    return all.filter((r) =>
+      r._recordStatus === 'queued_offline'
+      && r.username === username
+      && queueIdentityMatches(r, userUid, companyId)
+    );
   } catch {
     return [];
   }

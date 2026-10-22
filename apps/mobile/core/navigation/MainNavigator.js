@@ -10,6 +10,7 @@ import { useTheme } from '../contexts/ThemeContext';
 
 // Import screens
 import EmployeeDashboard from '../../screens/EmployeeDashboard';
+import MyWorkModesScreen from '../../screens/MyWorkModesScreen';
 import AdminDashboard from '../../screens/AdminDashboard';
 import AttendanceHistory from '../../screens/AttendanceHistory';
 import AuthenticationScreen from '../../screens/AuthenticationScreen';
@@ -108,6 +109,12 @@ export default function MainNavigator({ user }) {
           options={{ title: 'Leave Requests' }}
           initialParams={{ user }}
         />
+        <Stack.Screen
+          name={ROUTES.MY_WORK_MODES}
+          component={MyWorkModesScreen}
+          options={{ title: 'My Work Modes' }}
+          initialParams={{ user }}
+        />
         <Stack.Screen 
           name={ROUTES.CALENDAR} 
           component={CalendarScreen}
@@ -182,6 +189,7 @@ export default function MainNavigator({ user }) {
             <Stack.Screen name={ROUTES.AUTHENTICATION_SCREEN} component={AuthenticationScreen} options={{ title: 'Authentication' }} initialParams={{ user }} />
             <Stack.Screen name={ROUTES.AUTH_METHOD_SELECTION} component={AuthMethodSelection} options={{ title: 'Auth Settings' }} initialParams={{ user }} />
             <Stack.Screen name={ROUTES.LEAVE_REQUEST} component={LeaveRequestScreen} options={{ title: 'Leave Requests' }} initialParams={{ user }} />
+            <Stack.Screen name={ROUTES.MY_WORK_MODES} component={MyWorkModesScreen} options={{ title: 'My Work Modes' }} initialParams={{ user }} />
             <Stack.Screen name={ROUTES.TICKET_SCREEN} component={TicketScreen} options={{ title: 'My Tickets' }} initialParams={{ user }} />
           </>
         )}
